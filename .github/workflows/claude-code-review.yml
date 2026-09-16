@@ -13,8 +13,10 @@
 # mentions. This file is the automatic first-pass; that one is the on-demand
 # re-review companion.
 #
-# Needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Without it the job
-# fails at the action step — visibly, which is the right failure.
+# Needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. On the PR that first
+# adds this file the action skips itself (workflow validation against the
+# default branch) and the job goes green with no comment — see
+# `.claude/rules/github-workflows.md`; the review starts on the next PR.
 
 name: Claude Code — automatic PR review
 

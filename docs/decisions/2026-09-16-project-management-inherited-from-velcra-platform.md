@@ -65,8 +65,11 @@ pointer would load nothing.
   as the reference implementations.
 - **The review workflows are inert until `CLAUDE_CODE_OAUTH_TOKEN` is set** as
   a repository secret. They are committed first anyway, so the convention is
-  in place on the first PR and the failure, when the secret is missing, is a
-  visible red job rather than a silently absent review.
+  in place from the second PR on. The first PR gets no automatic review by
+  construction — the action skips itself, green and silent, until the file
+  exists on the default branch
+  ([github-workflows.md](../../.claude/rules/github-workflows.md)) — and was
+  reviewed by hand.
 - **The board's `Systems` field stays unset from this repo too** — the
   velcra-platform exemption (a multi-select `gh` cannot write) applies as is.
 
