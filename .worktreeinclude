@@ -1,0 +1,10 @@
+# Local files to copy into worktrees
+.env
+.env.local
+
+# Claude Code local state
+.claude/settings.local.json
+.claude/agent-memory-local/
+
+# Local scratch
+tmp/

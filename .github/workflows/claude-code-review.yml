@@ -1,0 +1,184 @@
+# Automatic Claude Code review on a PR's FIRST push.
+#
+# Fires on PR open / ready_for_review / reopen — deliberately NOT on
+# `synchronize`. The review is a deep, convention-aware pass (the same rigor as
+# an `@claude` mention, not the low-false-positive `/code-review` plugin): it
+# reads CLAUDE.md + `.claude/rules/` + any referenced spec and posts its findings
+# as a PR comment. This covers the PR's first push automatically; SUBSEQUENT
+# changes are re-reviewed via explicit `@claude` mentions (the author mentions
+# after each push — see `.claude/rules/pr-workflow.md`). Dropping `synchronize`
+# is what keeps every fix push from being double-reviewed (auto + mention).
+#
+# Paired with `claude-mention.yml`, which handles those explicit `@claude`
+# mentions. This file is the automatic first-pass; that one is the on-demand
+# re-review companion.
+#
+# Needs the `CLAUDE_CODE_OAUTH_TOKEN` repository secret. Without it the job
+# fails at the action step — visibly, which is the right failure.
+
+name: Claude Code — automatic PR review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+jobs:
+  claude-review:
+    name: Review the PR diff
+    # One review in flight per PR. A new push cancels any in-progress
+    # review — the old output describes obsolete code, so finishing it
+    # would just post a stale comment. The group is PR-scoped so
+    # different PRs don't serialize against each other.
+    concurrency:
+      group: claude-review-pr-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+
+    runs-on: ${{ fromJSON(vars.RUNNER_LABELS || '["ubuntu-latest"]') }}
+    permissions:
+      contents: read
+      # `pull-requests: write` + `issues: write` are required for the
+      # `claude-code-action` to create / update the review comment via
+      # its MCP github-comment server (which uses the workflow's
+      # `GITHUB_TOKEN`, not the OIDC app token). With read-only perms
+      # the action appears to succeed (SDK exit 0) but the comment post
+      # silently 403s — the visible symptom is "No buffered inline
+      # comments" in the post step and no PR comment lands.
+      pull-requests: write
+      issues: write
+      id-token: write
+      # Required by the `additional_permissions: actions: read` request below.
+      # `additional_permissions` only surfaces scopes the workflow's
+      # GITHUB_TOKEN already carries — a job token cannot grant itself a scope
+      # this block omits. Without it the action skips its `github_ci` MCP
+      # server and the review runs BLIND TO CI: it reads the diff as though
+      # every check were green and can never say "looks fine, but Test failed".
+      # The job still exits 0, so the only symptom is a warning nobody reads.
+      actions: read
+
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Run a thorough Claude review of the PR
+        id: claude-review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # FORCE TAG MODE. A custom `prompt` on a pull_request event
+          # otherwise auto-detects *agent mode*, where the action does NOT post
+          # the model's output and gives it no PR context — so the model reached
+          # for `gh pr list` (denied by the tool-allowlist) and stalled, posting
+          # nothing while the job still went green. `track_progress: true` forces
+          # tag mode: the action seeds the PR context (number / changed files /
+          # diff) AND manages a single tracking comment it writes the review
+          # into. This is the supported way to run a prompt-driven review that
+          # actually posts. Requires the pull-requests/issues:write perms above.
+          track_progress: true
+          # One comment, updated in place (not a new comment per run).
+          use_sticky_comment: true
+          # Read CI check results on the PR.
+          additional_permissions: |
+            actions: read
+          # Deep, convention-aware review — the same rigor as an `@claude`
+          # mention, NOT the low-false-positive `/code-review` plugin. The
+          # prompt is static (no untrusted ${{ github.event.* }} interpolation),
+          # so there's no workflow-injection surface. In tag mode (above) the
+          # action posts this review as the tracking comment.
+          prompt: |
+            Review this pull request thoroughly. You are already running on the
+            PR — review the changed files in the diff directly. Do NOT invoke the
+            `/review` or `/code-review` skills and do NOT run `gh pr list`; you
+            have the PR context already.
+
+            First read the repository conventions: CLAUDE.md and every file under
+            .claude/rules/, plus any design spec the PR description or diff
+            references (usually a record under docs/decisions/). Then review
+            the PR diff for:
+            - correctness bugs and logic errors
+            - security issues — a credential or token reaching a log line, a
+              bundle, a return value or the repository
+            - regression guards (regression-guard.md) — for every fix in the
+              diff, check that something mechanical would fail if the defect
+              returned, and that it would fail for the RIGHT reason (a guard
+              satisfied by its own fixture, or over a set that can become
+              empty, asserts nothing). When the defect lives outside
+              unit-testable code — the module graph, a config↔code gap, an
+              upgrade path a fresh install never takes, a workflow file — a
+              unit test is not the right rung; see the escalation table. Check
+              docs/defect-ledger.md for a matching class. Report this outcome
+              explicitly, including "not mechanically guardable, and the PR
+              says so"
+            - documentation (documentation.md) — a locked decision has its
+              docs/decisions/ record and index row; docs, CLAUDE.md and rule
+              files moved in the same PR as the behavior they describe. Report
+              this outcome explicitly, even when it is "no doc impact"
+            - issue association (pr-workflow.md) — every `Closes #N` on its
+              own line in the PR body, one per issue
+            - missed project conventions and test-coverage gaps
+
+            For each finding give file:line, a severity (🔴 correctness/security ·
+            🟡 convention/testing · 🔵 minor/nitpick), and a concrete fix. Verify
+            every claim against the actual code — do not invent issues. If the PR
+            is clean, say so explicitly. End with a one-line verdict:
+            ready to merge / changes requested.
+          claude_args: |
+            --model ${{ vars.CLAUDE_CODE_PR_MODEL || 'claude-sonnet-5' }}
+
+      # Retain the full Claude execution JSON (every message + tool result +
+      # the permission_denials detail + is_error/num_turns/cost) as a build
+      # artifact. The GitHub job log drops it after the run, so without this a
+      # "clean" review can't be audited after the fact (e.g. to see WHAT a
+      # permission_denials_count > 0 actually denied). `if: always()` so a
+      # failed/cancelled review — exactly when you want the log — still uploads.
+      #
+      # Sensitivity: this file can contain tool output (and the action warns it
+      # may include secrets). This is a PRIVATE repo, so artifacts are
+      # collaborator-only, and retention is capped at 7 days to bound exposure.
+      - name: Archive review execution log
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: claude-review-execution-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}
+          path: ${{ steps.claude-review.outputs.execution_file }}
+          retention-days: 7
+          if-no-files-found: warn
+          overwrite: true
+
+      # Surface the operation's cost + shape as run metadata: a job-summary
+      # table on the run page + a notice annotation. Reads the same execution
+      # JSON the archive step keeps (total_cost_usd / num_turns / duration /
+      # is_error / permission_denials_count). Metadata only — never fails the
+      # job (continue-on-error + defensive parsing + early returns).
+      - name: Report run cost
+        if: always() && steps.claude-review.outputs.execution_file != ''
+        continue-on-error: true
+        uses: actions/github-script@v9
+        env:
+          EXECUTION_FILE: ${{ steps.claude-review.outputs.execution_file }}
+        with:
+          script: |
+            const fs = require('node:fs');
+            const file = process.env.EXECUTION_FILE;
+            if (!file || !fs.existsSync(file)) { core.info('No execution file; skipping cost report.'); return; }
+            let result;
+            try {
+              const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+              const arr = Array.isArray(data) ? data : (data.messages || [data]);
+              result = [...arr].reverse().find((m) => m && m.type === 'result');
+            } catch (e) { core.warning(`Could not parse execution file: ${e.message}`); return; }
+            if (!result) { core.info('No result message in execution file.'); return; }
+            const cost = typeof result.total_cost_usd === 'number' ? `$${result.total_cost_usd.toFixed(4)}` : 'n/a';
+            const turns = result.num_turns ?? '?';
+            const durS = result.duration_ms ? `${Math.round(result.duration_ms / 1000)}s` : '?';
+            const denials = result.permission_denials_count ?? 0;
+            const errored = result.is_error === true ? 'yes' : 'no';
+            await core.summary
+              .addHeading('Claude code review — run cost', 3)
+              .addTable([
+                [{ data: 'Cost (USD)', header: true }, { data: 'Turns', header: true }, { data: 'Duration', header: true }, { data: 'Denials', header: true }, { data: 'Errored', header: true }],
+                [cost, String(turns), durS, String(denials), errored],
+              ])
+              .write();
+            core.notice(`Cost ${cost} · ${turns} turns · ${durS} · ${denials} denials`, { title: 'Claude code review cost' });

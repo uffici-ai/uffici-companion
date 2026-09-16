@@ -1,0 +1,38 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(git branch *)",
+      "Bash(git show *)",
+      "Bash(git fetch *)",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "Bash(git rev-parse *)",
+      "Bash(git remote *)",
+      "Bash(git ls-remote *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(gh pr *)",
+      "Bash(gh issue *)",
+      "Bash(gh api *)",
+      "Bash(gh auth status *)",
+      "Bash(gh repo *)",
+      "Bash(gh run *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(which *)",
+      "Bash(node -e *)",
+      "Bash(node --version *)",
+      "Bash(python3 -c ' *)",
+      "Bash(echo \"exit: $?\")",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:docs.github.com)"
+    ],
+    "deny": []
+  }
+}

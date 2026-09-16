@@ -1,0 +1,17 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# env files — never committed
+.env
+.env.*
+!.env.example
+
+# Claude Code local state — session-local, never committed
+.claude/settings.local.json
+.claude/agent-memory-local/
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
+# scratch (local only)
+tmp/
