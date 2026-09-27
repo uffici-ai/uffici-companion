@@ -40,34 +40,51 @@ Uffici.
 
 ## Install
 
-One line, on the machine that runs your harness:
+The Uffici portal gives you this line — when an administrator creates the agent, and on the
+agent's **Connect** tab — with your organization's agents host and a pairing code already in
+it. Paste it on the machine that runs your harness:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
 ```
 
-The Uffici portal shows you this line on the agent's **Connect** tab, with your organization's
-agents host already in it. It does, in order:
+It does, in order:
 
 1. Downloads the companion for your platform from the latest release, checks it against the
    release's checksum list, and installs it as `~/.local/bin/uffici`.
-2. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
-   and starts it.
-3. Pairs it with your agent: it prints a code, an administrator approves the code in the
-   portal, and the key arrives sealed to this machine.
+2. Pairs it with your agent, using the code in the line: the key arrives sealed to this
+   machine, and nobody has to approve anything — the administrator who asked for the line
+   chose the agent. The code works once and for ten minutes; after that, get a new line from
+   the **Connect** tab.
+3. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
+   and starts it — or restarts it, if it was already running.
 4. Downloads the plugin for your harness from that plugin's own release, checks it, installs
    it into the harness, switches the Uffici platform on in the harness's configuration, and
    points the plugin at the companion.
-5. Runs `uffici doctor` and tells you how to restart the harness.
+5. Runs `uffici doctor` and tells you how to restart the harness. Once the harness is
+   restarted, the agent shows **Online** in the portal.
 
 Every step is announced before it runs. Add `--dry-run` to be told and nothing else: the
 script then installs no binary either. The script is [install.sh](install.sh) in this
 repository — POSIX shell, needing only `curl` and `tar` — so you can read it before you run
 it, and everything past the download is `uffici setup`, a command of the binary itself, so
-it is the same on every machine. Pairing asks you to confirm which agent the key is for;
-under a pipe that answer is read from your terminal, and with no terminal at all the run
-stops and says so before anything is downloaded (`--yes` answers for you).
+it is the same on every machine. The script never prints the pairing code; it shows
+`****-****` where it would be. The code does sit on the command line while the line runs,
+where other users of the machine can see it in the process list: it works once and for ten
+minutes, and whoever runs it first gets the agent's key — run the line on a machine you
+trust, and get a new one if you pasted it somewhere shared.
+
+**Something wrong, or moving the agent to this machine?** Get a new line from the **Connect**
+tab and run it again on the same machine: it pairs again and replaces the key, and the old key
+keeps working for a short overlap. Without a pairing code, re-running the line upgrades the
+companion and the plugin and keeps the key it has.
+
+**Without a code in the line** — a machine you pair by hand — the pairing step prints a code
+instead, which an administrator approves in the portal (see
+[Pair it with your agent](#pair-it-with-your-agent)). That step asks you to confirm which
+agent the key is for; under a pipe the answer is read from your terminal, and with no terminal
+at all the run stops and says so before anything is downloaded (`--yes` answers for you).
 
 While a repository is private, the downloads need a token: set `UFFICI_GITHUB_TOKEN` in the
 environment before the line (never as a flag; a flag is in your shell history), and fetch
@@ -76,7 +93,7 @@ the script itself with that token too:
 ```sh
 curl -fsSL -H "Authorization: Bearer $UFFICI_GITHUB_TOKEN" \
   https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-  | UFFICI_GITHUB_TOKEN="$UFFICI_GITHUB_TOKEN" sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+  | UFFICI_GITHUB_TOKEN="$UFFICI_GITHUB_TOKEN" sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
 ```
 
 ### Install by hand
@@ -103,21 +120,36 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `--harness <kind>` | Install the plugin for this harness (`hermes`). Omit to install no plugin. |
 | `--gateway-url <url>` | Your agents host. `UFFICI_GATEWAY_URL` in the environment works too. |
 | `--harness-home <dir>` | Where the harness keeps its files, if not where its own variable or default says. |
+| `--pairing-code <XXXX-XXXX>` | The pairing code from the portal's line. Pairs with no approval and no question, and pairs again over a key already in place (a re-pair). |
 | `--no-pair` | Skip pairing: the key is already in place, or mounted from a Secret. |
 | `--no-service` | Skip installing the service. |
 | `--yes` | Pair without asking which agent and organization the key is for. |
 | `--plugin-version <x.y.z>` | Pin the plugin release. Default: the latest. |
-| `--dry-run` | Print every action and perform none; a key already in place is never re-paired either way. |
+| `--dry-run` | Print every action and perform none. Without `--pairing-code`, a key already in place is kept. |
 | `--home <dir>` | The companion's own directory, `~/.uffici` by default. |
 | `--harness-version <v>` | The harness's version, shown to the administrator who approves the pairing. |
 
 ## Pair it with your agent
 
 `uffici setup` does this for you; by hand, it is one command. It needs to know your agents
-host, so set that first (the same value your service will use):
+host, so set that first (the same value your service will use).
+
+**With a code from the portal** — the one in the line the **Connect** tab gives you:
 
 ```sh
 export UFFICI_GATEWAY_URL=https://agents.uffici.ai   # the address your organization was given
+uffici pair --harness hermes --code XXXX-XXXX
+```
+
+The key arrives at once: no approval, no question. The command prints the agent, the
+organization and the key's last four characters. A code that is not valid any more — used,
+expired, or mistyped — ends the run with "this pairing code is not valid any more"; get a new
+line from the **Connect** tab. If the agents host cannot be reached, the command keeps trying
+while the code could still be valid.
+
+**Without a code** — the administrator approves the code this machine shows:
+
+```sh
 uffici pair --harness hermes --harness-version 0.21.5
 ```
 
@@ -131,7 +163,8 @@ uffici pair --harness hermes --harness-version 0.21.5
    key's last four characters and never the key.
 
 Pairing again replaces the key. The administrator sees it as a rotation, and the old key keeps
-working through a short overlap so a running companion is not cut off.
+working through a short overlap. A companion that is already running holds the key it started
+with, so restart it after pairing by hand (`uffici setup` restarts the service for you).
 
 `$UFFICI_HOME` is `~/.uffici` unless you set it. It also holds `instance-id`, this
 companion's device identity, minted once and reused: keep the directory on persistent storage,
@@ -172,6 +205,10 @@ WantedBy=default.target
 systemctl --user enable --now ai.uffici.companion
 loginctl enable-linger "$USER"   # keep it running when you are not logged in
 ```
+
+The companion reads its binary and its agent key when it starts. After you upgrade it or pair
+it again by hand, restart it — `systemctl --user restart ai.uffici.companion` — or re-run
+`uffici setup`, which restarts the service for you.
 
 On macOS the setup writes the equivalent launch agent, `~/Library/LaunchAgents/ai.uffici.companion.plist`,
 and loads it with `launchctl`.
@@ -270,8 +307,9 @@ The companion reads its environment once, at start.
 ### Staying connected
 
 A dropped connection reconnects with a fresh ticket on a jittered backoff from one second to
-one minute. A revoked or refused key waits at the minute; an administrator re-issuing it is
-the only cure, and no restart is needed. When Uffici restarts, the companion reconnects at
+one minute. A revoked or refused key waits at the minute. The cure is a new key: get a new
+line from the agent's **Connect** tab and run it on this machine, which pairs again and
+restarts the companion — a running companion holds the key it started with. When Uffici restarts, the companion reconnects at
 once. If another machine holds this agent's connection, the companion reports
 `instance_conflict` and keeps retrying at the minute; pair a second agent, or switch on
 **Allow multiple connections** for this one in the portal, if two harnesses are intended.

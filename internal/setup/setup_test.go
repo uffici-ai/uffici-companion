@@ -395,6 +395,21 @@ func TestPlanServicePerOS(t *testing.T) {
 	if err != nil || !strings.HasSuffix(linux.path, ".config/systemd/user/"+ServiceLabel+".service") || !strings.Contains(linux.content, `ExecStart="/home/u/.local/bin/uffici" run`) || !strings.Contains(linux.content, `Environment="UFFICI_GATEWAY_URL=https://agents.example"`) {
 		t.Fatalf("linux plan: %+v %v", linux, err)
 	}
+	// 🔴 A re-run of the line replaces the RUNNING companion (#2213): the process
+	// reads its binary and its agent key once, at start, so a re-pair or an
+	// upgrade that only `enable --now`s a running unit leaves it on the old ones
+	// — and the old key stops resolving when its overlap ends.
+	var linuxCommands []string
+	for _, argv := range linux.commands {
+		linuxCommands = append(linuxCommands, strings.Join(argv, " "))
+	}
+	if want := []string{
+		"systemctl --user daemon-reload",
+		"systemctl --user enable " + ServiceLabel + ".service",
+		"systemctl --user restart " + ServiceLabel + ".service",
+	}; strings.Join(linuxCommands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("linux commands = %q, want %q", linuxCommands, want)
+	}
 	mac, err := planService("darwin", "/Users/u", "/usr/local/bin/uffici", "https://a&b", "/Users/u/.uffici", "501")
 	if err != nil || !strings.HasSuffix(mac.path, "Library/LaunchAgents/"+ServiceLabel+".plist") || !strings.Contains(mac.content, "https://a&amp;b") || mac.commands[1][2] != "gui/501" {
 		t.Fatalf("darwin plan: %+v %v", mac, err)
@@ -487,8 +502,8 @@ func TestRunInstallsEverythingInOrder(t *testing.T) {
 	if err != nil || !strings.Contains(string(unit), `ExecStart="/opt/uffici" run`) {
 		t.Fatalf("unit not written: %v", err)
 	}
-	if !r.runner.ran("systemctl --user enable --now") {
-		t.Fatal("the service was not started")
+	if !r.runner.ran("systemctl --user restart") {
+		t.Fatal("the service was not (re)started")
 	}
 	if r.paired != 1 {
 		t.Fatal("pairing did not run once")
@@ -555,6 +570,58 @@ func TestRunDryRunPerformsNothing(t *testing.T) {
 		if !strings.Contains(r.out.String(), want) {
 			t.Fatalf("the plan does not say %q:\n%s", want, r.out)
 		}
+	}
+}
+
+// 🔴 The re-pair of #2209: the portal's command carries a code, and running it
+// on a machine that is already paired pairs it AGAIN — the new key replaces the
+// old one — where a re-run without a code keeps the key it has.
+func TestRunWithAPortalCodePairsOverAnExistingKey(t *testing.T) {
+	r := newRig(t, goodManifest(), false)
+	if err := os.MkdirAll(r.opts.CompanionHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(r.opts.CompanionHome, "agent-key"), []byte("k"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.opts.PairingCode = "K7QP-2XMD"
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if r.paired != 1 {
+		t.Fatalf("a code did not pair over the existing key (paired=%d):\n%s", r.paired, r.out)
+	}
+	text := r.out.String()
+	for _, want := range []string{"pair this machine again with the code from the portal", "replaces", "overlap"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the step does not say %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "K7QP-2XMD") || strings.Contains(text, "already paired") {
+		t.Fatalf("the code was printed, or the key was kept:\n%s", text)
+	}
+
+	// The same machine, re-run WITHOUT a code: the key it has is kept.
+	r.opts.PairingCode = ""
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if r.paired != 1 || !strings.Contains(r.out.String(), "already paired") {
+		t.Fatalf("a re-run without a code paired again (paired=%d)", r.paired)
+	}
+}
+
+func TestRunDryRunWithAPortalCodeOnlySaysSo(t *testing.T) {
+	r := newRig(t, goodManifest(), true)
+	r.opts.PairingCode = "K7QP-2XMD"
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if r.paired != 0 || len(r.runner.calls) != 0 {
+		t.Fatalf("a dry run acted: paired=%d calls=%v", r.paired, r.runner.calls)
+	}
+	if !strings.Contains(r.out.String(), "would pair with the code from the portal") || strings.Contains(r.out.String(), "K7QP-2XMD") {
+		t.Fatalf("the plan:\n%s", r.out)
 	}
 }
 

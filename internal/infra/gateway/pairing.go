@@ -55,14 +55,17 @@ func NewPairer(options PairerOptions) (*Pairer, error) {
 }
 
 // Open asks the agents host for a pairing, declaring this companion and its
-// harness and the public key the agent key will be sealed to.
-func (p *Pairer) Open(ctx context.Context, harness protocol.HarnessFacts, version, publicKey string) (protocol.PairingResponse, error) {
+// harness and the public key the agent key will be sealed to. code is a pairing
+// code the portal issued (#2209), or "" for the typed-code path; it is
+// secret-class and goes into the request body only.
+func (p *Pairer) Open(ctx context.Context, harness protocol.HarnessFacts, version, publicKey, code string) (protocol.PairingResponse, error) {
 	var answer protocol.PairingResponse
 	err := p.api.call(ctx, http.MethodPost, "/v1/pairings", nil, "", protocol.PairingRequest{
 		InstanceID: p.api.instanceID,
 		Client:     protocol.ClientFacts{Name: ClientName, Version: version},
 		Harness:    harness,
 		PublicKey:  publicKey,
+		Code:       code,
 	}, &answer)
 	if err != nil {
 		return protocol.PairingResponse{}, err

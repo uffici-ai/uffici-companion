@@ -47,6 +47,13 @@ func (d *Double) openPairing(w http.ResponseWriter, r *http.Request) {
 	var body protocol.PairingRequest
 	_ = json.Unmarshal(raw, &body)
 	d.mu.Lock()
+	offer, offered := d.PairingOffers[body.Code]
+	if body.Code != "" && !offered {
+		// The portal refused the claim: unknown, expired or used — one answer.
+		d.mu.Unlock()
+		fail(w, http.StatusNotFound, "not_found")
+		return
+	}
 	d.pairingSeq++
 	p := &pendingPairing{
 		id:        fmt.Sprintf("3a2b1c0d-9e8f-4a7b-8c6d-%012d", d.pairingSeq),
@@ -56,6 +63,17 @@ func (d *Double) openPairing(w http.ResponseWriter, r *http.Request) {
 		expiresAt: time.Now().Add(d.PairingTTL),
 	}
 	d.pairings[p.id] = p
+	if offered {
+		// The portal claimed the code and sealed the key before the gateway
+		// answered: the first poll is `paired`, and the code is spent.
+		delete(d.PairingOffers, body.Code)
+		if err := d.sealLocked(p, offer.AgentID, offer.OrgSlug, offer.AgentSlug, offer.Key); err != nil {
+			d.mu.Unlock()
+			d.refuse("pairing offer: " + err.Error())
+			fail(w, http.StatusInternalServerError, "platform_error")
+			return
+		}
+	}
 	d.mu.Unlock()
 	answer, _ := json.Marshal(protocol.PairingResponse{
 		PairingID: p.id, Code: p.code, PollToken: p.pollToken,
@@ -97,6 +115,20 @@ func (d *Double) pollPairing(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(raw)
 }
 
+// PairingOffer is a code the portal issued for one agent (#2209), as the double
+// honours it: the agent the key is for, and the key the portal would mint.
+type PairingOffer struct {
+	AgentID, OrgSlug, AgentSlug, Key string
+}
+
+// OfferPairing plays the admin asking the portal for a command: `code` pairs
+// the next companion that presents it with `key` for that agent, once.
+func (d *Double) OfferPairing(code, agentID, orgSlug, agentSlug, key string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.PairingOffers[code] = PairingOffer{AgentID: agentID, OrgSlug: orgSlug, AgentSlug: agentSlug, Key: key}
+}
+
 // ApprovePairing plays the admin in the portal: it seals `key` to the pairing
 // `code` names — the portal's scheme, byte for byte — so the companion's next
 // poll collects it. Test-only: in production the PORTAL seals, never the gateway.
@@ -107,17 +139,22 @@ func (d *Double) ApprovePairing(code, agentID, orgSlug, agentSlug, key string) e
 		if p.code != code {
 			continue
 		}
-		sealed, err := sealForTest(key, p.request.PublicKey, p.id+"\n"+agentID+"\n"+orgSlug+"\n"+agentSlug)
-		if err != nil {
-			return err
-		}
-		p.paired = &protocol.PairingPollResponse{
-			Status: protocol.PairingPaired, AgentID: agentID, OrgSlug: orgSlug, AgentSlug: agentSlug,
-			KeyLast4: key[len(key)-4:], Sealed: &sealed,
-		}
-		return nil
+		return d.sealLocked(p, agentID, orgSlug, agentSlug, key)
 	}
 	return fmt.Errorf("gatewaytest: no pairing with code %q", code)
+}
+
+// sealLocked leaves `key` sealed for pairing p's poll. The caller holds d.mu.
+func (d *Double) sealLocked(p *pendingPairing, agentID, orgSlug, agentSlug, key string) error {
+	sealed, err := sealForTest(key, p.request.PublicKey, p.id+"\n"+agentID+"\n"+orgSlug+"\n"+agentSlug)
+	if err != nil {
+		return err
+	}
+	p.paired = &protocol.PairingPollResponse{
+		Status: protocol.PairingPaired, AgentID: agentID, OrgSlug: orgSlug, AgentSlug: agentSlug,
+		KeyLast4: key[len(key)-4:], Sealed: &sealed,
+	}
+	return nil
 }
 
 // PairingRequests are the pairing bodies the double received, in order.

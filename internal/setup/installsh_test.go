@@ -1,3 +1,8 @@
+//go:build unix
+
+// The installer is a POSIX shell script for Linux and macOS, and its tests run
+// it detached from any terminal (Setsid), which only a unix build can express.
+
 package setup
 
 import (
@@ -11,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -69,7 +75,21 @@ func thisAsset() string {
 
 func runInstaller(t *testing.T, server *httptest.Server, prefix string, args ...string) (string, error) {
 	t.Helper()
+	return runInstallerWith(t, nil, server, prefix, args...)
+}
+
+// runInstallerWithoutATerminal runs the script in a new session, so it has no
+// controlling terminal and `/dev/tty` cannot be opened — the shape of a
+// `curl | sh` from a CI job or a provisioning tool, deterministic on any host.
+func runInstallerWithoutATerminal(t *testing.T, server *httptest.Server, prefix string, args ...string) (string, error) {
+	t.Helper()
+	return runInstallerWith(t, &syscall.SysProcAttr{Setsid: true}, server, prefix, args...)
+}
+
+func runInstallerWith(t *testing.T, attrs *syscall.SysProcAttr, server *httptest.Server, prefix string, args ...string) (string, error) {
+	t.Helper()
 	cmd := exec.Command("sh", append([]string{filepath.Join(moduleRoot(t), "install.sh")}, args...)...)
+	cmd.SysProcAttr = attrs
 	cmd.Env = append(os.Environ(),
 		"UFFICI_RELEASES_BASE_URL="+server.URL,
 		"UFFICI_RELEASES_API_URL="+server.URL,
@@ -147,6 +167,50 @@ func TestInstallScriptFetchesVerifiesInstallsAndHandsOver(t *testing.T) {
 	}
 	if strings.Contains(out, "uffici-install.") {
 		t.Fatalf("the temporary directory leaked into the output (and probably onto disk):\n%s", out)
+	}
+}
+
+// 🔴 The line the portal gives carries a pairing code (#2209). It must run where
+// there is no terminal — the code asks nothing — hand the code to `uffici setup`
+// untouched, and never print it itself.
+func TestInstallScriptWithAPairingCodeNeedsNoTerminalAndNeverPrintsTheCode(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  " + thisAsset() + "\n")}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	// Non-vacuity: without a code or --yes, this very run has no terminal to ask on.
+	out, err := runInstallerWithoutATerminal(t, server, t.TempDir(), "--harness", "hermes", "--gateway-url", "https://agents.example")
+	if err == nil || !strings.Contains(out, "needs a terminal") {
+		t.Fatalf("a run that must ask was not refused without a terminal: %v\n%s", err, out)
+	}
+
+	for _, args := range [][]string{
+		{"--harness", "hermes", "--gateway-url", "https://agents.example", "--pairing-code", "K7QP-2XMD"},
+		{"--harness", "hermes", "--pairing-code=K7QP-2XMD", "--gateway-url", "https://agents.example"},
+	} {
+		out, err := runInstallerWithoutATerminal(t, server, t.TempDir(), args...)
+		if err != nil {
+			t.Fatalf("%v: the installer failed without a terminal: %v\n%s", args, err, out)
+		}
+		// The fake binary prints what it was handed: the code arrives intact.
+		if !strings.Contains(out, "fake-uffici setup "+strings.Join(args, " ")) {
+			t.Fatalf("%v: the hand-over changed the arguments:\n%s", args, out)
+		}
+		for _, line := range strings.Split(out, "\n") {
+			if strings.HasPrefix(line, "uffici-install:") && strings.Contains(line, "K7QP") {
+				t.Fatalf("the script printed the code: %q", line)
+			}
+		}
+		if !strings.Contains(out, "****-****") {
+			t.Fatalf("the hand-over line does not show the masked code:\n%s", out)
+		}
 	}
 }
 

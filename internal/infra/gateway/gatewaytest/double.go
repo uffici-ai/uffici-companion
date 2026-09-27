@@ -86,6 +86,11 @@ type Double struct {
 	ConversationTTL time.Duration
 	// PairingTTL is how long a pairing code lives (#1966).
 	PairingTTL time.Duration
+	// PairingOffers are the codes the PORTAL issued (#2209), by code: a pairing
+	// opened with one is paired at once, and the code is spent. A code the
+	// double was not told about is `not_found`, as the gateway answers it. Set
+	// entries with OfferPairing.
+	PairingOffers map[string]PairingOffer
 
 	mu            sync.Mutex
 	silent        bool
@@ -128,6 +133,7 @@ func New() *Double {
 		HeartbeatSeconds: 30,
 		ConversationTTL:  900 * time.Second,
 		PairingTTL:       10 * time.Minute,
+		PairingOffers:    map[string]PairingOffer{},
 		pairings:         map[string]*pendingPairing{},
 		connectTicket:    map[string]bool{},
 		convTickets:      map[string]string{},

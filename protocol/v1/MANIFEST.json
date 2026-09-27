@@ -75,7 +75,7 @@
 		"hello": 1,
 		"identity": 2,
 		"pairing-poll-response": 2,
-		"pairing-request": 1,
+		"pairing-request": 2,
 		"pairing-response": 1,
 		"post-request": 1,
 		"post-response": 1,
@@ -89,7 +89,7 @@
 		"conversation-ticket-request": 1,
 		"error": 2,
 		"pairing-poll-response": 2,
-		"pairing-request": 3,
+		"pairing-request": 4,
 		"post-request": 2,
 		"read-response": 1,
 		"ring": 2

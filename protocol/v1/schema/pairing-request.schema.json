@@ -52,6 +52,10 @@
 		"publicKey": {
 			"type": "string",
 			"pattern": "^[A-Za-z0-9_-]{43}$"
+		},
+		"code": {
+			"type": "string",
+			"pattern": "^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}$"
 		}
 	},
 	"required": [

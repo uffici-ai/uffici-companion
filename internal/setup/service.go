@@ -123,7 +123,13 @@ func planService(goos, userHome, binary, gatewayURL, companionHome, uid string) 
 			content: SystemdUnit(binary, gatewayURL, companionHome),
 			commands: [][]string{
 				{"systemctl", "--user", "daemon-reload"},
-				{"systemctl", "--user", "enable", "--now", ServiceLabel + ".service"},
+				{"systemctl", "--user", "enable", ServiceLabel + ".service"},
+				// restart, never `enable --now`: `--now` starts a stopped unit and
+				// leaves a running one alone, and the companion reads its binary and
+				// its agent key once, at start — so an upgrade or a re-pair would not
+				// take until a reboot, and a re-paired machine would drop off when
+				// the old key's overlap ends (#2213). restart starts a stopped unit too.
+				{"systemctl", "--user", "restart", ServiceLabel + ".service"},
 			},
 		}, nil
 	case "darwin":

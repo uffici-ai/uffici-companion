@@ -136,6 +136,10 @@ type PairingRequest struct {
 	// PublicKey is this pairing's throwaway X25519 public key, base64url — the
 	// agent key comes back sealed to it.
 	PublicKey string `json:"publicKey"`
+	// Code is a pairing code the portal issued for one agent, pasted here as part
+	// of the command an admin was given (#2209): with it the pairing needs no
+	// approval. Empty on the typed-code path. Secret-class: never logged.
+	Code string `json:"code,omitempty"`
 }
 
 // PairingResponse is `POST /v1/pairings`' answer.

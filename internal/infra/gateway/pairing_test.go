@@ -8,6 +8,7 @@ import (
 
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway/gatewaytest"
+	"github.com/uffici-ai/uffici-companion/internal/pairing"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
 )
 
@@ -39,7 +40,7 @@ func TestOpeningAPairingSendsNoCredentialAndChecksTheAnswer(t *testing.T) {
 	t.Cleanup(double.Close)
 	pairer := pairerFor(t, double)
 	opened, err := pairer.Open(context.Background(), protocol.HarnessFacts{Kind: "hermes", Version: "0.21.4"}, "1.2.3",
-		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "")
 	if err != nil || opened.Code == "" || opened.PollToken == "" {
 		t.Fatalf("Open = %+v, %v", opened, err)
 	}
@@ -48,8 +49,53 @@ func TestOpeningAPairingSendsNoCredentialAndChecksTheAnswer(t *testing.T) {
 	}
 	double.Inject("pairing", gatewaytest.Injected{Status: http.StatusCreated, ContentType: "application/json", Body: `{}`})
 	if _, err := pairer.Open(context.Background(), protocol.HarnessFacts{Kind: "hermes", Version: "0.21.4"}, "1.2.3",
-		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); err == nil {
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", ""); err == nil {
 		t.Fatal("an answer with no code or token was accepted")
+	}
+}
+
+// A portal-issued code (#2209) rides the open request; the double — the gateway
+// and the portal's claim together — pairs at once for a code it was offered,
+// and answers `not_found` for one it was not, creating nothing.
+func TestAPortalCodeIsSentAndAnUnknownOneIsNotFound(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	pairer := pairerFor(t, double)
+	facts := protocol.HarnessFacts{Kind: "hermes", Version: "0.21.4"}
+	// A real X25519 key: the double seals to it, as the portal would.
+	key, err := pairing.NewKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKey := pairing.PublicKey(key)
+
+	_, err = pairer.Open(context.Background(), facts, "1.2.3", publicKey, "ZZZZ-ZZZZ")
+	var classified *gateway.Error
+	if !errors.As(err, &classified) || classified.Class != "not_found" || classified.Status != http.StatusNotFound {
+		t.Fatalf("an unknown code opened: %v", err)
+	}
+	if len(double.PairingRequests()) != 0 {
+		t.Fatal("a refused code left a pairing behind")
+	}
+
+	double.OfferPairing("K7QP-2XMD", "e2a7f46c-aa42-48ec-ae37-a63815f4a700", "acme", "smith", "uffici_live_key_9e9c")
+	opened, err := pairer.Open(context.Background(), facts, "1.2.3", publicKey, "K7QP-2XMD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests := double.PairingRequests(); len(requests) != 1 || requests[0].Code != "K7QP-2XMD" {
+		t.Fatalf("the code did not ride the request: %+v", requests)
+	}
+	answer, err := pairer.Poll(context.Background(), opened.PairingID, opened.PollToken)
+	if err != nil || answer.Status != protocol.PairingPaired || answer.KeyLast4 != "9e9c" {
+		t.Fatalf("the first poll = %+v, %v", answer, err)
+	}
+	// Spent: the same code again is `not_found`.
+	if _, err := pairer.Open(context.Background(), facts, "1.2.3", publicKey, "K7QP-2XMD"); !errors.As(err, &classified) || classified.Class != "not_found" {
+		t.Fatalf("a spent code opened again: %v", err)
+	}
+	if refusals := double.Refusals(); len(refusals) != 0 {
+		t.Fatalf("the double refused: %v", refusals)
 	}
 }
 

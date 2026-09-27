@@ -185,3 +185,57 @@ func gzippedTar(t *testing.T, top string, files map[string]string) []byte {
 	_ = gz.Close()
 	return buf.Bytes()
 }
+
+// ── A portal-issued code (#2209) ────────────────────────────────────────────
+
+func TestSetupTakesAPortalCodeIntoThePairingStep(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"setup", "--home", t.TempDir(), "--no-service", "--dry-run", "--gateway-url", "https://agents.example", "--pairing-code", "k7qp-2xmd"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "would pair with the code from the portal") {
+		t.Fatalf("the code did not reach the pairing step:\n%s", out.String())
+	}
+	if strings.Contains(strings.ToUpper(out.String()+errOut.String()), "K7QP-2XMD") {
+		t.Fatalf("the code was printed:\n%s%s", out.String(), errOut.String())
+	}
+}
+
+func TestAMalformedPairingCodeExitsTwoNamingTheFlagAndNotTheValue(t *testing.T) {
+	for _, args := range [][]string{
+		{"setup", "--home", t.TempDir(), "--gateway-url", "https://agents.example", "--pairing-code", "ABCD-0O1I"},
+		{"pair", "--home", t.TempDir(), "--code", "ABCD-0O1I"},
+	} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != 2 {
+			t.Fatalf("%v exited %d:\n%s%s", args, code, out.String(), errOut.String())
+		}
+		flag := args[len(args)-2]
+		if !strings.Contains(errOut.String(), flag) || strings.Contains(errOut.String(), "ABCD-0O1I") {
+			t.Fatalf("%v: the refusal must name %s and not repeat the value:\n%s", args, flag, errOut.String())
+		}
+	}
+}
+
+// 🔴 Under `curl | sh` stdin is a pipe. Pairing reads its confirmation from the
+// terminal — except with a code from the portal, which asks nothing, so the
+// line works where there is no terminal at all.
+func TestPairingNeedsATerminalOnlyWhenItWillAsk(t *testing.T) {
+	for _, tc := range []struct {
+		name                                     string
+		noPair, yes, dryRun, hasCode, stdinIsTTY bool
+		want                                     bool
+	}{
+		{name: "a piped run that will ask", want: true},
+		{name: "a code from the portal", hasCode: true},
+		{name: "--yes", yes: true},
+		{name: "--no-pair", noPair: true},
+		{name: "a dry run", dryRun: true},
+		{name: "stdin is the terminal", stdinIsTTY: true},
+	} {
+		if got := pairingNeedsTerminal(tc.noPair, tc.yes, tc.dryRun, tc.hasCode, tc.stdinIsTTY); got != tc.want {
+			t.Fatalf("%s: needs a terminal = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}

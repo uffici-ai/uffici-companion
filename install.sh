@@ -1,10 +1,11 @@
 #!/bin/sh
 # Uffici companion installer.
 #
-# One line on the machine that runs your harness:
+# One line on the machine that runs your harness — the portal gives it to you,
+# with a pairing code in it:
 #
 #   curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-#     | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+#     | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
 #
 # This script does exactly one thing itself: it fetches the companion binary for
 # this machine from the latest release, verifies it against the release's
@@ -44,12 +45,25 @@ main() {
   need mktemp
 
   # ── What was asked ──────────────────────────────────────────────────────
-  dry_run=no; needs_answer=yes
+  # A pairing code from the portal asks nothing — the administrator who issued
+  # it chose the agent — so, like --yes, it needs no terminal. The code is a
+  # secret: `shown` is the argument list with it masked, and it is the only
+  # form of the arguments this script ever prints.
+  dry_run=no; needs_answer=yes; shown=""; mask_next=no
   for arg in "$@"; do
     case "$arg" in
       --dry-run) dry_run=yes ;;
-      --yes|--no-pair) needs_answer=no ;;
+      --yes|--no-pair|--pairing-code|--pairing-code=*) needs_answer=no ;;
     esac
+    if [ "$mask_next" = yes ]; then
+      arg="****-****"; mask_next=no
+    else
+      case "$arg" in
+        --pairing-code) mask_next=yes ;;
+        --pairing-code=*) arg="--pairing-code=****-****" ;;
+      esac
+    fi
+    shown="${shown:+$shown }$arg"
   done
   [ "$dry_run" = yes ] && needs_answer=no
 
@@ -106,7 +120,7 @@ main() {
 
   # ── A dry run installs nothing: the unpacked binary only tells ──────────
   if [ "$dry_run" = yes ]; then
-    say "dry run: would install $prefix/bin/uffici ($("$work/unpacked/uffici" -version 2>/dev/null || echo 'version unknown')), then run: uffici setup $*"
+    say "dry run: would install $prefix/bin/uffici ($("$work/unpacked/uffici" -version 2>/dev/null || echo 'version unknown')), then run: uffici setup $shown"
     "$work/unpacked/uffici" setup "$@"
     return $?
   fi
@@ -124,7 +138,7 @@ main() {
   # ── Handing over ────────────────────────────────────────────────────────
   # `exec` replaces this shell, so the EXIT trap would never run: clean up
   # first, then drop the traps.
-  say "handing over to: uffici setup $*"
+  say "handing over to: uffici setup $shown"
   rm -rf "$work"
   trap - EXIT INT TERM
   if [ -n "$answer_from" ]; then

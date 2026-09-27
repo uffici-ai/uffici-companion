@@ -1,0 +1,16 @@
+{
+	"reason": "a portal-issued code is eight characters of the unambiguous alphabet — no 0, O, 1 or I",
+	"value": {
+		"instanceId": "d4c3b2a1-f6e5-4d7c-8b9a-0f1e2d3c4b5a",
+		"client": {
+			"name": "uffici-companion",
+			"version": "0.3.0"
+		},
+		"harness": {
+			"kind": "hermes",
+			"version": "0.21.4"
+		},
+		"publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"code": "ABCD-0O1I"
+	}
+}

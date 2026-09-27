@@ -116,8 +116,18 @@ func pair(args []string, stdout, stderr io.Writer) int {
 	harness := flags.String("harness", "unknown", "the harness this companion will serve, as the admin sees it (e.g. hermes)")
 	harnessVersion := flags.String("harness-version", "unknown", "that harness's version")
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
+	codeFlag := flags.String("code", "", "a pairing code from the portal (XXXX-XXXX) — pairs with no approval and no question")
 	if err := flags.Parse(args); err != nil {
 		return app.ExitConfig
+	}
+	code := ""
+	if *codeFlag != "" {
+		parsed, err := app.ParsePairingCode(*codeFlag)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "uffici pair: --code %v\n", err)
+			return app.ExitConfig
+		}
+		code = parsed
 	}
 	environment := func(key string) string {
 		if key == "UFFICI_AGENTS_HOST" {
@@ -136,7 +146,16 @@ func pair(args []string, stdout, stderr io.Writer) int {
 		Harness:   protocol.HarnessFacts{Kind: *harness, Version: *harnessVersion},
 		In:        os.Stdin,
 		AssumeYes: *yes,
+		Code:      code,
 	})
+}
+
+// pairingNeedsTerminal decides whether `uffici setup` must read pairing's
+// confirmation from the terminal: only when it will pair, ask (no --yes, no
+// portal-issued code — the admin who issued it chose the agent), actually act
+// (not a dry run), and stdin is not already a terminal.
+func pairingNeedsTerminal(noPair, yes, dryRun, hasCode, stdinIsTerminal bool) bool {
+	return !noPair && !yes && !dryRun && !hasCode && !stdinIsTerminal
 }
 
 // doctor is `uffici doctor`: the gateway probe, against the agents host the
@@ -181,8 +200,18 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	noService := flags.Bool("no-service", false, "skip installing the companion as a service")
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
 	dryRun := flags.Bool("dry-run", false, "print every action and perform none")
+	codeFlag := flags.String("pairing-code", "", "the pairing code in the command the portal gave (XXXX-XXXX); pairs with no question, and again over a key already in place")
 	if err := flags.Parse(args); err != nil {
 		return setup.ExitConfig
+	}
+	pairingCode := ""
+	if *codeFlag != "" {
+		parsed, err := app.ParsePairingCode(*codeFlag)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "uffici setup: --pairing-code %v\n", err)
+			return setup.ExitConfig
+		}
+		pairingCode = parsed
 	}
 	if flags.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "uffici setup: unexpected argument %q — the harness is a flag: --harness %s\n", flags.Arg(0), flags.Arg(0))
@@ -234,17 +263,18 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	// pipe the script came down, so the answer is read from the terminal; with
 	// no terminal and no --yes, the question cannot be answered and the run is
 	// refused before a key is minted for nothing.
+	// A code from the portal asks nothing, so it needs no terminal (#2209).
 	answers := io.Reader(os.Stdin)
-	if !*noPair && !*yes && !*dryRun {
-		if info, statErr := os.Stdin.Stat(); statErr == nil && info.Mode()&os.ModeCharDevice == 0 {
-			tty, ttyErr := os.Open("/dev/tty")
-			if ttyErr != nil {
-				_, _ = fmt.Fprintln(stderr, "uffici setup: pairing needs a terminal to confirm which agent the key is for, and this run has none. Re-run with --yes, with --no-pair if the key is already in place, or from a terminal.")
-				return setup.ExitConfig
-			}
-			defer func() { _ = tty.Close() }()
-			answers = tty
+	info, statErr := os.Stdin.Stat()
+	stdinIsTerminal := statErr != nil || info.Mode()&os.ModeCharDevice != 0
+	if pairingNeedsTerminal(*noPair, *yes, *dryRun, pairingCode != "", stdinIsTerminal) {
+		tty, ttyErr := os.Open("/dev/tty")
+		if ttyErr != nil {
+			_, _ = fmt.Fprintln(stderr, "uffici setup: pairing needs a terminal to confirm which agent the key is for, and this run has none. Re-run with --yes, with --no-pair if the key is already in place, or from a terminal.")
+			return setup.ExitConfig
 		}
+		defer func() { _ = tty.Close() }()
+		answers = tty
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
@@ -254,6 +284,7 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		HarnessHome:    *harnessHome,
 		GatewayURL:     gateway,
 		PluginVersion:  *pluginVersion,
+		PairingCode:    pairingCode,
 		NoPair:         *noPair,
 		NoService:      *noService,
 		AssumeYes:      *yes,
@@ -283,6 +314,7 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 				Harness:   protocol.HarnessFacts{Kind: setup.NonEmpty(*harness, "unknown"), Version: *harnessVersion},
 				In:        answers,
 				AssumeYes: *yes,
+				Code:      pairingCode,
 			})
 		},
 		Doctor: func(ctx context.Context) int { return app.Doctor(ctx, resolved, stdout) },

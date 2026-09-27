@@ -38,6 +38,10 @@ type Options struct {
 	GatewayURL string
 	// PluginVersion pins the plugin release; empty is the latest.
 	PluginVersion string
+	// PairingCode is the code in the command the portal gave (#2209). With it,
+	// pairing runs even when a key is already in place: running a fresh command
+	// is how a machine is re-paired. Secret-class — never printed here.
+	PairingCode string
 
 	NoPair, NoService, AssumeYes, DryRun bool
 
@@ -86,15 +90,28 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 	// crash-loops on "no agent key" until pairing lands, and can trip systemd's
 	// start limit on the way. A key already in place is kept — a re-run of the
 	// line is an upgrade, not a new pairing, which would mint a key an admin
-	// then has to revoke.
+	// then has to revoke — UNLESS the line carries a code from the portal
+	// (#2209): an admin asked for that command to re-pair this machine.
 	if !opts.NoPair {
 		keyPath := filepath.Join(opts.CompanionHome, "agent-key")
-		if _, err := os.Stat(keyPath); err == nil {
+		_, statErr := os.Stat(keyPath)
+		paired := statErr == nil
+		switch {
+		case paired && opts.PairingCode == "":
 			_, _ = fmt.Fprintf(out, "already paired: %s exists; run `uffici pair` to pair again\n", keyPath)
-		} else if opts.DryRun {
+		case opts.DryRun && opts.PairingCode != "":
+			_, _ = fmt.Fprintln(out, "would pair with the code from the portal")
+		case opts.DryRun:
 			_, _ = fmt.Fprintf(out, "would pair this machine with your agent (uffici pair --harness %s)\n", NonEmpty(opts.Harness, "unknown"))
-		} else {
-			_, _ = fmt.Fprintln(out, "step: pair this machine with your agent")
+		default:
+			switch {
+			case paired:
+				_, _ = fmt.Fprintf(out, "step: pair this machine again with the code from the portal — the new key replaces %s; the old one keeps working for a short overlap\n", keyPath)
+			case opts.PairingCode != "":
+				_, _ = fmt.Fprintln(out, "step: pair this machine with your agent, with the code from the portal")
+			default:
+				_, _ = fmt.Fprintln(out, "step: pair this machine with your agent")
+			}
 			if code := opts.Pair(ctx); code != ExitOK {
 				_, _ = fmt.Fprintln(out, "uffici setup: pairing did not complete; nothing after it was done")
 				return code

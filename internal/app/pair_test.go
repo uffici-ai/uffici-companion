@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -175,7 +176,7 @@ type scriptedPairer struct {
 	polls   []func() (protocol.PairingPollResponse, error)
 }
 
-func (s *scriptedPairer) Open(context.Context, protocol.HarnessFacts, string, string) (protocol.PairingResponse, error) {
+func (s *scriptedPairer) Open(context.Context, protocol.HarnessFacts, string, string, string) (protocol.PairingResponse, error) {
 	if s.openErr != nil {
 		return protocol.PairingResponse{}, s.openErr
 	}
@@ -312,5 +313,174 @@ func TestTheDefaultQuestionReadsYesAndDefaultsToNo(t *testing.T) {
 	}
 	if confirm(PairOptions{}, out, "Install? ") {
 		t.Fatal("no input was a yes")
+	}
+}
+
+// ── A portal-issued code (#2209) ────────────────────────────────────────────
+
+const portalCode = "K7QP-2XMD"
+
+// 🔴 With the code from the portal's command, the machine pairs with nothing
+// read from the person: the admin who asked for the command chose the agent.
+func TestAPortalCodePairsWithoutAQuestion(t *testing.T) {
+	double, config, pairer := pairRig(t)
+	double.OfferPairing(portalCode, "e2a7f46c-aa42-48ec-ae37-a63815f4a700", "acme", "smith", pairedKey)
+	out := &syncBuffer{}
+	code := Pair(context.Background(), config, out, PairOptions{
+		Harness: protocol.HarnessFacts{Kind: "hermes", Version: "0.21.4"},
+		Pairer:  pairer,
+		Code:    portalCode,
+		Confirm: func(string) bool { t.Fatal("a portal-issued code asked the person a question"); return false },
+		In:      strings.NewReader("n\n"),
+		Sleep:   noSleep,
+	})
+	if code != ExitOK {
+		t.Fatalf("Pair exited %d:\n%s", code, out.String())
+	}
+	if loaded, err := LoadAgentKey(config.Home, ""); err != nil || loaded != pairedKey {
+		t.Fatalf("the key was not written: %q, %v", loaded, err)
+	}
+	printed := out.String()
+	for _, want := range []string{`agent "smith" in organization "acme"`, "••••9e9c", "code from the portal"} {
+		if !strings.Contains(printed, want) {
+			t.Fatalf("%q was not printed:\n%s", want, printed)
+		}
+	}
+	// 🔴 Secret-class: the code is in the request and nowhere on the screen — nor
+	// the gateway's own code, which means nothing on this path.
+	if strings.Contains(printed, portalCode) || codeLine.MatchString(printed) || strings.Contains(printed, pairedKey) {
+		t.Fatalf("a code or the key reached stdout:\n%s", printed)
+	}
+	if requests := double.PairingRequests(); len(requests) != 1 || requests[0].Code != portalCode {
+		t.Fatalf("the code did not ride the open: %+v", requests)
+	}
+	if refusals := double.Refusals(); len(refusals) != 0 {
+		t.Fatalf("the double refused: %v", refusals)
+	}
+}
+
+func TestARefusedPortalCodeWritesNoKeyAndSaysToGetANewCommand(t *testing.T) {
+	_, config, pairer := pairRig(t)
+	out := &syncBuffer{}
+	code := Pair(context.Background(), config, out, PairOptions{Pairer: pairer, Code: portalCode, Sleep: noSleep})
+	if code != ExitConfig {
+		t.Fatalf("exit %d, want ExitConfig:\n%s", code, out.String())
+	}
+	if !strings.Contains(out.String(), "get a new command from the agent's Connect tab") {
+		t.Fatalf("output:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(config.Home, AgentKeyFile)); !os.IsNotExist(err) {
+		t.Fatalf("a key file exists after a refused code: %v", err)
+	}
+}
+
+// An agents host that cannot answer is retried — the code is still good — until
+// the code could no longer be alive, and then the run misses with what to do.
+func TestAnUnavailableHostIsRetriedUntilThePortalCodeCannotBeAlive(t *testing.T) {
+	unavailable := gatewaytest.Injected{
+		Status: http.StatusServiceUnavailable, Body: gatewaytest.Envelope("platform_unavailable", true, nil),
+	}
+
+	t.Run("it recovers within the code's life", func(t *testing.T) {
+		double, config, pairer := pairRig(t)
+		double.OfferPairing(portalCode, "e2a7f46c-aa42-48ec-ae37-a63815f4a700", "acme", "smith", pairedKey)
+		double.Inject("pairing", unavailable, unavailable)
+		var waits []time.Duration
+		out := &syncBuffer{}
+		code := Pair(context.Background(), config, out, PairOptions{
+			Pairer: pairer, Code: portalCode,
+			Sleep: func(_ context.Context, d time.Duration) error { waits = append(waits, d); return nil },
+		})
+		if code != ExitOK {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+		if len(waits) < 2 || waits[1] <= waits[0] {
+			t.Fatalf("the retries did not back off: %v", waits)
+		}
+		if strings.Count(out.String(), "trying again") != 2 || strings.Contains(out.String(), portalCode) {
+			t.Fatalf("each retry is not announced, or the code was printed:\n%s", out.String())
+		}
+	})
+
+	t.Run("a claim the portal never finished ends saying to get a new command", func(t *testing.T) {
+		// The gateway kept the pairing (the claim's outcome was unknown), and the key
+		// never arrives: every poll is pending until the pairing expires.
+		out := &syncBuffer{}
+		clock := time.Now()
+		pending := func() (protocol.PairingPollResponse, error) {
+			return protocol.PairingPollResponse{Status: protocol.PairingPending, RetryAfterSeconds: 1}, nil
+		}
+		code := Pair(context.Background(), Config{Home: filepath.Join(t.TempDir(), "home")}, out, PairOptions{
+			Pairer: &scriptedPairer{polls: []func() (protocol.PairingPollResponse, error){pending, pending}},
+			Code:   portalCode,
+			Now:    func() time.Time { return clock },
+			Sleep:  func(context.Context, time.Duration) error { clock = clock.Add(time.Hour); return nil },
+		})
+		if code != ExitMiss || !strings.Contains(out.String(), "did not complete in time") {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+	})
+
+	t.Run("it gives up once the code has expired", func(t *testing.T) {
+		double, config, pairer := pairRig(t)
+		for range 20 {
+			double.Inject("pairing", unavailable)
+		}
+		clock := time.Now()
+		opens := 0
+		out := &syncBuffer{}
+		code := Pair(context.Background(), config, out, PairOptions{
+			Pairer: pairer, Code: portalCode,
+			Now:   func() time.Time { return clock },
+			Sleep: func(_ context.Context, d time.Duration) error { opens++; clock = clock.Add(d); return nil },
+		})
+		if code != ExitMiss {
+			t.Fatalf("exit %d, want ExitMiss:\n%s", code, out.String())
+		}
+		if opens < 2 || !strings.Contains(out.String(), "while the pairing code was valid") {
+			t.Fatalf("%d retries; output:\n%s", opens, out.String())
+		}
+		if _, err := os.Stat(filepath.Join(config.Home, AgentKeyFile)); !os.IsNotExist(err) {
+			t.Fatalf("a key file exists: %v", err)
+		}
+	})
+
+	t.Run("a refusal that retrying cannot help ends the run", func(t *testing.T) {
+		double, config, pairer := pairRig(t)
+		double.Inject("pairing", gatewaytest.Injected{
+			Status: http.StatusBadRequest, Body: gatewaytest.Envelope("invalid_request", false, nil),
+		})
+		out := &syncBuffer{}
+		if code := Pair(context.Background(), config, out, PairOptions{Pairer: pairer, Code: portalCode, Sleep: noSleep}); code != ExitMiss {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+	})
+
+	t.Run("stopped while waiting to retry", func(t *testing.T) {
+		double, config, pairer := pairRig(t)
+		double.Inject("pairing", unavailable)
+		out := &syncBuffer{}
+		code := Pair(context.Background(), config, out, PairOptions{
+			Pairer: pairer, Code: portalCode,
+			Sleep: func(context.Context, time.Duration) error { return context.Canceled },
+		})
+		if code != ExitMiss || !strings.Contains(out.String(), "stopped before") {
+			t.Fatalf("exit %d:\n%s", code, out.String())
+		}
+	})
+}
+
+func TestParsePairingCodeForgivesCaseAndNothingElse(t *testing.T) {
+	if code, err := ParsePairingCode(" k7qp-2xmd "); err != nil || code != portalCode {
+		t.Fatalf("ParsePairingCode = %q, %v", code, err)
+	}
+	for _, bad := range []string{"", "K7QP2XMD", "ABCD-0O1I", "K7QP-2XMD-X", "K7Q-P2XMD"} {
+		_, err := ParsePairingCode(bad)
+		if err == nil {
+			t.Fatalf("%q was accepted", bad)
+		}
+		if bad != "" && strings.Contains(err.Error(), bad) {
+			t.Fatalf("the error repeats the value: %v", err)
+		}
 	}
 }

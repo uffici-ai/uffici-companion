@@ -248,10 +248,17 @@ func TestTheDaemonAnswersARingThroughTheGateway(t *testing.T) {
 	}
 
 	waitUntil(t, "the close", func() bool { return len(double.Closes()) == 1 })
-	if acks := double.Acks(); len(acks) != 1 || acks[0] != ringID {
+	// 🔴 The ack is a doorbell FRAME the double reads on its own goroutine, and
+	// the close is an HTTP call it records on another: on a loaded runner the
+	// close was observed first and a one-shot read of the acks saw none (#2199,
+	// the companion's v0.2.1 release run). Each of the double's lists is waited
+	// for, never read once, before its contents are judged.
+	waitUntil(t, "the ack", func() bool { return len(double.Acks()) == 1 })
+	if acks := double.Acks(); acks[0] != ringID {
 		t.Fatalf("acked %v, want the ring on receipt", acks)
 	}
-	if posts := double.Posts(); len(posts) != 1 || posts[0].Text != pluginReply {
+	waitUntil(t, "the post", func() bool { return len(double.Posts()) == 1 })
+	if posts := double.Posts(); posts[0].Text != pluginReply {
 		t.Fatalf("posted %+v", posts)
 	}
 	if closes := double.Closes(); closes[0].Outcome != "answered" {
