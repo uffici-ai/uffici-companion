@@ -1,0 +1,7 @@
+{
+	"reason": "the identity block is required on every read (#2072)",
+	"value": {
+		"entries": [],
+		"bounded": false
+	}
+}

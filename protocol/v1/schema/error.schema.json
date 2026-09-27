@@ -1,0 +1,64 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/error.schema.json",
+	"title": "error",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"error": {
+			"type": "object",
+			"properties": {
+				"class": {
+					"type": "string",
+					"enum": [
+						"unauthorized",
+						"ticket_invalid",
+						"ticket_expired",
+						"ticket_audience",
+						"ticket_revoked",
+						"ticket_spent",
+						"rate_limited",
+						"invalid_request",
+						"conversation_required",
+						"conversation_mismatch",
+						"not_found",
+						"request_closed",
+						"not_rung",
+						"post_too_large",
+						"stale_cursor",
+						"invalid_budget",
+						"invalid_error_class",
+						"platform_unavailable",
+						"platform_error"
+					]
+				},
+				"instruction": {
+					"type": "string",
+					"minLength": 1
+				},
+				"retryable": {
+					"type": "boolean"
+				},
+				"details": {
+					"type": "object",
+					"propertyNames": {
+						"type": "string"
+					},
+					"additionalProperties": {
+						"type": "string",
+						"maxLength": 64
+					}
+				}
+			},
+			"required": [
+				"class",
+				"instruction",
+				"retryable"
+			],
+			"additionalProperties": false
+		}
+	},
+	"required": [
+		"error"
+	],
+	"additionalProperties": false
+}

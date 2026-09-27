@@ -1,0 +1,156 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/read-response.schema.json",
+	"title": "read-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"entries": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string",
+						"pattern": "^\\d+$"
+					},
+					"cursor": {
+						"type": "string",
+						"pattern": "^\\d+$"
+					},
+					"at": {
+						"type": "string",
+						"format": "date-time",
+						"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d(?:\\.\\d+)?)?(?:Z))$"
+					},
+					"author": {
+						"type": "object",
+						"properties": {
+							"type": {
+								"type": "string",
+								"enum": [
+									"user",
+									"agent",
+									"system",
+									"external"
+								]
+							},
+							"id": {
+								"type": "string",
+								"minLength": 1,
+								"maxLength": 64
+							},
+							"label": {
+								"type": "string",
+								"maxLength": 200
+							},
+							"handle": {
+								"type": "string",
+								"maxLength": 64
+							},
+							"self": {
+								"type": "boolean"
+							}
+						},
+						"required": [
+							"type",
+							"id",
+							"self"
+						],
+						"additionalProperties": false
+					},
+					"kind": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64
+					},
+					"text": {
+						"type": "string"
+					},
+					"attachments": {
+						"type": "array",
+						"items": {
+							"type": "object",
+							"properties": {
+								"id": {
+									"type": "string",
+									"minLength": 1,
+									"maxLength": 64
+								},
+								"name": {
+									"type": "string",
+									"maxLength": 255
+								},
+								"ref": {
+									"type": "string",
+									"maxLength": 512
+								}
+							},
+							"required": [
+								"id",
+								"name",
+								"ref"
+							],
+							"additionalProperties": false
+						}
+					}
+				},
+				"required": [
+					"id",
+					"cursor",
+					"at",
+					"author",
+					"kind",
+					"text",
+					"attachments"
+				]
+			}
+		},
+		"bounded": {
+			"type": "boolean"
+		},
+		"identity": {
+			"type": "object",
+			"properties": {
+				"lines": {
+					"minItems": 1,
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"disclosure": {
+					"type": "object",
+					"properties": {
+						"mode": {
+							"type": "string",
+							"enum": [
+								"labelled_ui",
+								"sent",
+								"off"
+							]
+						},
+						"text": {
+							"type": "string",
+							"minLength": 1
+						}
+					},
+					"required": [
+						"mode"
+					],
+					"additionalProperties": false
+				}
+			},
+			"required": [
+				"lines",
+				"disclosure"
+			],
+			"additionalProperties": false
+		}
+	},
+	"required": [
+		"entries",
+		"bounded",
+		"identity"
+	]
+}

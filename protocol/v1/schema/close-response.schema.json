@@ -1,0 +1,24 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/close-response.schema.json",
+	"title": "close-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"outcome": {
+			"type": "string",
+			"enum": [
+				"answered",
+				"empty",
+				"error",
+				"cancelled"
+			]
+		},
+		"committed": {
+			"type": "boolean"
+		}
+	},
+	"required": [
+		"outcome",
+		"committed"
+	]
+}

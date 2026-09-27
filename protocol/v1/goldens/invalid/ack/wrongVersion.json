@@ -1,0 +1,8 @@
+{
+	"reason": "v1 only",
+	"value": {
+		"type": "ack",
+		"v": 2,
+		"ringId": "0b9d2f4e-3c1a-4e8b-9f7d-5a6c8e0b1d23"
+	}
+}

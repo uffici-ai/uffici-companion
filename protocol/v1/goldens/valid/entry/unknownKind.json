@@ -1,0 +1,14 @@
+{
+	"id": "1045",
+	"cursor": "1045",
+	"at": "2026-09-23T10:00:00.000Z",
+	"author": {
+		"type": "user",
+		"id": "9a5b5e07-e417-40a6-bf4b-a96091ad27d7",
+		"label": "Mona Member",
+		"self": false
+	},
+	"kind": "summary",
+	"text": "@smith can you triage the printer card?",
+	"attachments": []
+}

@@ -1,0 +1,37 @@
+# The companion's own CI — a thin caller of this module's `check` entry.
+#
+# 🔴 It does NOT run in the platform repository: the workflow travels with the
+# subtree so the mirrored repository proves the module builds standalone, which
+# is the whole claim the `uffici/` fence makes. On the platform side the same
+# check runs through `pnpm check:uffici --only uffici-companion`, from the
+# `uffici-companion` job in that repository's `pr.yml`.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Pinned by SHA: this module's toolchain is what the check is a statement
+      # about, so a floating tag would move it without a diff of ours.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Installed by exact version rather than through a third-party action:
+      # one fewer supply-chain edge in the repository customers are told to
+      # read, and the version is the same one .golangci.yml is written for.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
+      - name: Check
+        run: go vet ./... && golangci-lint run && go test -coverpkg=./... -coverprofile=cover.out ./... && go run ./internal/covercheck -min 90 cover.out

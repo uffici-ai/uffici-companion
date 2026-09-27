@@ -1,0 +1,15 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/post-response.schema.json",
+	"title": "post-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"messageId": {
+			"type": "string",
+			"pattern": "^\\d+$"
+		}
+	},
+	"required": [
+		"messageId"
+	]
+}

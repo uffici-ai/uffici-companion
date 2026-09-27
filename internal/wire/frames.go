@@ -1,0 +1,322 @@
+// Package wire decodes the local wire's frames and validates every one of them
+// against the shipped JSON Schemas.
+//
+// 🔴 VALIDATION IS NOT OPTIONAL AND NEVER SKIPPED. The plugin is a third party's
+// process on the customer's machine, translating a harness we do not control; a
+// frame that does not match the contract is a protocol error, and the connection
+// closes with a reason from a closed vocabulary. Accepting a frame "that looked
+// close enough" is how a wire contract stops being one.
+//
+// The types here are hand-written rather than generated, and
+// `frames_parity_test.go` is what makes that safe: it reflects over every struct
+// and compares its JSON field set against the schema's properties, in both
+// directions, so a field added to a schema without a struct field (or the
+// reverse) fails. A generator was weighed and declined — `oneOf` and the
+// discriminated frame union generate poorly in Go, and a code generator is a
+// second toolchain dependency inside a child whose whole purpose is to need
+// none (see `.claude/rules/uffici.md`). The parity test is the guarantee either
+// approach would have rested on.
+package wire
+
+import "encoding/json"
+
+// Version is the only protocol version this decoder accepts.
+const Version = 1
+
+// TextMaxChars bounds `post.text` and every `Entry.text`.
+//
+// The platform refuses a whole conversations-plane body over 4 MiB
+// (`MAX_CHAT_BODY_BYTES`) and caps no single message below that, so this is the
+// wire's own bound rather than a mirror of one: 128 Ki characters is at most
+// 512 KiB of UTF-8 in the worst case, which leaves the envelope, the ids and
+// several posts comfortably inside the platform's ceiling.
+const TextMaxChars = 131_072
+
+// PostsPerRequestMax bounds how many `post` frames one request may carry.
+//
+// A turn that wants more than this is a runaway, not a long answer; the
+// companion closes the request rather than forwarding an unbounded stream to
+// the platform.
+const PostsPerRequestMax = 64
+
+// FrameMaxBytes bounds one text frame on the socket.
+const FrameMaxBytes = 1 << 20
+
+// MaxCallPayloadBytes bounds one `call` or `result` frame, encoded (#2028).
+//
+// JSON Schema cannot express a byte ceiling, so the decoder is the enforcement
+// and a golden pins it. It sits inside FrameMaxBytes on purpose: over THIS
+// bound a call is answered `malformed_payload` with its own callId and the
+// connection stays open — only past the frame bound does it close.
+const MaxCallPayloadBytes = 262_144
+
+// Direction says who RECEIVED a frame, which is the only thing that tells the
+// two `hello` shapes apart.
+type Direction string
+
+const (
+	// FromPlugin is a frame the companion received.
+	FromPlugin Direction = "from_plugin"
+	// FromCompanion is a frame the plugin received.
+	FromCompanion Direction = "from_companion"
+)
+
+// CloseReason is the closed vocabulary a protocol error closes the connection
+// with. There is no error FRAME: a violated contract ends the connection.
+type CloseReason string
+
+const (
+	// ReasonUnsupportedVersion — the frame's `v` is absent or not 1.
+	ReasonUnsupportedVersion CloseReason = "unsupported_version"
+	// ReasonHelloRequired — a frame arrived before `hello`.
+	ReasonHelloRequired CloseReason = "hello_required"
+	// ReasonUnauthorized — the token was absent or did not match.
+	ReasonUnauthorized CloseReason = "unauthorized"
+	// ReasonAlreadyAttached — a second plugin connection for one companion.
+	ReasonAlreadyAttached CloseReason = "already_attached"
+	// ReasonUnknownRequest — a frame naming a request that is not open.
+	ReasonUnknownRequest CloseReason = "unknown_request"
+	// ReasonWrongConnection — a frame for a request delivered on another connection.
+	ReasonWrongConnection CloseReason = "wrong_connection"
+	// ReasonMalformedFrame — the frame does not match its schema.
+	ReasonMalformedFrame CloseReason = "malformed_frame"
+	// ReasonShuttingDown — the companion is stopping.
+	ReasonShuttingDown CloseReason = "shutting_down"
+)
+
+// CloseReasons lists the vocabulary in the order `docs/local-wire.md` states it.
+//
+// 🔴 Only the first and the seventh are reachable from a single frame; the rest
+// are state-dependent and belong to the server that holds the connection
+// (#2011). The doc says which layer produces each, and the invalid goldens
+// cover exactly the two this package can earn.
+func CloseReasons() []CloseReason {
+	return []CloseReason{
+		ReasonUnsupportedVersion,
+		ReasonHelloRequired,
+		ReasonUnauthorized,
+		ReasonAlreadyAttached,
+		ReasonUnknownRequest,
+		ReasonWrongConnection,
+		ReasonMalformedFrame,
+		ReasonShuttingDown,
+	}
+}
+
+// FrameTypes lists every frame `type` value.
+func FrameTypes() []string {
+	return []string{"hello", "ready", "brief", "ack", "opener", "post", "done", "cancel", "call", "result"}
+}
+
+// CallErrorClass is a `result` error's class: transport concerns only, a closed
+// vocabulary (#2028). The control plane's own typed error rides inside
+// `error.upstream`, so a new platform error never needs a wire change.
+type CallErrorClass string
+
+const (
+	// ClassUnknownOp — the companion serves no such op. An answer, never a close.
+	ClassUnknownOp CallErrorClass = "unknown_op"
+	// ClassNotPermitted — the op exists and this call may not make it.
+	ClassNotPermitted CallErrorClass = "not_permitted"
+	// ClassTimedOut — the call's deadlineMs passed first.
+	ClassTimedOut CallErrorClass = "timed_out"
+	// ClassUpstreamFailed — the platform refused or failed, or its connection was lost.
+	ClassUpstreamFailed CallErrorClass = "upstream_failed"
+	// ClassMalformedPayload — the frame broke MaxCallPayloadBytes, or the op's input did not parse.
+	ClassMalformedPayload CallErrorClass = "malformed_payload"
+)
+
+// CallErrorClasses lists the vocabulary in the schema's order.
+func CallErrorClasses() []CallErrorClass {
+	return []CallErrorClass{ClassUnknownOp, ClassNotPermitted, ClassTimedOut, ClassUpstreamFailed, ClassMalformedPayload}
+}
+
+// CallDisposition is what an invalid call-shaped frame earns INSTEAD of a close
+// — the prefix of its invalid golden's file name, beside the close reasons.
+type CallDisposition string
+
+const (
+	// DispositionMalformedPayload — answered with a malformed_payload result.
+	DispositionMalformedPayload CallDisposition = "malformed_payload"
+	// DispositionUnknownCall — a result naming no call in flight; the plugin
+	// discards it. Stateful: it is schema-valid, and only the plugin can see it.
+	DispositionUnknownCall CallDisposition = "unknown_call"
+)
+
+// CallDispositions lists both.
+func CallDispositions() []CallDisposition {
+	return []CallDisposition{DispositionMalformedPayload, DispositionUnknownCall}
+}
+
+// Envelope is the part every frame carries.
+type Envelope struct {
+	V    int    `json:"v"`
+	Type string `json:"type"`
+}
+
+// Author is who wrote an entry.
+type Author struct {
+	Type   string `json:"type"`
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Handle string `json:"handle,omitempty"`
+	Self   bool   `json:"self"`
+}
+
+// Attachment is a file carried by an entry, by reference.
+type Attachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Ref  string `json:"ref"`
+}
+
+// Entry is one transcript entry, mapped one to one from the platform's read.
+type Entry struct {
+	ID          string       `json:"id"`
+	Cursor      string       `json:"cursor"`
+	At          string       `json:"at"`
+	Author      Author       `json:"author"`
+	Kind        string       `json:"kind"`
+	Text        string       `json:"text"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+}
+
+// PluginHello is the plugin's opening frame.
+//
+// 🔴 `Token` is SECRET-CLASS. It must never reach a log line, an error string
+// or a whole-frame dump, on either side. `String()` below exists so that a
+// careless `%v` cannot print it.
+type PluginHello struct {
+	Envelope
+	Harness             string `json:"harness"`
+	HarnessVersion      string `json:"harnessVersion"`
+	PluginVersion       string `json:"pluginVersion"`
+	Token               string `json:"token"`
+	ContextBudgetTokens int    `json:"contextBudgetTokens"`
+}
+
+// String redacts the token so the struct is safe to format.
+func (h PluginHello) String() string {
+	return "PluginHello{harness=" + h.Harness + " harnessVersion=" + h.HarnessVersion +
+		" pluginVersion=" + h.PluginVersion + " token=<redacted> }"
+}
+
+// CompanionHello is the companion's answer.
+type CompanionHello struct {
+	Envelope
+	CompanionVersion string `json:"companionVersion"`
+	AgentSlug        string `json:"agentSlug,omitempty"`
+	OrgSlug          string `json:"orgSlug,omitempty"`
+}
+
+// Cause is the recorded human cause a request answers.
+type Cause struct {
+	EntryID  string `json:"entryId"`
+	AuthorID string `json:"authorId"`
+}
+
+// Brief opens one request on one conversation.
+type Brief struct {
+	Envelope
+	RequestID      string  `json:"requestId"`
+	ConversationID string  `json:"conversationId"`
+	Reason         string  `json:"reason"`
+	Cause          Cause   `json:"cause"`
+	Deadline       string  `json:"deadline"`
+	SinceCursor    *string `json:"sinceCursor"`
+	ThroughCursor  string  `json:"throughCursor"`
+	ResetSession   bool    `json:"resetSession"`
+	Delta          []Entry `json:"delta"`
+}
+
+// Ack names the outcome and the harness's session state.
+type Ack struct {
+	Envelope
+	RequestID string `json:"requestId"`
+	Outcome   string `json:"outcome"`
+	Session   string `json:"session"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// Ready is the plugin saying its HARNESS can answer — which is not the same as
+// the plugin being connected.
+//
+// 🔴 The gap between the two is real, and it is where the first turn of every
+// run was being lost: a harness connects its platform adapters while it is
+// still starting (Hermes does so "before the gateway reaches running"), and an
+// inbound message arriving before its own message handler is installed is
+// discarded without a trace. `hello` means "I am here"; this means "send me
+// work". The companion HOLDS every ring until it arrives.
+type Ready struct {
+	Envelope
+	// HarnessVersion is often unknown at hello time, because the harness is
+	// still starting when the plugin attaches. It is known by now.
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+}
+
+// Opener carries the verbatim recent tail, after a fresh ack.
+type Opener struct {
+	Envelope
+	RequestID string  `json:"requestId"`
+	Entries   []Entry `json:"entries"`
+}
+
+// Post is one outbound message; every post means "more coming".
+type Post struct {
+	Envelope
+	RequestID string `json:"requestId"`
+	Text      string `json:"text"`
+}
+
+// Done closes a request.
+type Done struct {
+	Envelope
+	RequestID  string `json:"requestId"`
+	Outcome    string `json:"outcome"`
+	ErrorClass string `json:"errorClass,omitempty"`
+}
+
+// Cancel withdraws an open request.
+type Cancel struct {
+	Envelope
+	RequestID string `json:"requestId"`
+	Reason    string `json:"reason"`
+	// Error is present exactly when Reason is `failed` (#2077): the platform's
+	// class and the instruction the agent relays.
+	Error *CancelError `json:"error,omitempty"`
+}
+
+// CancelError is decision 32's two halves, relayed on a `failed` cancel.
+type CancelError struct {
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
+}
+
+// Call is one platform operation, plugin → companion (#2028).
+//
+// 🔴 `Payload` is transcript content or memory rows. It never reaches a log
+// line on either side: log Op, CallID, byte counts and the error class.
+type Call struct {
+	Envelope
+	CallID     string          `json:"callId"`
+	Op         string          `json:"op"`
+	DeadlineMs int             `json:"deadlineMs"`
+	Payload    json.RawMessage `json:"payload,omitempty"`
+}
+
+// Result is the one answer to a call, companion → plugin: exactly one of
+// Payload or Error.
+type Result struct {
+	Envelope
+	CallID  string          `json:"callId"`
+	Payload json.RawMessage `json:"payload,omitempty"`
+	Error   *ResultError    `json:"error,omitempty"`
+}
+
+// ResultError is a failed call's class, the sentence the agent relays, and the
+// control plane's own error when there is one.
+type ResultError struct {
+	Class       string          `json:"class"`
+	Instruction string          `json:"instruction"`
+	Upstream    json.RawMessage `json:"upstream,omitempty"`
+}

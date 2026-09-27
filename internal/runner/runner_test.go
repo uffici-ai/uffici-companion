@@ -1,0 +1,523 @@
+package runner
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/uffici-ai/uffici-companion/internal/contracts"
+	"github.com/uffici-ai/uffici-companion/internal/infra/fixture"
+	"github.com/uffici-ai/uffici-companion/internal/requests"
+)
+
+// A script with one conversation and one member entry to answer.
+func script(steps []fixture.Step, assertions fixture.Assertions) *fixture.Script {
+	return &fixture.Script{
+		V: 1,
+		Conversations: map[string]*fixture.Conversation{
+			"invoices": {
+				ID: "conv_1", Offset: "c0001",
+				Entries: []fixture.ScriptEntry{
+					{ID: "e1", Cursor: "c0001", Kind: "message", Text: "first",
+						Author: fixture.ScriptAuthor{Type: "member", ID: "m1", Label: "Ana"}},
+					{ID: "e2", Cursor: "c0002", Kind: "message", Text: "@smith please look",
+						Author: fixture.ScriptAuthor{Type: "member", ID: "m1", Label: "Ana"}},
+				},
+			},
+		},
+		Steps:  steps,
+		Assert: assertions,
+	}
+}
+
+// rig wires a runner to a fixture host and a manager, with a plugin that
+// answers automatically — standing in for a harness.
+type rig struct {
+	runner  *Runner
+	host    *fixture.Host
+	manager *requests.Manager
+}
+
+// autoPlugin acks, posts and closes as soon as it receives a brief.
+type autoPlugin struct {
+	manager *requests.Manager
+	session requests.Session
+	answer  string
+	silent  bool
+	// noClose posts and then stops, leaving the request open for a cancel.
+	noClose bool
+}
+
+func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error {
+	go func() {
+		_ = a.manager.OnAck(ctx, "conn-1", brief.RequestID, requests.AckAccepted, a.session)
+		if a.silent {
+			return
+		}
+		_ = a.manager.OnPost(ctx, "conn-1", brief.RequestID, a.answer)
+		if a.noClose {
+			return
+		}
+		_ = a.manager.OnDone(ctx, "conn-1", brief.RequestID, contracts.OutcomeAnswered, "")
+	}()
+	return nil
+}
+
+func (a *autoPlugin) SendOpener(context.Context, string, []contracts.Entry) error { return nil }
+func (a *autoPlugin) SendCancel(context.Context, string, contracts.CancelReason) error {
+	return nil
+}
+func (a *autoPlugin) SendFailure(context.Context, string, string, string) error { return nil }
+
+func newRig(t *testing.T, s *fixture.Script, plugin *autoPlugin) *rig {
+	t.Helper()
+	host, err := fixture.New(s)
+	if err != nil {
+		t.Fatalf("fixture.New: %v", err)
+	}
+	runner, err := New(s, host, nil)
+	if err != nil {
+		t.Fatalf("runner.New: %v", err)
+	}
+	manager := requests.New(host, requests.Options{Observer: runner.Observer()})
+	plugin.manager = manager
+	manager.Attach("conn-1", plugin, 48000)
+
+	ctx := context.Background()
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing:       func(ring contracts.Ring) { _ = manager.OnRing(ctx, ring) },
+		OnCancel:     func(id string, r contracts.CancelReason) { _ = manager.OnPlatformCancel(ctx, id, r) },
+		OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("OpenDoorbell: %v", err)
+	}
+	t.Cleanup(func() { _ = claim.Close() })
+	return &rig{runner: runner, host: host, manager: manager}
+}
+
+func TestAWholeScriptPasses(t *testing.T) {
+	s := script([]fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectAck", Outcome: "accepted", Session: "fresh", WithinMs: 1000},
+		{Step: "expectOpener", WithinMs: 1000},
+		{Step: "expectPost", Matcher: "contains", Value: "filed", WithinMs: 1000},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "expectOffset", Conversation: "invoices", Cursor: "c0002"},
+	}, fixture.Assertions{RingsDelivered: 1, OpenersSent: 1, Posts: 1})
+
+	r := newRig(t, s, &autoPlugin{session: requests.SessionFresh, answer: "the invoice is filed"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("the script failed: %v", result.Unmet)
+	}
+}
+
+// 🔴 THE FLOOR. A script that rings nothing meets every expectation vacuously.
+// Without the second half of OK(), `--once` would exit 0 having proved only
+// that the daemon starts.
+func TestAScriptThatRingsNothingIsNotAPass(t *testing.T) {
+	result := Result{Unmet: nil, RingsDelivered: 0}
+	if result.OK() {
+		t.Fatal("a run with no ring reported OK — every expectation held over nothing at all")
+	}
+	if !(Result{RingsDelivered: 1}).OK() {
+		t.Fatal("a run with a ring and no misses must pass")
+	}
+	if (Result{RingsDelivered: 1, Unmet: []string{"a miss"}}).OK() {
+		t.Fatal("a run with an unmet expectation reported OK")
+	}
+}
+
+// 🔴 The resumed-session rule, as a SCRIPT step: `expectNoOpener` is what makes
+// the free local hop checkable from a fixture rather than only from a unit test.
+func TestExpectNoOpenerCatchesAResumedSessionPayingForOne(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectAck", Outcome: "accepted", Session: "resumed", WithinMs: 1000},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "expectNoOpener"},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionResumed, answer: "done"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("a resumed session should send no opener: %v", result.Unmet)
+	}
+	if result.Counts.Openers != 0 {
+		t.Fatalf("%d opener(s) for a resumed session", result.Counts.Openers)
+	}
+}
+
+func TestAnUnmetExpectationIsReportedWithItsStep(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		// The plugin never posts, so this must miss.
+		{Step: "expectPost", Matcher: "contains", Value: "never happens", WithinMs: 100},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{}), &autoPlugin{session: requests.SessionFresh, silent: true})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("a script whose post never arrived reported OK")
+	}
+	if len(result.Unmet) != 1 || !strings.Contains(result.Unmet[0], "expectPost") {
+		t.Fatalf("the miss does not name its step: %v", result.Unmet)
+	}
+}
+
+// The terminal tally is a second, independent check: the steps can all pass
+// while the run did more than the script intended.
+func TestTheTerminalTallyCatchesAnUnexpectedCount(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+	}
+	// The script claims two rings; only one is played.
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 2}),
+		&autoPlugin{session: requests.SessionFresh, answer: "done"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("the tally did not notice one ring where two were asserted")
+	}
+	if !strings.Contains(strings.Join(result.Unmet, " "), "ring(s) delivered") {
+		t.Fatalf("the tally's miss is not about rings: %v", result.Unmet)
+	}
+}
+
+func TestOffsetExpectationsReadTheStore(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		// Wrong on purpose: the offset moved to c0002.
+		{Step: "expectOffset", Conversation: "invoices", Cursor: "c0001"},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, answer: "done"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("an offset expectation that does not hold reported OK")
+	}
+	if !strings.Contains(strings.Join(result.Unmet, " "), "the offset is") {
+		t.Fatalf("the miss does not describe the offset: %v", result.Unmet)
+	}
+}
+
+func TestAppendEntriesReachesTheNextDelta(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "appendEntries", Conversation: "invoices", Entries: []fixture.ScriptEntry{
+			{ID: "e3", Cursor: "c0003", Kind: "message", Text: "and another",
+				Author: fixture.ScriptAuthor{Type: "member", ID: "m1", Label: "Ana"}},
+		}},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0003"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "expectOffset", Conversation: "invoices", Cursor: "c0003"},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, answer: "done"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("appended entries did not reach the turn: %v", result.Unmet)
+	}
+}
+
+func TestStepsNeedingAPluginSaySoWhenThereIsNone(t *testing.T) {
+	for _, step := range []fixture.Step{{Step: "disconnectPlugin"}, {Step: "secondConnection"}} {
+		steps := []fixture.Step{
+			{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+			step,
+		}
+		r := newRig(t, script(steps, fixture.Assertions{}), &autoPlugin{session: requests.SessionFresh, answer: "x"})
+		result, err := r.runner.Run(context.Background())
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if result.OK() {
+			t.Fatalf("%s reported OK with no plugin control — it would silently do nothing", step.Step)
+		}
+	}
+}
+
+func TestNewRefusesAnIncompleteRunner(t *testing.T) {
+	if _, err := New(nil, nil, nil); err == nil {
+		t.Fatal("a runner was built with no script and no host")
+	}
+}
+
+// A cancel injected after the first post is how a script exercises "a person
+// pressed stop mid-turn" — the oversight control the platform depends on.
+func TestInjectCancelAfterTheFirstPostWithdrawsTheRequest(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectPost", Matcher: "nonEmpty", WithinMs: 1000},
+		{Step: "injectCancel", Reason: "stopped", AfterFirstPost: true, WithinMs: 1000},
+		// 🔴 The offset must NOT move: a stopped turn answered nothing, so its
+		// entries have to stay in range for whoever answers next.
+		{Step: "expectOffset", Conversation: "invoices", Cursor: "c0001"},
+	}
+	// A plugin that posts but never closes, so the cancel has something to stop.
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, answer: "working on it", noClose: true})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("the cancel scenario failed: %v", result.Unmet)
+	}
+	if result.Counts.Cancels["stopped"] != 1 {
+		t.Fatalf("cancels: %v, want one stopped", result.Counts.Cancels)
+	}
+}
+
+// expectNoPost is a negative over a window: it must pass when the plugin stays
+// quiet and fail when it does not.
+func TestExpectNoPostBothWays(t *testing.T) {
+	quiet := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectNoPost", ForMs: 50},
+	}
+	r := newRig(t, script(quiet, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, silent: true})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("a silent plugin should satisfy expectNoPost: %v", result.Unmet)
+	}
+
+	noisy := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectNoPost", ForMs: 200},
+	}
+	r2 := newRig(t, script(noisy, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, answer: "but I did post"})
+	result2, err := r2.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result2.OK() {
+		t.Fatal("a post arrived and expectNoPost still passed")
+	}
+}
+
+// A `wait` step must actually wait, or timing-sensitive scripts are fiction.
+func TestWaitTakesTime(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "wait", Ms: 60},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, answer: "done"})
+	start := time.Now()
+	if _, err := r.runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed < 50*time.Millisecond {
+		t.Fatalf("the script finished in %v, so `wait` did not wait", elapsed)
+	}
+}
+
+// A cancel with nothing open must be reported, not silently ignored.
+func TestInjectCancelWithNothingOpenIsAMiss(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "injectCancel", Reason: "stopped"},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{}),
+		&autoPlugin{session: requests.SessionFresh, answer: "done"})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("a cancel with no open request passed silently")
+	}
+}
+
+// fakePlugin stands in for the daemon's control over the attached plugin.
+type fakePlugin struct {
+	disconnects  int
+	secondReason string
+	secondErr    error
+	onDisconnect func()
+	// detached makes Attached() report false — a plugin that never turns up.
+	detached bool
+}
+
+func (f *fakePlugin) Disconnect() error {
+	f.disconnects++
+	if f.onDisconnect != nil {
+		f.onDisconnect()
+	}
+	return nil
+}
+
+func (f *fakePlugin) DialSecond(context.Context) (string, error) {
+	return f.secondReason, f.secondErr
+}
+
+func (f *fakePlugin) Attached() bool { return !f.detached }
+
+// 🔴 Acceptance criterion: a plugin that goes away and comes back gets the
+// brief AGAIN. Without redelivery a harness restart silently drops whatever was
+// in flight, and the platform waits on a request nobody is answering.
+func TestDisconnectAndRedelivery(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "disconnectPlugin"},
+		{Step: "expectRedelivery", WithinMs: 1000},
+	}
+	s := script(steps, fixture.Assertions{RingsDelivered: 1})
+	host, err := fixture.New(s)
+	if err != nil {
+		t.Fatalf("fixture.New: %v", err)
+	}
+	plugin := &fakePlugin{}
+	runner, err := New(s, host, plugin)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	manager := requests.New(host, requests.Options{Observer: runner.Observer()})
+	sink := &autoPlugin{manager: manager, session: requests.SessionFresh, silent: true}
+	manager.Attach("conn-1", sink, 48000)
+	// Disconnecting detaches and then redelivers, which is what the daemon does
+	// when a plugin reconnects.
+	plugin.onDisconnect = func() {
+		manager.Detach("conn-1")
+		manager.Attach("conn-2", sink, 48000)
+		_ = manager.RedeliverOpen(context.Background())
+	}
+
+	ctx := context.Background()
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing:       func(ring contracts.Ring) { _ = manager.OnRing(ctx, ring) },
+		OnCancel:     func(id string, r contracts.CancelReason) { _ = manager.OnPlatformCancel(ctx, id, r) },
+		OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("OpenDoorbell: %v", err)
+	}
+	t.Cleanup(func() { _ = claim.Close() })
+
+	result, err := runner.Run(ctx)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !result.OK() {
+		t.Fatalf("the reconnect scenario failed: %v", result.Unmet)
+	}
+	if plugin.disconnects != 1 {
+		t.Fatalf("%d disconnect(s), want 1", plugin.disconnects)
+	}
+	if result.Counts.Redeliveries != 1 {
+		t.Fatalf("%d redelivery/ies, want 1", result.Counts.Redeliveries)
+	}
+}
+
+// 🔴 Acceptance criterion: a second plugin is refused with `already_attached`.
+// Two plugins answering one agent's briefs would post twice per turn.
+func TestSecondConnectionMustBeRefused(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "secondConnection"},
+	}
+	for name, plugin := range map[string]*fakePlugin{
+		"refused as it must be": {secondReason: "already_attached"},
+		"wrongly admitted":      {secondReason: ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script(steps, fixture.Assertions{RingsDelivered: 1})
+			host, err := fixture.New(s)
+			if err != nil {
+				t.Fatalf("fixture.New: %v", err)
+			}
+			runner, err := New(s, host, plugin)
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			manager := requests.New(host, requests.Options{Observer: runner.Observer()})
+			manager.Attach("conn-1", &autoPlugin{manager: manager, session: requests.SessionFresh, silent: true}, 48000)
+
+			ctx := context.Background()
+			claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+				OnRing:       func(ring contracts.Ring) { _ = manager.OnRing(ctx, ring) },
+				OnCancel:     func(string, contracts.CancelReason) {},
+				OnDisconnect: func(string) {},
+			})
+			if err != nil {
+				t.Fatalf("OpenDoorbell: %v", err)
+			}
+			t.Cleanup(func() { _ = claim.Close() })
+
+			result, err := runner.Run(ctx)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			refused := plugin.secondReason == "already_attached"
+			if result.OK() != refused {
+				t.Fatalf("a second connection closed with %q gave OK=%v; the step must pass only on already_attached",
+					plugin.secondReason, result.OK())
+			}
+		})
+	}
+}
+
+// 🔴 A run does not start against nobody. Before this, the first step raced the
+// plugin's own connection — and `secondConnection` does not merely race it, it
+// TAKES the single-plugin claim, so the real plugin is refused and both sides
+// wait for each other until the outer timeout, with a log that says only
+// "already_attached" and nothing about why.
+func TestARunWaitsForAPluginAndSaysSoWhenNoneComes(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "secondConnection"},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+	}
+	s := script(steps, fixture.Assertions{RingsDelivered: 1})
+	host, err := fixture.New(s)
+	if err != nil {
+		t.Fatalf("fixture.New: %v", err)
+	}
+	plugin := &fakePlugin{detached: true, secondReason: "already_attached"}
+	runner, err := New(s, host, plugin)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	runner.attachWait = 50 * time.Millisecond
+
+	result, err := runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("a run with no plugin reported OK, so a CI job would call it a pass")
+	}
+	if len(result.Unmet) != 1 || !strings.Contains(result.Unmet[0], "no plugin attached") {
+		t.Fatalf("the misses are %v, want exactly one naming the missing plugin", result.Unmet)
+	}
+	// 🔴 And no step ran: a second connection dialled here would have taken the
+	// claim the absent plugin still needs.
+	if result.RingsDelivered != 0 {
+		t.Fatalf("%d rings were delivered, want 0 — the script must not start", result.RingsDelivered)
+	}
+}

@@ -1,0 +1,13 @@
+{
+	"entries": [],
+	"bounded": false,
+	"identity": {
+		"lines": [
+			"You are an AI agent, not a human.",
+			"Never present yourself as a human."
+		],
+		"disclosure": {
+			"mode": "labelled_ui"
+		}
+	}
+}

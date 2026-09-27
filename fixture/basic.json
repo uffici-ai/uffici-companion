@@ -1,0 +1,245 @@
+{
+  "v": 1,
+  "conversations": {
+    "invoices": {
+      "id": "conv_invoices",
+      "offset": "c0002",
+      "entries": [
+        {
+          "id": "e1",
+          "cursor": "c0001",
+          "at": "2026-09-17T14:01:00Z",
+          "kind": "message",
+          "text": "Can you check the Lisbon invoice?",
+          "author": {
+            "type": "member",
+            "id": "m1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        },
+        {
+          "id": "e2",
+          "cursor": "c0002",
+          "at": "2026-09-17T14:02:00Z",
+          "kind": "message",
+          "text": "Looking at it now.",
+          "author": {
+            "type": "agent",
+            "id": "a1",
+            "label": "Smith",
+            "handle": "@smith",
+            "self": true
+          }
+        },
+        {
+          "id": "e3",
+          "cursor": "c0003",
+          "at": "2026-09-17T14:03:00Z",
+          "kind": "message",
+          "text": "Thanks — is it approved?",
+          "author": {
+            "type": "member",
+            "id": "m1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    "onboarding": {
+      "id": "conv_onboarding",
+      "offset": "c0001",
+      "entries": [
+        {
+          "id": "e1",
+          "cursor": "c0001",
+          "at": "2026-09-17T14:01:00Z",
+          "kind": "message",
+          "text": "Who is handling the new starter?",
+          "author": {
+            "type": "member",
+            "id": "m1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        },
+        {
+          "id": "e2",
+          "cursor": "c0002",
+          "at": "2026-09-17T14:02:00Z",
+          "kind": "message",
+          "text": "I raised the checklist yesterday.",
+          "author": {
+            "type": "agent",
+            "id": "a1",
+            "label": "Smith",
+            "handle": "@smith",
+            "self": true
+          }
+        },
+        {
+          "id": "e3",
+          "cursor": "c0003",
+          "at": "2026-09-17T14:03:00Z",
+          "kind": "message",
+          "text": "I have the laptop order in hand.",
+          "author": {
+            "type": "agent",
+            "id": "a2",
+            "label": "Archer",
+            "handle": "@archer",
+            "self": false
+          }
+        },
+        {
+          "id": "e4",
+          "cursor": "c0004",
+          "at": "2026-09-17T14:04:00Z",
+          "kind": "message",
+          "text": "@smith can you confirm the checklist is done?",
+          "author": {
+            "type": "member",
+            "id": "m1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "e3",
+      "throughCursor": "c0003",
+      "deadlineMs": 10000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectClose",
+      "outcome": "answered",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectOffset",
+      "conversation": "invoices",
+      "cursor": "c0003"
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "invoices",
+      "entries": [
+        {
+          "id": "e5",
+          "cursor": "c0005",
+          "at": "2026-09-17T14:05:00Z",
+          "kind": "message",
+          "text": "One more thing — was it filed?",
+          "author": {
+            "type": "member",
+            "id": "m1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "e5",
+      "throughCursor": "c0005",
+      "deadlineMs": 10000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectNoOpener"
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectClose",
+      "outcome": "answered",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectOffset",
+      "conversation": "invoices",
+      "cursor": "c0005"
+    },
+    {
+      "step": "ring",
+      "conversation": "onboarding",
+      "reason": "mentioned",
+      "causeEntry": "e4",
+      "throughCursor": "c0004",
+      "deadlineMs": 10000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectClose",
+      "outcome": "answered",
+      "withinMs": 3000
+    },
+    {
+      "step": "expectOffset",
+      "conversation": "onboarding",
+      "cursor": "c0004"
+    }
+  ],
+  "assert": {
+    "ringsDelivered": 3,
+    "acks": {
+      "accepted": 3
+    },
+    "sessions": {
+      "fresh": 2,
+      "resumed": 1
+    },
+    "openersSent": 2,
+    "posts": 3,
+    "closes": {
+      "answered": 3
+    }
+  }
+}

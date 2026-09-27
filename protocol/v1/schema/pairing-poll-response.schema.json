@@ -1,0 +1,91 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/pairing-poll-response.schema.json",
+	"title": "pairing-poll-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"oneOf": [
+		{
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"const": "pending"
+				},
+				"retryAfterSeconds": {
+					"type": "integer",
+					"minimum": 1,
+					"maximum": 60
+				}
+			},
+			"required": [
+				"status",
+				"retryAfterSeconds"
+			]
+		},
+		{
+			"type": "object",
+			"properties": {
+				"status": {
+					"type": "string",
+					"const": "paired"
+				},
+				"agentId": {
+					"type": "string",
+					"format": "uuid",
+					"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+				},
+				"orgSlug": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				},
+				"agentSlug": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				},
+				"keyLast4": {
+					"type": "string",
+					"minLength": 4,
+					"maxLength": 4
+				},
+				"sealed": {
+					"type": "object",
+					"properties": {
+						"alg": {
+							"type": "string",
+							"const": "x25519-hkdf-sha256-aes-256-gcm"
+						},
+						"ephemeralPublicKey": {
+							"type": "string",
+							"pattern": "^[A-Za-z0-9_-]{43}$"
+						},
+						"nonce": {
+							"type": "string",
+							"pattern": "^[A-Za-z0-9_-]{16}$"
+						},
+						"ciphertext": {
+							"type": "string",
+							"minLength": 22,
+							"maxLength": 512,
+							"pattern": "^[A-Za-z0-9_-]+$"
+						}
+					},
+					"required": [
+						"alg",
+						"ephemeralPublicKey",
+						"nonce",
+						"ciphertext"
+					]
+				}
+			},
+			"required": [
+				"status",
+				"agentId",
+				"orgSlug",
+				"agentSlug",
+				"keyLast4",
+				"sealed"
+			]
+		}
+	]
+}

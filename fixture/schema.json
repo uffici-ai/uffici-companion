@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/companion/fixture/v1/script.schema.json",
+  "title": "Uffici companion fixture script, v1",
+  "description": "The scripted agents host's format. It is the ONE scripted-host format in the product: the smoke's fixture plugin plays the same file, in another language, which is why the structure is described here rather than only in the companion's Go validator. Cross-references a schema cannot express — a cause entry naming an entry that exists, a through cursor inside the conversation — are checked at load by the companion.",
+  "type": "object",
+  "required": ["v", "conversations", "steps", "assert"],
+  "additionalProperties": false,
+  "properties": {
+    "v": { "const": 1 },
+    "conversations": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "$ref": "#/$defs/conversation" }
+    },
+    "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
+    "assert": { "$ref": "#/$defs/assertions" }
+  },
+  "$defs": {
+    "conversation": {
+      "type": "object",
+      "required": ["id", "offset", "entries"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "offset": {
+          "type": "string",
+          "description": "The companion's agent's committed position, the exclusive lower bound of the next delta. Advances only on an answered or empty close. EMPTY is legitimate and means nothing has been read yet, so the first delta covers the whole transcript."
+        },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "required": ["id", "cursor", "at", "kind", "text", "author"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "cursor": { "type": "string", "minLength": 1 },
+        "at": { "type": "string", "format": "date-time" },
+        "kind": { "type": "string", "minLength": 1 },
+        "text": { "type": "string" },
+        "author": { "$ref": "#/$defs/author" },
+        "attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } }
+      }
+    },
+    "author": {
+      "type": "object",
+      "required": ["type", "id", "label", "self"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "enum": ["member", "agent", "system"] },
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string" },
+        "handle": { "type": "string" },
+        "self": {
+          "type": "boolean",
+          "description": "True for the companion's OWN agent. Its entries are excluded from a delta and included in an opener."
+        }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "required": ["id", "name", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string" },
+        "ref": { "type": "string" }
+      }
+    },
+    "step": {
+      "type": "object",
+      "required": ["step"],
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "enum": [
+            "ring",
+            "appendEntries",
+            "expectAck",
+            "expectOpener",
+            "expectNoOpener",
+            "expectPost",
+            "expectNoPost",
+            "expectClose",
+            "expectOffset",
+            "expectRedelivery",
+            "injectCancel",
+            "disconnectPlugin",
+            "secondConnection",
+            "wait"
+          ]
+        },
+        "conversation": { "type": "string" },
+        "reason": { "type": "string" },
+        "causeEntry": { "type": "string" },
+        "deadlineMs": { "type": "integer", "minimum": 0 },
+        "throughCursor": { "type": "string" },
+        "resetSession": { "type": "boolean" },
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+        "outcome": { "type": "string" },
+        "session": { "enum": ["fresh", "resumed"] },
+        "matcher": { "enum": ["nonEmpty", "contains", "matches"] },
+        "value": { "type": "string" },
+        "cursor": { "type": "string" },
+        "afterFirstPost": { "type": "boolean" },
+        "afterMs": { "type": "integer", "minimum": 0 },
+        "withinMs": { "type": "integer", "minimum": 0 },
+        "forMs": { "type": "integer", "minimum": 0 },
+        "ms": { "type": "integer", "minimum": 0 },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Free prose for the reader, ignored by the runner. A script is a description of a scenario, and the reason a step expects what it expects is often the most useful thing in the file — JSON has no comments, so this is where it goes."
+        }
+      }
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The terminal tally. Counts, never a transcript — and ringsDelivered has a floor, because a run that asserted only 'nothing failed' would pass over a script whose steps never fired.",
+      "required": ["ringsDelivered"],
+      "properties": {
+        "ringsDelivered": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "🔴 The FLOOR (at least one) is the companion's check, not this schema's: the split is that the schema says what shape a script has and the loader says what it MEANS. Present and an integer is the shape; 'a script that asserts nothing is not a script' is the meaning, and the loader's refusal says so in words."
+        },
+        "acks": { "$ref": "#/$defs/counts" },
+        "sessions": { "$ref": "#/$defs/counts" },
+        "openersSent": { "type": "integer", "minimum": 0 },
+        "posts": { "type": "integer", "minimum": 0 },
+        "closes": { "$ref": "#/$defs/counts" },
+        "cancels": { "$ref": "#/$defs/counts" },
+        "note": {
+          "type": "string",
+          "maxLength": 2000,
+          "description": "Free prose for the reader, ignored by the runner. Why a tally is what it is — a count that looks wrong until somebody explains it costs the next reader an hour."
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    }
+  }
+}

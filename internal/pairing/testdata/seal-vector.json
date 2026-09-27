@@ -1,0 +1,18 @@
+{
+	"note": "A fixed test vector for the pairing seal (#1966): the portal's sealForCompanion must produce `sealed` from these inputs, and the companion must open it to `plaintext` — and only with this exact binding. Test-only keys.",
+	"recipientPrivateKey": "ERERERERERERERERERERERERERERERERERERERERERE",
+	"recipientPublicKey": "e06Qm75__kTEZaIgA31gjuNYl9Me-XLwf3SJLLD3PxM",
+	"binding": {
+		"pairingId": "3a2b1c0d-9e8f-4a7b-8c6d-5e4f3a2b1c0d",
+		"agentId": "e2a7f46c-aa42-48ec-ae37-a63815f4a700",
+		"orgSlug": "acme",
+		"agentSlug": "smith"
+	},
+	"plaintext": "uffici_test_pairing_vector_key_0000000000000000",
+	"sealed": {
+		"alg": "x25519-hkdf-sha256-aes-256-gcm",
+		"ephemeralPublicKey": "D6poTtKIZ7l_Smot7l34zpdOdrcBjj8iocTPJnhXDyA",
+		"nonce": "MzMzMzMzMzMzMzMz",
+		"ciphertext": "ZYQ8ZKu9S45q_Ybc0gakOUVhaPLs3MD4mVpfBo1VQDctxWJbBSOKqMJIM2iu_FyT94Qq_BBups6Qefu4BMLQ"
+	}
+}

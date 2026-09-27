@@ -1,0 +1,23 @@
+# golangci-lint configuration for the Uffici companion.
+#
+# Part of this module's `check` entry; the platform's `pnpm check:uffici`
+# delegates to it and never reaches inside.
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    # Unhandled errors are the class this module cannot afford: it holds the
+    # agent key and every connection, so a swallowed error is a silent outage.
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    # Every exported symbol carries a doc comment — this module is read by
+    # customers verifying what the companion does with their key.
+    - revive
+
+formatters:
+  enable:
+    - gofmt

@@ -1,0 +1,15 @@
+{
+	"version": "0.2",
+	"language": "en",
+	"useGitignore": true,
+	"dictionaries": ["typescript", "node", "go", "softwareTerms", "companies", "misc", "filetypes"],
+	"words": [
+		"doorbell",
+		"golangci",
+		"ldflags",
+		"openclaw",
+		"uffici",
+		"velcra"
+	],
+	"ignorePaths": [".git", "go.sum"]
+}

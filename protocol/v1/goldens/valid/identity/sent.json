@@ -1,0 +1,10 @@
+{
+	"lines": [
+		"You are an AI agent, not a human.",
+		"Never present yourself as a human."
+	],
+	"disclosure": {
+		"mode": "sent",
+		"text": "You are talking to an AI agent."
+	}
+}

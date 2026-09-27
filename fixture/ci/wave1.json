@@ -1,0 +1,379 @@
+{
+  "v": 1,
+  "conversations": {
+    "invoices": {
+      "id": "conv_ci_invoices",
+      "offset": "",
+      "entries": [
+        {
+          "id": "i1",
+          "cursor": "c0001",
+          "at": "2026-09-18T09:01:00Z",
+          "kind": "message",
+          "text": "Morning — the Lisbon invoice is still open.",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        },
+        {
+          "id": "i2",
+          "cursor": "c0002",
+          "at": "2026-09-18T09:02:00Z",
+          "kind": "message",
+          "text": "I will look at it.",
+          "author": {
+            "type": "agent",
+            "id": "agent_1",
+            "label": "Smith",
+            "handle": "@smith",
+            "self": true
+          }
+        },
+        {
+          "id": "i3",
+          "cursor": "c0003",
+          "at": "2026-09-18T09:03:00Z",
+          "kind": "message",
+          "text": "The Lisbon invoice is still open — can you take a look?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    "onboarding": {
+      "id": "conv_ci_onboarding",
+      "offset": "",
+      "entries": [
+        {
+          "id": "o1",
+          "cursor": "c0001",
+          "at": "2026-09-18T09:01:00Z",
+          "kind": "message",
+          "text": "Who is taking the new starter?",
+          "author": {
+            "type": "member",
+            "id": "member_2",
+            "label": "Rui Costa",
+            "self": false
+          }
+        }
+      ]
+    }
+  },
+  "steps": [
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "i3",
+      "throughCursor": "c0003",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000,
+      "note": "🔴 `nonEmpty`, not `contains`, and the reason is a division of labour. What an end-to-end run proves is that the pieces CONNECT: a ring became a brief, a harness answered, a post came back over the wire. What a model SAYS is the one thing that legitimately varies — three shapes of a 'repeat this token' ask were tried against DeepSeek V4 Flash and it answered conversationally every time, which is the agent behaving well. Rendering is pinned deterministically where it belongs, in the plugin's own renderer tests, which assert exactly what text a brief becomes. 🔴 And `withinMs` is the ring's deadline, never less: until the platform expires the request an answer is on time, and a 60s window failed real-model posts landing at 64-66s (#2164, ledger class 22)."
+    },
+    {
+      "step": "ring",
+      "conversation": "onboarding",
+      "reason": "mentioned",
+      "causeEntry": "o1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "invoices",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "🔴 The gate, and the reason there is no `wait` before it. Onboarding was rung above while this turn was still running — that overlap is what the script is here to exercise — but the NEXT ring on invoices must not arrive until this turn has closed, or it supersedes it. A fixed wait cannot know: the mock answers in milliseconds and a real model took anywhere from 3s to 83s in one run, so both guesses that were tried (25s, then 62s) lost."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "invoices",
+      "entries": [
+        {
+          "id": "i4",
+          "cursor": "c0004",
+          "at": "2026-09-18T09:10:00Z",
+          "kind": "message",
+          "text": "Thanks. Anything else outstanding?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "i4",
+      "throughCursor": "c0004",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectNoOpener"
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "invoices",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Gate before the third invoices ring."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "invoices",
+      "entries": [
+        {
+          "id": "i5",
+          "cursor": "c0005",
+          "at": "2026-09-18T09:20:00Z",
+          "kind": "message",
+          "text": "Rui asked about the Porto account too.",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        },
+        {
+          "id": "i6",
+          "cursor": "c0006",
+          "at": "2026-09-18T09:21:00Z",
+          "kind": "message",
+          "text": "@smith can you take the Porto one?",
+          "author": {
+            "type": "agent",
+            "id": "agent_2",
+            "label": "Archer",
+            "handle": "@archer",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "i6",
+      "throughCursor": "c0006",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "invoices",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Gate, and what makes the offset assertion below deterministic: an offset is only advanced by a close, so asserting it after a timed wait asserts how fast the harness is."
+    },
+    {
+      "step": "expectOffset",
+      "conversation": "invoices",
+      "cursor": "c0006",
+      "note": "Every close so far answered, so the offset has walked to the cause."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "onboarding",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Onboarding's first turn, gated before its second ring below."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "onboarding",
+      "entries": [
+        {
+          "id": "o2",
+          "cursor": "c0002",
+          "at": "2026-09-18T09:30:00Z",
+          "kind": "message",
+          "text": "Never mind, ignore this one [say-nothing]",
+          "author": {
+            "type": "member",
+            "id": "member_2",
+            "label": "Rui Costa",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "onboarding",
+      "reason": "mentioned",
+      "causeEntry": "o2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "onboarding",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Gate before the expiry ring on this conversation."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "invoices",
+      "entries": [
+        {
+          "id": "i7",
+          "cursor": "c0007",
+          "at": "2026-09-18T09:40:00Z",
+          "kind": "message",
+          "text": "One more: summarise the Porto thread.",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "i7",
+      "throughCursor": "c0007",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "injectCancel",
+      "reason": "stopped",
+      "afterFirstPost": true
+    },
+    {
+      "step": "expectClose",
+      "conversation": "invoices",
+      "outcome": "cancelled",
+      "withinMs": 240000,
+      "note": "The injected cancel's own close. Waiting for it rather than for a clock is what stops the run ending while the cancel is still in flight."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "onboarding",
+      "entries": [
+        {
+          "id": "o3",
+          "cursor": "c0003",
+          "at": "2026-09-18T09:50:00Z",
+          "kind": "message",
+          "text": "And the desk booking?",
+          "author": {
+            "type": "member",
+            "id": "member_2",
+            "label": "Rui Costa",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "onboarding",
+      "reason": "mentioned",
+      "causeEntry": "o3",
+      "throughCursor": "c0003",
+      "deadlineMs": 500,
+      "note": "🔴 500ms, not 1ms. The expiry this ring exists to demonstrate must close a request the plugin ACCEPTED, so the deadline has to outlive the ack — which arrives in single-digit milliseconds — and still be far inside the turn. At 1ms it was a coin flip against the 100ms expiry sweep: the run that lost it reported `resumed: 4` and `accepted: 6`, one ack short, and read as a plugin defect. The sweep's own interval is the floor here, not the ack latency."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "onboarding",
+      "outcome": "cancelled",
+      "withinMs": 60000,
+      "note": "The expiry's close. `deadlineMs: 500` is the assertion; this waits for what it causes."
+    }
+  ],
+  "assert": {
+    "ringsDelivered": 7,
+    "openersSent": 2,
+    "closes": {
+      "answered": 5,
+      "cancelled": 2
+    },
+    "sessions": {
+      "fresh": 2,
+      "resumed": 5
+    },
+    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds."
+  }
+}

@@ -1,0 +1,10 @@
+{
+	"reason": "the class is from the closed vocabulary",
+	"value": {
+		"error": {
+			"class": "oops",
+			"instruction": "x",
+			"retryable": false
+		}
+	}
+}

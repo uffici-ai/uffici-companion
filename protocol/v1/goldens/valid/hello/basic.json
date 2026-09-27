@@ -1,0 +1,10 @@
+{
+	"type": "hello",
+	"v": 1,
+	"connectionId": "7c5e3a1b-9d8f-4b6a-8c2e-1f0d9e8c7b6a",
+	"heartbeatSeconds": 30,
+	"limits": {
+		"postsPerMinute": 120,
+		"maxPostBytes": 409600
+	}
+}

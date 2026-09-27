@@ -1,0 +1,8 @@
+{
+	"reason": "a paired answer carries the key only sealed",
+	"value": {
+		"status": "paired",
+		"agentId": "e2a7f46c-aa42-48ec-ae37-a63815f4a700",
+		"keyLast4": "9e9c"
+	}
+}

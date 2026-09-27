@@ -1,0 +1,22 @@
+{
+	"reason": "resetSession is reserved and false in v1",
+	"value": {
+		"type": "ring",
+		"v": 1,
+		"ringId": "0b9d2f4e-3c1a-4e8b-9f7d-5a6c8e0b1d23",
+		"requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21",
+		"conversationId": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+		"reason": "mention",
+		"cause": {
+			"entryId": "1042",
+			"author": {
+				"type": "user",
+				"id": "9a5b5e07-e417-40a6-bf4b-a96091ad27d7"
+			}
+		},
+		"deadline": "2026-09-23T10:05:00.000Z",
+		"since": "1040",
+		"through": "1042",
+		"resetSession": true
+	}
+}

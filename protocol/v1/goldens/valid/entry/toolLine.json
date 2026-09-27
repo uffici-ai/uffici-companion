@@ -1,0 +1,15 @@
+{
+	"id": "1044",
+	"cursor": "1044",
+	"at": "2026-09-23T10:00:00.000Z",
+	"author": {
+		"type": "agent",
+		"id": "b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e",
+		"label": "Archer",
+		"handle": "@archer",
+		"self": false
+	},
+	"kind": "tool_line",
+	"text": "Archer used Add cards — ok",
+	"attachments": []
+}

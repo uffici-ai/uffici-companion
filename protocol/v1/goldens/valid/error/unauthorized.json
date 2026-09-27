@@ -1,0 +1,7 @@
+{
+	"error": {
+		"class": "unauthorized",
+		"instruction": "The agent key was refused; check the key in the harness configuration.",
+		"retryable": false
+	}
+}

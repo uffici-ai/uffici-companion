@@ -1,0 +1,13 @@
+{
+	"reason": "details carry ids or ≤ 64-character strings — never an upstream message",
+	"value": {
+		"error": {
+			"class": "platform_error",
+			"instruction": "x",
+			"retryable": false,
+			"details": {
+				"upstream": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+			}
+		}
+	}
+}

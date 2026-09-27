@@ -1,0 +1,9 @@
+{
+	"reason": "the ack carries the ring id and nothing else",
+	"value": {
+		"type": "ack",
+		"v": 1,
+		"ringId": "0b9d2f4e-3c1a-4e8b-9f7d-5a6c8e0b1d23",
+		"outcome": "answered"
+	}
+}

@@ -1,0 +1,10 @@
+{
+	"error": {
+		"class": "rate_limited",
+		"instruction": "The platform is refusing further requests for a moment; retry after the delay it names.",
+		"retryable": true,
+		"details": {
+			"retryAfterSeconds": "12"
+		}
+	}
+}

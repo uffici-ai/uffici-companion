@@ -1,0 +1,62 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/post-request.schema.json",
+	"title": "post-request",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"postId": {
+			"type": "string",
+			"format": "uuid",
+			"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+		},
+		"requestId": {
+			"type": "string",
+			"format": "uuid",
+			"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+		},
+		"text": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 100000
+		},
+		"audience": {
+			"type": "string",
+			"const": "external"
+		},
+		"attachments": {
+			"maxItems": 20,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"id": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64
+					},
+					"name": {
+						"type": "string",
+						"maxLength": 255
+					},
+					"ref": {
+						"type": "string",
+						"maxLength": 512
+					}
+				},
+				"required": [
+					"id",
+					"name",
+					"ref"
+				],
+				"additionalProperties": false
+			}
+		}
+	},
+	"required": [
+		"postId",
+		"requestId",
+		"text",
+		"audience"
+	],
+	"additionalProperties": false
+}

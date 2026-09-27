@@ -1,0 +1,6 @@
+{
+	"type": "disconnect",
+	"v": 1,
+	"reason": "instance_conflict",
+	"instruction": "another harness is connected with this agent's key; stop it, or enable 'Allow multiple connections' on the agent"
+}

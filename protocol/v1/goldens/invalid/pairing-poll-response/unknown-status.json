@@ -1,0 +1,7 @@
+{
+	"reason": "the status is a closed vocabulary",
+	"value": {
+		"status": "approved",
+		"retryAfterSeconds": 2
+	}
+}

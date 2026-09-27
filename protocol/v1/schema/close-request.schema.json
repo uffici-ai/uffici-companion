@@ -1,0 +1,26 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/close-request.schema.json",
+	"title": "close-request",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"outcome": {
+			"type": "string",
+			"enum": [
+				"answered",
+				"empty",
+				"error",
+				"cancelled"
+			]
+		},
+		"errorClass": {
+			"type": "string",
+			"minLength": 1,
+			"maxLength": 64
+		}
+	},
+	"required": [
+		"outcome"
+	],
+	"additionalProperties": false
+}

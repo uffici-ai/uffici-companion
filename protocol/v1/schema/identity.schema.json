@@ -1,0 +1,42 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/identity.schema.json",
+	"title": "identity",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"lines": {
+			"minItems": 1,
+			"type": "array",
+			"items": {
+				"type": "string",
+				"minLength": 1
+			}
+		},
+		"disclosure": {
+			"type": "object",
+			"properties": {
+				"mode": {
+					"type": "string",
+					"enum": [
+						"labelled_ui",
+						"sent",
+						"off"
+					]
+				},
+				"text": {
+					"type": "string",
+					"minLength": 1
+				}
+			},
+			"required": [
+				"mode"
+			],
+			"additionalProperties": false
+		}
+	},
+	"required": [
+		"lines",
+		"disclosure"
+	],
+	"additionalProperties": false
+}
