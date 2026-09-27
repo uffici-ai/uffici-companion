@@ -1,0 +1,91 @@
+# The companion's release: static binaries for exactly three targets, an
+# archive per target named WITHOUT the version (so `releases/latest/download/`
+# always resolves, which is what install.sh fetches), one checksum list, a
+# keyless signature per archive, and an SBOM. Run by .github/workflows/release.yml
+# in this repository on a `v*` tag — in public, so a reader can trace a binary
+# to the run that built it.
+version: 2
+
+project_name: uffici
+
+before:
+  hooks:
+    - go mod verify
+
+builds:
+  - id: uffici
+    main: ./cmd/uffici
+    binary: uffici
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # Exactly three targets: an Intel Mac is one line here, added on request.
+      - goos: darwin
+        goarch: amd64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X github.com/uffici-ai/uffici-companion/internal/build.version={{ .Version }}
+      - -X github.com/uffici-ai/uffici-companion/internal/build.commit={{ .FullCommit }}
+      - -X github.com/uffici-ai/uffici-companion/internal/build.buildDate={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: uffici
+    ids: [uffici]
+    formats: [tar.gz]
+    # No version in the name: the release is versioned, the asset is not, so
+    # the latest-release URL is stable and install.sh needs no lookup.
+    name_template: "uffici_{{ .Os }}_{{ .Arch }}"
+    wrap_in_directory: false
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+signs:
+  # cosign v3 writes a Sigstore BUNDLE (signature + certificate + log entry in
+  # one file), which `verify-blob --bundle` reads on v2 and v3 alike.
+  - id: keyless
+    cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args:
+      - sign-blob
+      - --yes
+      - --bundle=${signature}
+      - ${artifact}
+    artifacts: all
+
+sboms:
+  - id: archives
+    artifacts: archive
+
+release:
+  github:
+    owner: uffici-ai
+    name: uffici-companion
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    The Uffici companion {{ .Tag }}. Verify a download before you run it:
+
+    ```sh
+    cosign verify-blob --bundle uffici_linux_amd64.tar.gz.sigstore.json \
+      --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-companion/' \
+      --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici_linux_amd64.tar.gz
+    ```
+
+changelog:
+  disable: true

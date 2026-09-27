@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -206,5 +208,57 @@ func TestTheDoublesPairingRefusesWhatTheGatewayRefuses(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("an unknown pairing's poll got %d", resp.StatusCode)
+	}
+}
+
+// 🔴 The two shapes of "already gone" are named by IsGone (#2195): the
+// companion under test can tear a doorbell down between a caller's
+// LiveSessions() and its CloseSocket, and a flap test means "close it, or it is
+// already closed". CloseSocket itself stays strict, because
+// TestTheDoorbellDisconnectsAnythingButAnAck means "nothing must be connected".
+func TestIsGoneNamesAConnectionAlreadyGone(t *testing.T) {
+	d := New()
+	t.Cleanup(d.Close)
+	req, _ := http.NewRequest(http.MethodPost, d.URL()+"/v1/tickets/connect", bytes.NewBufferString(
+		`{"instanceId":"d4c3b2a1-f6e5-4d7c-8b9a-0f1e2d3c4b5a","client":{"name":"c","version":"1"},"harness":{"kind":"h","version":"1"}}`))
+	req.Header.Set("Authorization", "Bearer "+Key)
+	resp, err := d.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ticket protocol.TicketResponse
+	_ = json.NewDecoder(resp.Body).Decode(&ticket)
+	_ = resp.Body.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, d.URL()+"/v1/doorbell", &websocket.DialOptions{
+		HTTPClient: d.Client(), HTTPHeader: http.Header{"Authorization": []string{"Bearer " + ticket.Ticket}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.CloseNow() }()
+	if _, _, err := conn.Read(ctx); err != nil { // hello
+		t.Fatal(err)
+	}
+	// The client drops the connection; the double notices and the session ends.
+	_ = conn.CloseNow()
+	deadline := time.Now().Add(5 * time.Second)
+	for d.LiveSessions() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the dropped session never ended")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	err = d.CloseSocket(websocket.StatusNormalClosure, "replaced")
+	if err == nil || !IsGone(err) {
+		t.Fatalf("a close after the session ended must be an error IsGone recognises: %v", err)
+	}
+	// The other shape of the race: the handshake found the socket closed.
+	if !IsGone(net.ErrClosed) || !IsGone(errors.New("failed to close WebSocket: use of closed network connection")) {
+		t.Fatal("IsGone does not recognise a socket closed underneath the handshake")
+	}
+	if IsGone(errors.New("other")) {
+		t.Fatal("IsGone must not excuse an unrelated error")
 	}
 }

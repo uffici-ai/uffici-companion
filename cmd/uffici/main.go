@@ -12,7 +12,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
+	"regexp"
+	"runtime"
+	"strconv"
 	"syscall"
 
 	"github.com/uffici-ai/uffici-companion/internal/app"
@@ -20,6 +24,7 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
 	"github.com/uffici-ai/uffici-companion/internal/runner"
+	"github.com/uffici-ai/uffici-companion/internal/setup"
 )
 
 func main() {
@@ -34,6 +39,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "pair" {
 		return pair(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "setup" {
+		return setupCommand(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("uffici", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -156,3 +164,130 @@ func doctor(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 	return app.Doctor(ctx, resolved, stdout)
 }
+
+// setupCommand is `uffici setup` (#2182): the part of the install a shell
+// script should not do. The installer script fetches the binary and hands
+// over here; a person with the binary already can run it directly.
+func setupCommand(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("uffici setup", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	home := flags.String("home", "", "the companion's home directory (default $UFFICI_HOME or ~/.uffici)")
+	harness := flags.String("harness", "", "the harness to install the plugin for (e.g. hermes); empty installs no plugin")
+	harnessVersion := flags.String("harness-version", "unknown", "that harness's version, as the admin sees it when approving the pairing")
+	harnessHome := flags.String("harness-home", "", "the harness's home directory (default: the manifest's variable, then its default)")
+	gatewayURL := flags.String("gateway-url", "", "the agents host's https origin (default $UFFICI_GATEWAY_URL)")
+	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: the latest)")
+	noPair := flags.Bool("no-pair", false, "skip pairing (the key is already in place, or mounted)")
+	noService := flags.Bool("no-service", false, "skip installing the companion as a service")
+	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
+	dryRun := flags.Bool("dry-run", false, "print every action and perform none")
+	if err := flags.Parse(args); err != nil {
+		return setup.ExitConfig
+	}
+	if flags.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: unexpected argument %q — the harness is a flag: --harness %s\n", flags.Arg(0), flags.Arg(0))
+		return setup.ExitConfig
+	}
+	if *harness != "" && !harnessName.MatchString(*harness) {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: %q is not a harness name (lowercase letters, digits and dashes, like hermes)\n", *harness)
+		return setup.ExitConfig
+	}
+	if runtime.GOOS == "windows" {
+		_, _ = fmt.Fprintln(stderr, "uffici setup: Windows is not supported; see the README for the platforms that are")
+		return setup.ExitConfig
+	}
+	gateway := *gatewayURL
+	if gateway == "" {
+		gateway = os.Getenv("UFFICI_GATEWAY_URL")
+	}
+	// The same environment the service, the pairing and the doctor will see.
+	environment := func(key string) string {
+		switch key {
+		case "UFFICI_AGENTS_HOST":
+			return "gateway"
+		case "UFFICI_GATEWAY_URL":
+			return gateway
+		}
+		return os.Getenv(key)
+	}
+	resolved, err := app.LoadConfig(environment, app.Config{Home: *home, Version: build.Version()})
+	if err != nil && (!*noPair || !*noService) {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: %v\n", err)
+		return setup.ExitConfig
+	}
+	binary, err := os.Executable()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: cannot find this binary's path: %v\n", err)
+		return setup.ExitFailed
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: cannot find your home directory: %v\n", err)
+		return setup.ExitFailed
+	}
+	client, err := app.HTTPClient(os.Getenv("UFFICI_CA_FILE"))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: %v\n", err)
+		return setup.ExitConfig
+	}
+	// Pairing asks which agent the key is for. Under `curl | sh` stdin is the
+	// pipe the script came down, so the answer is read from the terminal; with
+	// no terminal and no --yes, the question cannot be answered and the run is
+	// refused before a key is minted for nothing.
+	answers := io.Reader(os.Stdin)
+	if !*noPair && !*yes && !*dryRun {
+		if info, statErr := os.Stdin.Stat(); statErr == nil && info.Mode()&os.ModeCharDevice == 0 {
+			tty, ttyErr := os.Open("/dev/tty")
+			if ttyErr != nil {
+				_, _ = fmt.Fprintln(stderr, "uffici setup: pairing needs a terminal to confirm which agent the key is for, and this run has none. Re-run with --yes, with --no-pair if the key is already in place, or from a terminal.")
+				return setup.ExitConfig
+			}
+			defer func() { _ = tty.Close() }()
+			answers = tty
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return setup.Run(ctx, setup.Options{
+		Harness:        *harness,
+		HarnessVersion: *harnessVersion,
+		HarnessHome:    *harnessHome,
+		GatewayURL:     gateway,
+		PluginVersion:  *pluginVersion,
+		NoPair:         *noPair,
+		NoService:      *noService,
+		AssumeYes:      *yes,
+		DryRun:         *dryRun,
+		GOOS:           runtime.GOOS,
+		UserHome:       userHome,
+		CompanionHome:  resolved.Home,
+		Binary:         binary,
+		UID:            strconv.Itoa(os.Getuid()),
+		Env:            os.Getenv,
+		LookPath:       exec.LookPath,
+		Runner:         setup.ExecRunner{},
+		Release: func(repo string) setup.Release {
+			return setup.Release{
+				Owner: "uffici-ai", Repo: repo, Version: *pluginVersion,
+				// 🔴 Read from the environment, never a flag: a flag's value is
+				// in the process list and the shell history. Only needed while a
+				// plugin repository is private.
+				Token:   os.Getenv("UFFICI_GITHUB_TOKEN"),
+				BaseURL: os.Getenv("UFFICI_RELEASES_BASE_URL"),
+				APIURL:  os.Getenv("UFFICI_RELEASES_API_URL"),
+				Client:  client,
+			}
+		},
+		Pair: func(ctx context.Context) int {
+			return app.Pair(ctx, resolved, stdout, app.PairOptions{
+				Harness:   protocol.HarnessFacts{Kind: setup.NonEmpty(*harness, "unknown"), Version: *harnessVersion},
+				In:        answers,
+				AssumeYes: *yes,
+			})
+		},
+		Doctor: func(ctx context.Context) int { return app.Doctor(ctx, resolved, stdout) },
+	}, stdout)
+}
+
+// harnessName is what --harness may be: it becomes a repository name.
+var harnessName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)

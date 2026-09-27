@@ -28,7 +28,9 @@ Requires Go (the version pinned in [go.mod](go.mod)) and
 
 ## Layout
 
-- `cmd/uffici/` — the command: the daemon (`run`), `pair` and `doctor`.
+- `install.sh` — the one-line installer: fetches a release archive, verifies it, installs the binary and hands over to `uffici setup`. Run by the tests against a loopback release.
+- `.goreleaser.yaml` — the release: three targets, version-less archive names, checksums, keyless signatures, SBOMs. `.github/workflows/release.yml` runs it on a tag and publishes the image.
+- `cmd/uffici/` — the command: the daemon (`run`), `pair`, `doctor` and `setup`.
 - `wire/v1/` — **the local wire's contract**: JSON Schemas, golden examples and the manifest that counts them. Embedded into the binary, so validation never depends on files beside it. Specified in `docs/local-wire.md`; where the two disagree, the schemas win.
 - `fixture/` — **the scripted stand-in for Uffici**: its schema and an acceptance script, embedded for the same reason. Specified in `docs/fixture-script.md`.
 - `protocol/v1/` — **the Uffici-to-companion contract**, a byte-identical copy of what Uffici's agents gateway publishes; never edited here. `internal/protocol/` holds its Go structs, pinned to it both ways.
@@ -37,6 +39,7 @@ Requires Go (the version pinned in [go.mod](go.mod)) and
 - `internal/contracts/` — the interfaces; `internal/infra/<backend>/` the implementations; `internal/registry/` selects one. Application code takes a contract, never an implementation.
 - `internal/schemas/` — the one JSON-Schema seam: registering an embedded document under its `$id`, and reducing a validation failure to safe locations.
 - `internal/requests/` — the request state machine; `internal/surface/` the local wire server; `internal/observe/` the one-line-per-frame log; `internal/runner/` the script timeline; `internal/pairing/` the sealed key exchange.
+- `internal/setup/` — `uffici setup`: the service, the pairing, the plugin fetched from its own release and installed by its manifest (`manifest.schema.json`, refusing unknown fields), the doctor; every side effect injected, a `--dry-run` that only tells.
 - `internal/build/` — the identity a release stamps into the binary.
 - `internal/docs/` — the Markdown link guard.
 

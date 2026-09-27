@@ -19,8 +19,10 @@ package gatewaytest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -408,7 +410,7 @@ func (d *Double) live() (*session, error) {
 			return d.sessions[i], nil
 		}
 	}
-	return nil, fmt.Errorf("gatewaytest: no doorbell is connected")
+	return nil, ErrNoDoorbell
 }
 
 // Ring sends a ring on the live doorbell and records the request.
@@ -456,6 +458,23 @@ func (d *Double) CloseSocket(code websocket.StatusCode, reason string) error {
 		return err
 	}
 	return s.conn.Close(code, reason)
+}
+
+// ErrNoDoorbell is what every doorbell-side call answers when no session is
+// live: none ever connected, or the last one ended.
+var ErrNoDoorbell = errors.New("gatewaytest: no doorbell is connected")
+
+// IsGone is whether an error from CloseSocket means the session was ALREADY
+// gone — either no doorbell was live any more, or the close handshake found
+// the socket closed underneath it. The companion under test tears a doorbell
+// down between a caller's LiveSessions() and its CloseSocket (a replacement
+// flap does exactly that, #2195), and in both shapes the session has ended,
+// which is what the caller wanted. A test that means "close it, or it is
+// already closed" checks this; one that means "nothing must be connected"
+// keeps the error.
+func IsGone(err error) bool {
+	return errors.Is(err, ErrNoDoorbell) || errors.Is(err, net.ErrClosed) ||
+		strings.Contains(err.Error(), "use of closed network connection")
 }
 
 // convTicket checks a conversation ticket and the path's conversation.

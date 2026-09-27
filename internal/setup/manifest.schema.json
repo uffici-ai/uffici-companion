@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://uffici.ai/companion/plugin/v1/manifest.schema.json",
+  "title": "Uffici plugin install manifest",
+  "description": "What `uffici setup` needs to install a plugin into its harness: where the harness keeps plugins, how to enable one, which configuration keys to set, and which environment the plugin reads. Carried at the top of every plugin release tarball as `uffici-plugin.json`. The companion holds no per-harness branch of its own: everything harness-specific is here, and a field the companion does not know is refused rather than ignored, because an ignored field would silently skip an install step.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "harness",
+    "name",
+    "pluginDir",
+    "homeEnv",
+    "defaultHome",
+    "enable",
+    "env",
+    "restart"
+  ],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "harness": {
+      "description": "The harness kind, as the portal names it (`hermes`). The plugin's repository is `uffici-for-<harness>`.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,31}$"
+    },
+    "name": {
+      "description": "The plugin's name in the harness's own registry — what `enable` names.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "version": {
+      "description": "Stamped by the release from its tag; `0.0.0` in the tracked file.",
+      "type": "string",
+      "minLength": 1
+    },
+    "pluginDir": {
+      "description": "Where the tarball's plugin directory is copied, relative to the harness home: at least two segments, none starting with a dot, and the last one the plugin's name — so a bad manifest can never name the harness's whole plugin folder.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$"
+    },
+    "homeEnv": {
+      "description": "The environment variable naming the harness home (`HERMES_HOME`).",
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$"
+    },
+    "defaultHome": {
+      "description": "The harness home when the variable is unset; a leading `~` is the user's home.",
+      "type": "string",
+      "minLength": 1
+    },
+    "enable": {
+      "description": "The command that enables the plugin, as argv. Its first word must be on the PATH.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "configSet": {
+      "description": "The argv prefix that sets one configuration key; the key and value are appended.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "config": {
+      "description": "Configuration keys the harness must carry for the plugin to run.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "value"],
+        "properties": {
+          "key": { "type": "string", "minLength": 1 },
+          "value": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "envPath": {
+      "description": "An argv that prints the path of the harness's environment file. When absent, `envFile` under the harness home is used.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "envFile": {
+      "description": "The environment file's name under the harness home, when `envPath` is absent or fails. Default `.env`.",
+      "type": "string",
+      "minLength": 1
+    },
+    "env": {
+      "description": "The variables the plugin reads, with `${wireSocket}`, `${wireTokenFile}`, `${companionHome}` and `${home}` substituted by the companion.",
+      "type": "object",
+      "propertyNames": { "pattern": "^UFFICI_[A-Z0-9_]+$" },
+      "additionalProperties": { "type": "string" }
+    },
+    "restart": {
+      "description": "One sentence the person is told after the install, saying how to make the harness load the plugin.",
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

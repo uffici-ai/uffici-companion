@@ -31,7 +31,8 @@ Uffici.
 
 ## Requirements
 
-- Linux or macOS. Any platform Go builds for works from source.
+- Linux (x86-64 or arm64) or macOS on Apple silicon, for the release binaries. Any platform
+  Go builds for works from source.
 - Outbound HTTPS to your Uffici agents host: the address your organization was given, for
   example `https://agents.uffici.ai`.
 - An agent created in the Uffici portal by an administrator of your organization.
@@ -39,7 +40,50 @@ Uffici.
 
 ## Install
 
-Build the binary from this repository with the Go version pinned in [go.mod](go.mod):
+One line, on the machine that runs your harness:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
+  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+```
+
+The Uffici portal shows you this line on the agent's **Connect** tab, with your organization's
+agents host already in it. It does, in order:
+
+1. Downloads the companion for your platform from the latest release, checks it against the
+   release's checksum list, and installs it as `~/.local/bin/uffici`.
+2. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
+   and starts it.
+3. Pairs it with your agent: it prints a code, an administrator approves the code in the
+   portal, and the key arrives sealed to this machine.
+4. Downloads the plugin for your harness from that plugin's own release, checks it, installs
+   it into the harness, switches the Uffici platform on in the harness's configuration, and
+   points the plugin at the companion.
+5. Runs `uffici doctor` and tells you how to restart the harness.
+
+Every step is announced before it runs. Add `--dry-run` to be told and nothing else: the
+script then installs no binary either. The script is [install.sh](install.sh) in this
+repository — POSIX shell, needing only `curl` and `tar` — so you can read it before you run
+it, and everything past the download is `uffici setup`, a command of the binary itself, so
+it is the same on every machine. Pairing asks you to confirm which agent the key is for;
+under a pipe that answer is read from your terminal, and with no terminal at all the run
+stops and says so before anything is downloaded (`--yes` answers for you).
+
+While a repository is private, the downloads need a token: set `UFFICI_GITHUB_TOKEN` in the
+environment before the line (never as a flag; a flag is in your shell history), and fetch
+the script itself with that token too:
+
+```sh
+curl -fsSL -H "Authorization: Bearer $UFFICI_GITHUB_TOKEN" \
+  https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
+  | UFFICI_GITHUB_TOKEN="$UFFICI_GITHUB_TOKEN" sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
+```
+
+### Install by hand
+
+Download `uffici_<os>_<arch>.tar.gz` for your platform from this repository's **Releases**
+page, verify it (see [Security posture](#security-posture)), and put the `uffici` binary on
+your `PATH`. Or build it, with the Go version pinned in [go.mod](go.mod):
 
 ```sh
 git clone https://github.com/uffici-ai/uffici-companion
@@ -48,14 +92,29 @@ go build -o ~/.local/bin/uffici ./cmd/uffici
 uffici -version
 ```
 
-The binary is static: no runtime, no libraries, one file. Release binaries, with checksums and
-a signature so you can verify that what you run was built from this source, are planned for
-this repository's Releases page; until they are there, building from source is the install.
+Then either run the rest of the setup in one go, or follow the sections below one by one:
+
+```sh
+uffici setup --harness hermes --gateway-url https://agents.uffici.ai
+```
+
+| `uffici setup` flag | Meaning |
+| --- | --- |
+| `--harness <kind>` | Install the plugin for this harness (`hermes`). Omit to install no plugin. |
+| `--gateway-url <url>` | Your agents host. `UFFICI_GATEWAY_URL` in the environment works too. |
+| `--harness-home <dir>` | Where the harness keeps its files, if not where its own variable or default says. |
+| `--no-pair` | Skip pairing: the key is already in place, or mounted from a Secret. |
+| `--no-service` | Skip installing the service. |
+| `--yes` | Pair without asking which agent and organization the key is for. |
+| `--plugin-version <x.y.z>` | Pin the plugin release. Default: the latest. |
+| `--dry-run` | Print every action and perform none; a key already in place is never re-paired either way. |
+| `--home <dir>` | The companion's own directory, `~/.uffici` by default. |
+| `--harness-version <v>` | The harness's version, shown to the administrator who approves the pairing. |
 
 ## Pair it with your agent
 
-Pairing puts the agent's key on this machine without anyone ever seeing it. It needs to know
-your agents host, so set that first (the same value your service will use):
+`uffici setup` does this for you; by hand, it is one command. It needs to know your agents
+host, so set that first (the same value your service will use):
 
 ```sh
 export UFFICI_GATEWAY_URL=https://agents.uffici.ai   # the address your organization was given
@@ -82,15 +141,15 @@ or every restart looks like a new machine to Uffici.
 
 ### On a laptop or a server
 
-Run the companion as a service under your own user, started at login or boot. It reads its
-settings from the environment (see [Configuration](#configuration)); the two it needs are
-the kind of host and its address:
+`uffici setup` installs the service for you; by hand, run the companion as a service under
+your own user, started at login or boot. It reads its settings from the environment (see
+[Configuration](#configuration)); the two it needs are the kind of host and its address:
 
 ```sh
 UFFICI_AGENTS_HOST=gateway UFFICI_GATEWAY_URL=https://agents.uffici.ai uffici run
 ```
 
-A systemd user unit, at `~/.config/systemd/user/uffici.service`:
+The systemd user unit the setup writes, at `~/.config/systemd/user/ai.uffici.companion.service`:
 
 ```ini
 [Unit]
@@ -100,7 +159,8 @@ After=network-online.target
 [Service]
 Environment=UFFICI_AGENTS_HOST=gateway
 Environment=UFFICI_GATEWAY_URL=https://agents.uffici.ai
-ExecStart=%h/.local/bin/uffici run
+Environment=UFFICI_HOME=/home/you/.uffici
+ExecStart=/home/you/.local/bin/uffici run
 Restart=always
 RestartSec=2
 
@@ -109,12 +169,12 @@ WantedBy=default.target
 ```
 
 ```sh
-systemctl --user enable --now uffici
+systemctl --user enable --now ai.uffici.companion
 loginctl enable-linger "$USER"   # keep it running when you are not logged in
 ```
 
-On macOS, the equivalent is a launchd agent in `~/Library/LaunchAgents/` with the same
-command and environment.
+On macOS the setup writes the equivalent launch agent, `~/Library/LaunchAgents/ai.uffici.companion.plist`,
+and loads it with `launchctl`.
 
 The companion serves its local wire on a Unix socket, `$UFFICI_HOME/wire.sock`, and writes the
 token that authenticates it to `$UFFICI_HOME/wire-token`. The plugin on the same machine is
@@ -132,14 +192,14 @@ filesystem.
 spec:
   initContainers:
     - name: companion
-      image: your-registry/uffici-companion   # built from this repository's Dockerfile
-      restartPolicy: Always                    # native sidecar (Kubernetes 1.29+)
+      image: ghcr.io/uffici-ai/uffici-companion:0   # published with each release, from this repository's Dockerfile
+      restartPolicy: Always                         # native sidecar (Kubernetes 1.29+)
       env:
         - name: UFFICI_AGENTS_HOST
           value: gateway
         - name: UFFICI_GATEWAY_URL
           value: https://agents.uffici.ai
-        - name: UFFICI_AGENT_KEY               # the one deployment where the key is an env value
+        - name: UFFICI_AGENT_KEY                    # the one deployment where the key is an env value
           valueFrom: { secretKeyRef: { name: agent-smith, key: key } }
         - name: UFFICI_WIRE_TOKEN
           valueFrom: { secretKeyRef: { name: agent-smith, key: wire-token } }
@@ -147,10 +207,10 @@ spec:
         - { name: uffici-home, mountPath: /var/lib/uffici }
       readinessProbe: { httpGet: { path: /healthz, port: 7411 } }
   securityContext:
-    fsGroup: 65532                             # the image runs as user 65532 and owns /var/lib/uffici
+    fsGroup: 65532                                  # the image runs as user 65532 and owns /var/lib/uffici
   containers:
     - name: hermes
-      image: your-hermes-image                 # with the Uffici plugin installed
+      image: your-hermes-image                      # with the Uffici plugin installed
       env:
         - name: UFFICI_COMPANION_URL
           value: http://127.0.0.1:7411
@@ -161,8 +221,8 @@ spec:
 ```
 
 The image is built from [Dockerfile](Dockerfile) in this repository, from `scratch`: no
-shell, no package manager, one binary. It sets `UFFICI_WIRE_TRANSPORT=tcp` and listens on
-loopback port `7411`. A published image is planned alongside the release binaries.
+shell, no package manager, one binary, for linux/amd64 and linux/arm64. It sets
+`UFFICI_WIRE_TRANSPORT=tcp` and listens on loopback port `7411`.
 
 An environment value is visible to `docker inspect`, to `/proc`, and to every child process,
 which is why the key and the wire token come from a Secret here and from files everywhere
@@ -194,7 +254,7 @@ The companion reads its environment once, at start.
 | Setting | Meaning |
 | --- | --- |
 | `UFFICI_AGENTS_HOST` | A **kind**, not an address: `gateway` (Uffici) or `fixture` (a scripted stand-in, for testing a plugin). Unset means `fixture`, so set `gateway` to reach Uffici. Anything else exits with status `2`. |
-| `UFFICI_GATEWAY_URL` | The agents host's HTTPS origin: the address your organization was given. Required with `gateway`, including for `pair` and `doctor`. |
+| `UFFICI_GATEWAY_URL` | The agents host's HTTPS origin: the address your organization was given. Required with `gateway`, including for `pair`, `doctor` and `setup`. |
 | `UFFICI_HOME` | The companion's directory: the key, the instance id, the wire socket and token. Default `~/.uffici`; the container image uses `/var/lib/uffici`. |
 | `$UFFICI_HOME/agent-key` | The agent key, mode `600`. A world- or group-readable file is refused, never repaired. |
 | `UFFICI_AGENT_KEY` | The key as an environment value, **only** for a pod mounting it from a Secret. The file wins when both exist. |
@@ -205,6 +265,7 @@ The companion reads its environment once, at start.
 | `UFFICI_WIRE_TOKEN` | The wire token as an environment value, for a pod whose plugin container cannot read the file. Source it from a Secret. |
 | `UFFICI_CA_FILE` | An extra PEM bundle to trust, for an agents host behind your own certificate authority. `SSL_CERT_FILE` is honoured too. |
 | `UFFICI_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error`. No level ever logs the key, a ticket or a message body. |
+| `UFFICI_GITHUB_TOKEN` | Read by the installer and by `uffici setup` to download from a private repository. Never printed. |
 
 ### Staying connected
 
@@ -232,9 +293,19 @@ The companion speaks to your harness through a plugin, one repository per harnes
 
 Each plugin is a translator between the harness's own hooks and the companion's local wire.
 It holds no credential and opens no network connection. If the companion is down, the plugin
-does nothing and the agent shows offline. Plugin authors: the wire is specified in
-[docs/local-wire.md](docs/local-wire.md), and a scripted stand-in for Uffici lets a plugin be
-tested without an account ([docs/fixture-script.md](docs/fixture-script.md), `UFFICI_AGENTS_HOST=fixture`).
+does nothing and the agent shows offline.
+
+`uffici setup --harness <kind>` fetches the plugin from `uffici-for-<kind>`'s latest release,
+verifies it against that release's checksum list, and follows the install manifest the
+release carries (`uffici-plugin.json`: where the harness keeps plugins, how to enable one,
+which configuration keys to set, which environment the plugin reads). The companion holds no
+per-harness code of its own, and refuses a manifest with a field it does not know rather than
+skipping a step.
+
+Plugin authors: the wire is specified in [docs/local-wire.md](docs/local-wire.md), the
+manifest's schema is [internal/setup/manifest.schema.json](internal/setup/manifest.schema.json),
+and a scripted stand-in for Uffici lets a plugin be tested without an account
+([docs/fixture-script.md](docs/fixture-script.md), `UFFICI_AGENTS_HOST=fixture`).
 
 ## Security posture
 
@@ -247,6 +318,19 @@ tested without an account ([docs/fixture-script.md](docs/fixture-script.md), `UF
   memory are not routed through Uffici in this release and are not recorded by it.
 - The companion runs inside your perimeter with your key, which is why it is open source: you
   can read what it does with the key and where it connects, and build it yourself.
+- Each release is built in this repository by its own workflow, from the tag, and ships with
+  a checksum list, a keyless Sigstore signature bundle and a build attestation, so you can
+  verify that what you run was built from this source by that run:
+
+```sh
+cosign verify-blob --bundle uffici_linux_amd64.tar.gz.sigstore.json \
+  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-companion/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici_linux_amd64.tar.gz
+gh attestation verify uffici_linux_amd64.tar.gz --repo uffici-ai/uffici-companion
+```
+
+The installer verifies the checksum on every download; the signature and the attestation
+are yours to check with the commands above.
 
 ## Build and test from source
 
@@ -256,13 +340,15 @@ go vet ./... && golangci-lint run && go test -coverpkg=./... -coverprofile=cover
 
 This needs Go (the version pinned in [go.mod](go.mod)) and
 [golangci-lint](https://golangci-lint.run). Nothing else: the module has no other toolchain,
-by design.
+by design. The tests run `install.sh` too, against a loopback release, so the script a
+person pastes is exercised by the same check.
 
 Layout, for readers:
 
 ```text
-cmd/uffici/          the command: `run`, `pair`, `doctor`
-internal/            the daemon
+install.sh           the one-line installer: fetch, verify, install, hand over to `uffici setup`
+cmd/uffici/          the command: `run`, `pair`, `doctor`, `setup`
+internal/            the daemon; `internal/setup/` is the installer's second half
 protocol/v1/         the Uffici-to-companion contract: JSON Schemas and examples
 wire/v1/             the local wire's contract: JSON Schemas and examples
 fixture/             the scripted stand-in for Uffici, for plugin tests

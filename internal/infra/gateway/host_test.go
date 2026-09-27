@@ -767,7 +767,9 @@ func TestAReplacementFlapGoesToTheCeiling(t *testing.T) {
 	r.open(t)
 	for range 2 {
 		waitFor(t, "a live socket", func() bool { return r.double.LiveSessions() == 1 })
-		if err := r.double.CloseSocket(websocket.StatusNormalClosure, "replaced"); err != nil {
+		// The companion may tear this session down before the close lands (that
+		// is the flap); either way it is gone, which is what this asks for.
+		if err := r.double.CloseSocket(websocket.StatusNormalClosure, "replaced"); err != nil && !gatewaytest.IsGone(err) {
 			t.Fatal(err)
 		}
 		if reason := nextEnd(t, r); reason != gateway.DisconnectReplaced {
@@ -793,7 +795,9 @@ func TestAConnectionThatHeldAHeartbeatEndsTheConflictStreak(t *testing.T) {
 			waitFor(t, "the second hello", func() bool { return strings.Count(r.logs.String(), "the doorbell is connected") >= 2 })
 			r.advance(31 * time.Second)
 		}
-		if err := r.double.CloseSocket(websocket.StatusNormalClosure, "replaced"); err != nil {
+		// The companion may tear this session down before the close lands (that
+		// is the flap); either way it is gone, which is what this asks for.
+		if err := r.double.CloseSocket(websocket.StatusNormalClosure, "replaced"); err != nil && !gatewaytest.IsGone(err) {
 			t.Fatal(err)
 		}
 		if reason := nextEnd(t, r); reason != gateway.DisconnectReplaced {
