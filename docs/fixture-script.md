@@ -5,13 +5,13 @@ committed offset per conversation, and a timeline of rings and expectations.
 `uffici run --fixture <script> --once` plays it and exits with its verdict.
 
 🔴 **This is the one scripted-host format in the product.** The companion's
-fixture host plays it today; wave 1b's smoke plugin plays the same format. Two
+fixture host plays it today; another implementation, in another language, plays the same format. Two
 formats would drift, and the second one would be written by whoever needed it
 next under time pressure.
 
 `fixture/schema.json` is the machine-readable description of everything below.
-The companion validates every script against it before reading it, and wave 1b's
-smoke plugin — a different program, in another language — validates against the
+The companion validates every script against it before reading it, and that other
+implementation validates against the
 same file. 🔴 That is why the schema exists rather than the Go loader alone: the
 loader is not readable by the other party, and one of the two formats would be a
 description of the other from memory.
@@ -98,7 +98,7 @@ nothing about why.
 One line per frame, at `info`, carrying `direction`, `frame`, `request`,
 `conversation`, `elapsedMs` and that frame's counts — `deltaEntryCount`,
 `deltaChars`, `openerEntryCount`, `openerChars`, `budgetDeclared`,
-`budgetUsedChars`, `outcome`, `session`. These are the measurements wave 4
+`budgetUsedChars`, `outcome`, `session`. These are the measurements a later release
 needs.
 
 🔴 **Never any text.** The log is assembled from what the request state machine

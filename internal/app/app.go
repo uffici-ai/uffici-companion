@@ -78,7 +78,7 @@ type Config struct {
 	// agent's briefs.
 	Token string
 	// GatewayURL is the agents host the gateway kind connects to
-	// (`UFFICI_GATEWAY_URL`): `https://agents.uffici.dev`, `https://agents.localhost`.
+	// (`UFFICI_GATEWAY_URL`): `https://agents.uffici.ai`, or a local stack's origin.
 	GatewayURL string
 	// CAFile is an extra PEM bundle to trust (`UFFICI_CA_FILE`) — the local
 	// stack's dev CA. Go also honours `SSL_CERT_FILE`.
@@ -176,7 +176,7 @@ func loadGatewayConfig(env Env, config *Config) error {
 	}
 	raw := strings.TrimSpace(env("UFFICI_GATEWAY_URL"))
 	if raw == "" {
-		return fmt.Errorf("UFFICI_AGENTS_HOST=gateway needs UFFICI_GATEWAY_URL, like https://agents.uffici.dev")
+		return fmt.Errorf("UFFICI_AGENTS_HOST=gateway needs UFFICI_GATEWAY_URL, like https://agents.uffici.ai")
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
@@ -188,7 +188,7 @@ func loadGatewayConfig(env Env, config *Config) error {
 			parsed.User = url.User("REDACTED")
 			shown = parsed.String()
 		}
-		return fmt.Errorf("UFFICI_GATEWAY_URL is %q; it must be the agents host's https origin, like https://agents.uffici.dev", shown)
+		return fmt.Errorf("UFFICI_GATEWAY_URL is %q; it must be the agents host's https origin, like https://agents.uffici.ai", shown)
 	}
 	config.GatewayURL = parsed.Scheme + "://" + parsed.Host
 	config.CAFile = strings.TrimSpace(env("UFFICI_CA_FILE"))

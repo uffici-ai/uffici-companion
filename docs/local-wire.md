@@ -68,13 +68,13 @@ a companion that rang on `hello` delivered the first brief of every run into a
 window where the harness could not answer it: the turn closed `empty`, and the
 real reply arrived seconds later for a request that was already gone. That is
 what this frame exists to prevent — found by running a real Hermes against a
-real companion (#2014).
+real companion.
 
 The plugin's `hello` is also where the companion learns WHICH harness it serves,
 and the platform reads that on the doorbell's connection ticket. The doorbell opens
 at start, before any plugin, so its first connection reports the harness as
 `unknown`; once a `hello` has named it, the doorbell reconnects once, at its next
-heartbeat, to report it (#2105). Presence keeps meaning "the companion is
+heartbeat, to report it. Presence keeps meaning "the companion is
 connected", and the Agents screen names the harness that answers.
 
 So: **`hello` means "I am here"; `ready` means "send me work".** The companion
@@ -137,11 +137,11 @@ failed a call the request needed — a read, a post).
 
 - `error`: present exactly when `reason` is `failed` — `class`, the platform's error class (`request_closed`, `platform_unavailable`, …) or the companion's own (`edge_challenge`, `unreachable`), for the machine; and `instruction`, the sentence the agent relays to the person (the platform's failure semantics: never a silent failure). Platform vocabulary, never tenant content.
 - A `failed` request is already closed on the platform as an error, which tells the person the agent did not answer. The plugin stops the turn exactly as for any other cancel; the class is safe to log.
-- 🔴 `failed` and `error` were added to v1 before its first release (#2077), on the same argument as #2028: nothing had shipped to a machine, so v1 was still free to change. After a release, a new value here is a new version.
+- 🔴 `failed` and `error` were added to v1 before its first release: nothing had shipped to a machine, so v1 was still free to change. After a release, a new value here is a new version.
 
 ### `call` — plugin → companion
 
-One platform control-plane operation, through the companion (#2028). Fields: `callId`, `op`, `deadlineMs`, and an optional object `payload`.
+One platform control-plane operation, through the companion. Fields: `callId`, `op`, `deadlineMs`, and an optional object `payload`.
 
 - `callId` is chosen by the plugin: opaque, at most 64 characters, and a UUID v4 is recommended. It is echoed verbatim on the `result`.
 - `op` is an **open vocabulary, never an enum**. A closed one here would make every new operation a wire change, which is exactly what this frame exists to avoid. The payload's shape is the control plane's to schema and version, so the discipline moves down a level rather than disappearing.
@@ -238,14 +238,14 @@ frame; the rest depend on connection state and belong to the server that holds
 it. The invalid goldens cover exactly the two, for that reason.
 
 🔴 **A frame for a request the COMPANION closed earns no reason at all — it is
-ignored** (#2023). A cancel and the plugin's terminal frame for the same request
+ignored**. A cancel and the plugin's terminal frame for the same request
 cross on the wire by construction: the plugin cannot know a cancel is coming, and
 by the time it arrives the `done` is already written. Closing the connection over
 that would take down every OTHER request the plugin is working on, and a
 supersede — a member writing again while the agent is answering — is the ordinary
 case, so it would fire in normal use. The companion keeps a bounded FIFO memory of
 the ids it closed itself and drops frames naming them; the plugin keeps the
-mirror of it for cancels that arrive after it has finished (#2024 made that side
+mirror of it for cancels that arrive after it has finished (a later change made that side
 FIFO too — an eviction that could drop the NEWEST id let a late hook send a
 second terminal frame, which is the one case below that is still fatal). `unknown_request` keeps its
 meaning for the case it is actually for: a peer naming a request that was never
@@ -280,7 +280,7 @@ and the harness is not degraded more than the network already does:
 ## Forward compatibility
 
 🔴 **A reader ignores what it does not know.** This is a requirement, not a
-tolerance: wave 4's summary entry kind must arrive with no version bump.
+tolerance: a later summary entry kind must arrive with no version bump.
 
 - **An unknown field is ignored.** Schemas admit unknown properties deliberately; what they require is the fields that carry meaning, so a *renamed* field still fails.
 - **An unknown entry `kind` renders as a labelled line.** `kind` is deliberately **not** a closed enum in the schema. Closing it would make every future kind a breaking change.
