@@ -241,7 +241,7 @@ func TestTheHostReportsWhatItRecorded(t *testing.T) {
 	if err := host.Ack(ctx, "ring_1"); err != nil {
 		t.Fatalf("Ack: %v", err)
 	}
-	if _, err := host.Post(ctx, "req_1", "conv_1", "answered"); err != nil {
+	if _, err := host.Post(ctx, "req_1", "conv_1", "answered", nil); err != nil {
 		t.Fatalf("Post: %v", err)
 	}
 	if err := host.CloseRequest(ctx, "req_1", contracts.OutcomeAnswered, ""); err != nil {

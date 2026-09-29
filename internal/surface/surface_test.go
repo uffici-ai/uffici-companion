@@ -557,3 +557,109 @@ func TestATerminalFrameThatCrossedACancelKeepsTheConnection(t *testing.T) {
 		t.Fatalf("the opener is for %v, want req_2", answer["requestId"])
 	}
 }
+
+// attachAs says hello with a harness process id, then ready (#2234).
+func (r *rig) attachAs(t *testing.T, processID string) *memtransport.Conn {
+	t.Helper()
+	conn, err := r.listener.Dial()
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	send(t, conn, map[string]any{
+		"v": 1, "type": "hello", "harness": "hermes", "harnessVersion": "0.21.3",
+		"pluginVersion": "0.1.0", "token": testToken, "contextBudgetTokens": 48000,
+		"processId": processID,
+	})
+	receive(t, conn) // the companion's hello
+	send(t, conn, map[string]any{"v": 1, "type": "ready", "harnessVersion": "0.21.3"})
+	return conn
+}
+
+// 🔴 #2234 through the real surface: the hello's processId reaches the manager, so
+// a harness that RESTARTED is handed the request its predecessor acknowledged,
+// and a reconnect of the same process is not.
+func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		after      string
+		redelivers bool
+	}{
+		{"a restarted process", "proc-after-restart-0002", true},
+		{"a reconnect of the same process", "proc-before-restart-0001", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			first := r.attachAs(t, "proc-before-restart-0001")
+			if err := r.manager.OnRing(context.Background(), contracts.Ring{
+				RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+				Reason: "mentioned", ThroughCursor: "c0002",
+			}); err != nil {
+				t.Fatalf("OnRing: %v", err)
+			}
+			if brief := receive(t, first); brief["requestId"] != "req_1" {
+				t.Fatalf("expected the brief for req_1, got %v", brief)
+			}
+			send(t, first, map[string]any{
+				"v": 1, "type": "ack", "requestId": "req_1", "outcome": "accepted", "session": "resumed",
+			})
+			// Hermes goes away mid-turn.
+			_ = first.Close("gone")
+			deadline := time.Now().Add(2 * time.Second)
+			for r.manager.Attached() {
+				if time.Now().After(deadline) {
+					t.Fatal("the surface never noticed the plugin left")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+
+			second := r.attachAs(t, tc.after)
+			frame := receiveWithin(t, second, 300*time.Millisecond)
+			switch {
+			case tc.redelivers && (frame == nil || frame["requestId"] != "req_1"):
+				t.Fatalf("the restarted harness was handed %v; its predecessor's request sat unanswered", frame)
+			case !tc.redelivers && frame != nil:
+				t.Fatalf("a reconnect of the same process was handed a %v it was already answering", frame["type"])
+			}
+		})
+	}
+}
+
+// 🔴 #2232: the companion says it can relay a question, and a post carrying one
+// reaches the platform WITH it — the plugin asks through the card only when told.
+func TestAQuestionIsAdvertisedAndRelayed(t *testing.T) {
+	r := newRig(t)
+	conn := r.dial(t, testToken, true)
+	hello := receive(t, conn)
+	features, _ := hello["features"].([]any)
+	if len(features) != 1 || features[0] != "question" {
+		t.Fatalf("the companion's hello lists %v, want [question]", hello["features"])
+	}
+	raw, _ := json.Marshal(hello)
+	if err := wire.Validate(raw); err != nil {
+		t.Fatalf("the companion's hello fails its own schema: %v", err)
+	}
+	send(t, conn, map[string]any{"v": 1, "type": "ready", "harnessVersion": "0.21.3"})
+	if err := r.manager.OnRing(context.Background(), contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	receive(t, conn) // the brief
+	send(t, conn, map[string]any{"v": 1, "type": "ack", "requestId": "req_1", "outcome": "accepted", "session": "resumed"})
+	send(t, conn, map[string]any{
+		"v": 1, "type": "post", "requestId": "req_1", "text": "Which pump?",
+		"question": map[string]any{"id": "clarify_1", "choices": []string{"North", "South"}, "multiSelect": false},
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.host.Questions()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the question never reached the host: the post went out as plain text")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := r.host.Questions()[0]
+	if got.ID != "clarify_1" || len(got.Choices) != 2 || got.Choices[1] != "South" || got.MultiSelect {
+		t.Fatalf("the host was handed %+v", got)
+	}
+}

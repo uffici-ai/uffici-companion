@@ -237,6 +237,11 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 				return "", ""
 			}
 			return wire.HarnessFacts()
+		}, func() string {
+			if wire == nil {
+				return ""
+			}
+			return wire.PluginVersion()
 		})
 		if err != nil {
 			return ExitConfig, err
@@ -447,7 +452,7 @@ func report(logger *slog.Logger, result runner.Result) {
 
 // buildGatewayHost reads the key and the instance id from $UFFICI_HOME and
 // builds the real host through the registry.
-func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string, string)) (contracts.AgentsHost, error) {
+func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string, string), plugin func() string) (contracts.AgentsHost, error) {
 	key, err := LoadAgentKey(config.Home, config.AgentKey)
 	if err != nil {
 		return nil, err
@@ -462,7 +467,8 @@ func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string
 	}
 	reg, err := registry.New(registry.Config{AgentsHost: registry.KindGateway, Gateway: gateway.Options{
 		BaseURL: config.GatewayURL, Key: key, InstanceID: instanceID, Version: config.Version,
-		Harness: harness, HTTPClient: httpClient, Logger: logger.With(slog.String("component", "gateway")),
+		Harness: harness, Plugin: plugin, HTTPClient: httpClient,
+		Logger: logger.With(slog.String("component", "gateway")),
 	}})
 	if err != nil {
 		return nil, err

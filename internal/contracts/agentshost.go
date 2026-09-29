@@ -184,8 +184,9 @@ type AgentsHost interface {
 	ReadOpener(ctx context.Context, conversationID, throughCursor string, budgetTokens int) ([]Entry, error)
 
 	// Post sends one outbound message. Every post means "more coming"; the
-	// request closes with CloseRequest.
-	Post(ctx context.Context, requestID, conversationID, text string) (messageID string, err error)
+	// request closes with CloseRequest. A non-nil question makes the post the
+	// harness ASKING the person (#2232): the text is the question.
+	Post(ctx context.Context, requestID, conversationID, text string, question *Question) (messageID string, err error)
 
 	// CloseRequest closes a request with its outcome, and an error class when
 	// the outcome is an error.
@@ -208,3 +209,12 @@ type ClassifiedError interface {
 // ClassRequestClosed is the platform's class for a request that is already
 // over: posting to it again is pointless, and closing it again is harmless.
 const ClassRequestClosed = "request_closed"
+
+// Question is what a harness's question offers (#2232) — the choices the
+// question card shows, and whether several may be picked. The id is the
+// harness's own, and the person's answer names it.
+type Question struct {
+	ID          string
+	Choices     []string
+	MultiSelect bool
+}

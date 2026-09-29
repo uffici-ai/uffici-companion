@@ -44,11 +44,11 @@ func (f *failingHost) ReadOpener(ctx context.Context, conversationID, through st
 	return f.Host.ReadOpener(ctx, conversationID, through, budget)
 }
 
-func (f *failingHost) Post(ctx context.Context, requestID, conversationID, text string) (string, error) {
+func (f *failingHost) Post(ctx context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
 	if f.postErr != nil {
 		return "", f.postErr
 	}
-	return f.Host.Post(ctx, requestID, conversationID, text)
+	return f.Host.Post(ctx, requestID, conversationID, text, question)
 }
 
 func (f *failingHost) CloseRequest(ctx context.Context, requestID string, outcome contracts.Outcome, errorClass string) error {
@@ -91,7 +91,7 @@ func TestAFailedPostIsRelayedAndClosedAsAnError(t *testing.T) {
 	if err := manager.OnAck(ctx, "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "hello"); err != nil {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "hello", nil); err != nil {
 		t.Fatalf("OnPost answered %v — the surface would drop the plugin over a platform failure", err)
 	}
 	got, ok := sink.failures["req_1"]
@@ -119,7 +119,7 @@ func TestAPostToARequestThePlatformClosedIsNotClosedAgain(t *testing.T) {
 	if err := manager.OnRing(ctx, ring("req_1", "c0001", "c0003")); err != nil {
 		t.Fatal(err)
 	}
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "late"); err != nil {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "late", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := sink.failures["req_1"]; got[0] != contracts.ClassRequestClosed {
@@ -285,7 +285,7 @@ func TestAFailureClaimsTheRequestBeforeItsIO(t *testing.T) {
 	manager.mu.Unlock()
 	// A supersede racing the failure's send must find the request already over.
 	sink.during = func() { _ = manager.cancel(ctx, request, contracts.CancelSuperseded) }
-	_ = manager.OnPost(ctx, "conn-1", "req_1", "x")
+	_ = manager.OnPost(ctx, "conn-1", "req_1", "x", nil)
 	if len(host.closes) != 1 || len(sink.cancels) != 0 {
 		t.Fatalf("closed %d times, cancelled %v — the failure did not claim the request first", len(host.closes), sink.cancels)
 	}

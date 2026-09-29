@@ -67,6 +67,8 @@ type Post struct {
 	PostID    string
 	RequestID string
 	Text      string
+	// Question is set when the post asked the person something (#2232).
+	Question *protocol.PostQuestion
 }
 
 // Close is one recorded close.
@@ -577,7 +579,10 @@ func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID str
 	if rung && request.conversationID == conversationID && !closed && !seen {
 		messageID = strconv.Itoa(2000 + len(d.posts))
 		d.postsByID[body.PostID] = messageID
-		d.posts = append(d.posts, Post{MessageID: messageID, PostID: body.PostID, RequestID: body.RequestID, Text: body.Text})
+		d.posts = append(d.posts, Post{
+			MessageID: messageID, PostID: body.PostID, RequestID: body.RequestID, Text: body.Text,
+			Question: body.Question,
+		})
 	}
 	d.mu.Unlock()
 	switch {

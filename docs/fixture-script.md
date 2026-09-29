@@ -49,7 +49,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `appendEntries` | Adds entries mid-run — a message arriving while the agent answers |
 | `expectAck` | Waits for an ack on the current request: `outcome`, `session`, `withinMs` |
 | `expectOpener` / `expectNoOpener` | Whether **this** request earned an opener |
-| `expectPost` | Waits for a post: `matcher` (`nonEmpty`, `contains`, `matches`), `value` |
+| `expectPost` | Waits for a post: `matcher` (`nonEmpty`, `contains`, `matches`, `question`), `value`. `question` is met only by a post that carried a question — the question card, never a question asked in plain text |
 | `expectNoPost` | Asserts no post arrives for this request within `forMs` |
 | `expectClose` | Waits for the close: `outcome` |
 | `expectOffset` | Reads the store: `conversation`, `cursor` |

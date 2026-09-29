@@ -350,6 +350,11 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
 - The agent key is the only credential. The companion alone holds it; it is never logged,
   never shown to a plugin, and is revoked and reissued from the portal.
 - Outbound only: one WebSocket and HTTPS calls to your agents host. No inbound port.
+- On each connection it tells Uffici what is answering, for your administrators to see on the
+  agent's Connect tab: its own version, the plugin's and the harness's versions, and the
+  machine's kind — operating system, architecture and OS release (for example
+  `Debian GNU/Linux 13 (trixie)`, `linux/amd64`). Never the machine's name, a user name or a
+  path.
 - Everything the agent reads from a Uffici conversation or posts to one passes through
   Uffici, is fenced to the conversations the agent participates in, and is recorded under the
   request that asked for it. The companion executes nothing. Your harness's own tools and

@@ -433,6 +433,11 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 				if sent.Text == step.Value {
 					return true
 				}
+			case "question":
+				// A post that CARRIED a question (#2232) — the card, never words.
+				if sent.Question != nil {
+					return true
+				}
 			default:
 				if sent.Text != "" {
 					return true

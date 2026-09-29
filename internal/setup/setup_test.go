@@ -736,6 +736,78 @@ func TestRunRefusals(t *testing.T) {
 	})
 }
 
+// A refusal is the one line a person reads when the install stops, so it names
+// the program once: `Run` adds `uffici setup: `, and nothing in the package adds
+// a second `setup: ` of its own (#2197 — the first dry run against a real
+// release printed `uffici setup: setup: … (404)`).
+func TestRunRefusalNamesTheProgramOnce(t *testing.T) {
+	unknownField := goodManifest()
+	unknownField["unknownField"] = true
+	cases := map[string]struct {
+		manifest map[string]any
+		arrange  func(r *rig)
+	}{
+		"the release has no such asset (404)": {goodManifest(), func(r *rig) {
+			r.opts.NoService, r.opts.NoPair = true, true
+			empty := newReleaseServer(t, "uffici-for-hermes", "", map[string][]byte{})
+			r.opts.Release = func(repo string) Release { return empty.release(repo, "") }
+		}},
+		"no service shape for the OS": {goodManifest(), func(r *rig) {
+			r.opts.NoPair = true
+			r.opts.GOOS = "plan9"
+		}},
+		"a manifest that does not match the schema": {unknownField, func(r *rig) {
+			r.opts.NoService, r.opts.NoPair = true, true
+		}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t, c.manifest, false)
+			c.arrange(r)
+			if code := Run(context.Background(), r.opts, r.out); code != ExitFailed {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			lines := strings.Split(strings.TrimRight(r.out.String(), "\n"), "\n")
+			refusal := lines[len(lines)-1]
+			if !strings.HasPrefix(refusal, "uffici setup: ") {
+				t.Fatalf("the refusal does not start with the program's name: %q", refusal)
+			}
+			if n := strings.Count(refusal, "setup: "); n != 1 {
+				t.Fatalf("the refusal names setup %d times: %q", n, refusal)
+			}
+		})
+	}
+}
+
+// The Run cases above sample three refusal paths; this holds every error the
+// package can build to the same rule, so a new `setup: ` prefix anywhere in it
+// fails here rather than on the one line a person reads (#2197).
+func TestNoErrorInThePackageCarriesItsOwnPrefix(t *testing.T) {
+	files, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanned := 0
+	for _, file := range files {
+		if strings.HasSuffix(file, "_test.go") {
+			continue
+		}
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scanned++
+		for i, line := range strings.Split(string(source), "\n") {
+			if strings.Contains(line, `"setup: `) {
+				t.Errorf("%s:%d builds a message starting `setup: ` — Run already names the program: %s", file, i+1, strings.TrimSpace(line))
+			}
+		}
+	}
+	if scanned < 4 {
+		t.Fatalf("scanned %d source files — the glob no longer finds the package", scanned)
+	}
+}
+
 func TestRunHonoursHarnessHomeAndDefaults(t *testing.T) {
 	r := newRig(t, goodManifest(), false)
 	r.opts.NoService, r.opts.NoPair = true, true

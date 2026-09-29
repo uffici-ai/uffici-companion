@@ -199,7 +199,7 @@ func Run(t *testing.T, name string, factory Factory) {
 		t.Run("posting and acknowledging need their ids", func(t *testing.T) {
 			subject := factory(t)
 			ctx := context.Background()
-			if _, err := subject.Host.Post(ctx, "", subject.ConversationID, "text"); err == nil {
+			if _, err := subject.Host.Post(ctx, "", subject.ConversationID, "text", nil); err == nil {
 				t.Fatal("a post with no request id was accepted")
 			}
 			if err := subject.Host.Ack(ctx, ""); err == nil {

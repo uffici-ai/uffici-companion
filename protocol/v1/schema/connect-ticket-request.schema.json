@@ -48,6 +48,45 @@
 				"version"
 			],
 			"additionalProperties": false
+		},
+		"plugin": {
+			"type": "object",
+			"properties": {
+				"version": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				}
+			},
+			"required": [
+				"version"
+			],
+			"additionalProperties": false
+		},
+		"host": {
+			"type": "object",
+			"properties": {
+				"os": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 32
+				},
+				"arch": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 32
+				},
+				"osRelease": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				}
+			},
+			"required": [
+				"os",
+				"arch"
+			],
+			"additionalProperties": false
 		}
 	},
 	"required": [

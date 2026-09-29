@@ -252,7 +252,7 @@ func TestAFrameOnAnotherConnectionIsRefused(t *testing.T) {
 	manager := r.manager
 	ctx := context.Background()
 	r.ring(t, "req_1", "c0001", "c0003")
-	if err := manager.OnPost(ctx, "conn-2", "req_1", "from somebody else"); !errors.Is(err, ErrWrongConnection) {
+	if err := manager.OnPost(ctx, "conn-2", "req_1", "from somebody else", nil); !errors.Is(err, ErrWrongConnection) {
 		t.Fatalf("a post on another connection returned %v, want ErrWrongConnection", err)
 	}
 	if err := manager.OnDone(ctx, "conn-2", "req_1", contracts.OutcomeAnswered, ""); !errors.Is(err, ErrWrongConnection) {
@@ -268,7 +268,7 @@ func TestAFrameForAClosedRequestIsUnknown(t *testing.T) {
 	if err := manager.OnDone(ctx, "conn-1", "req_1", contracts.OutcomeAnswered, ""); err != nil {
 		t.Fatalf("OnDone: %v", err)
 	}
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "too late"); !errors.Is(err, ErrUnknownRequest) {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "too late", nil); !errors.Is(err, ErrUnknownRequest) {
 		t.Fatalf("a post after the close returned %v, want ErrUnknownRequest", err)
 	}
 }
@@ -280,11 +280,11 @@ func TestTheCapsCloseTheRequestAsAnError(t *testing.T) {
 		ctx := context.Background()
 		r.ring(t, "req_1", "c0001", "c0003")
 		for i := 0; i < 2; i++ {
-			if err := manager.OnPost(ctx, "conn-1", "req_1", "ok"); err != nil {
+			if err := manager.OnPost(ctx, "conn-1", "req_1", "ok", nil); err != nil {
 				t.Fatalf("post %d: %v", i, err)
 			}
 		}
-		if err := manager.OnPost(ctx, "conn-1", "req_1", "one too many"); err != nil {
+		if err := manager.OnPost(ctx, "conn-1", "req_1", "one too many", nil); err != nil {
 			t.Fatalf("the capped post: %v", err)
 		}
 		if manager.Open() != 0 {
@@ -300,7 +300,7 @@ func TestTheCapsCloseTheRequestAsAnError(t *testing.T) {
 		manager := r.manager
 		ctx := context.Background()
 		r.ring(t, "req_1", "c0001", "c0003")
-		if err := manager.OnPost(ctx, "conn-1", "req_1", "far too long for the cap"); err != nil {
+		if err := manager.OnPost(ctx, "conn-1", "req_1", "far too long for the cap", nil); err != nil {
 			t.Fatalf("the oversized post: %v", err)
 		}
 		if manager.Open() != 0 {
@@ -317,7 +317,7 @@ func TestAnAnsweredCloseCommitsTheOffset(t *testing.T) {
 	if err := manager.OnAck(ctx, "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
 		t.Fatalf("OnAck: %v", err)
 	}
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "here you go"); err != nil {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "here you go", nil); err != nil {
 		t.Fatalf("OnPost: %v", err)
 	}
 	if err := manager.OnDone(ctx, "conn-1", "req_1", contracts.OutcomeAnswered, ""); err != nil {
@@ -594,7 +594,7 @@ func TestAReattachedPluginMayPostForARequestItAlreadyAcked(t *testing.T) {
 	manager.Attach("conn-2", second, 48000)
 
 	// The harness's reply must be accepted, not answered with wrong_connection.
-	err := manager.OnPost(ctx, "conn-2", "req_1", "yes, it is filed")
+	err := manager.OnPost(ctx, "conn-2", "req_1", "yes, it is filed", nil)
 	if errors.Is(err, ErrWrongConnection) {
 		t.Fatal(
 			"a post from the reattached plugin was refused as wrong_connection: the dead " +
@@ -687,7 +687,7 @@ func TestADoneThatCrossesACancelIsIgnoredRatherThanFatal(t *testing.T) {
 		t.Fatal("a done crossing a cancel reads as an unknown request, which closes the connection")
 	}
 	// And a post that crossed it is equally ordinary.
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "a reply in flight"); !errors.Is(err, ErrClosedRequest) {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "a reply in flight", nil); !errors.Is(err, ErrClosedRequest) {
 		t.Fatalf("a post crossing a cancel gave %v, want ErrClosedRequest", err)
 	}
 	if manager.Open() != 0 {
@@ -755,11 +755,11 @@ func TestAFrameAfterACompanionDecidedCloseIsIgnoredToo(t *testing.T) {
 	if err := manager.OnAck(ctx, "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
 		t.Fatalf("OnAck: %v", err)
 	}
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "one"); err != nil {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "one", nil); err != nil {
 		t.Fatalf("the first post: %v", err)
 	}
 	// The second post trips the cap, which closes the request here.
-	if err := manager.OnPost(ctx, "conn-1", "req_1", "two"); err != nil {
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "two", nil); err != nil {
 		t.Fatalf("the post that trips the cap: %v", err)
 	}
 	if manager.Open() != 0 {
@@ -853,7 +853,118 @@ func TestADetachPurgesItsOwnershipEvenAfterAnotherPluginAttached(t *testing.T) {
 	manager.Attach("conn-2", newRecorder(), 48000)
 	manager.Detach("conn-1")
 
-	if err := manager.OnPost(ctx, "conn-2", "req_1", "the answer, on the new connection"); err != nil {
+	if err := manager.OnPost(ctx, "conn-2", "req_1", "the answer, on the new connection", nil); err != nil {
 		t.Fatalf("the reconnected plugin's post was refused: %v", err)
 	}
+}
+
+// ── A harness that restarts under an acknowledged request (#2234) ────────────
+
+// ackedThenDetached opens req_1 on conn-1 for process `before`, has the plugin
+// acknowledge it on receipt, and drops the connection mid-turn.
+func ackedThenDetached(t *testing.T, manager *Manager, before string) {
+	t.Helper()
+	ctx := context.Background()
+	manager.Attach("conn-1", newRecorder(), 48000)
+	manager.BindProcess(before)
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if err := manager.OnAck(ctx, "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	if err := manager.OnPost(ctx, "conn-1", "req_1", "half an answer", nil); err != nil {
+		t.Fatalf("OnPost: %v", err)
+	}
+	manager.Detach("conn-1")
+}
+
+// reattach brings a plugin back the way the surface does on `ready`.
+func reattach(t *testing.T, manager *Manager, processID string) *recorder {
+	t.Helper()
+	sink := newRecorder()
+	manager.Attach("conn-2", sink, 48000)
+	manager.BindProcess(processID)
+	if err := manager.RedeliverOpen(context.Background()); err != nil {
+		t.Fatalf("RedeliverOpen: %v", err)
+	}
+	return sink
+}
+
+// 🔴 #2234: on hermes-01 `hermes gateway restart` dropped the request in flight.
+// The companion kept it open because the harness "may still be working" — true
+// of a reconnect, false of a restart, and the plugin's hello could not say which.
+// A NEW process holds nothing of the old one's turn, so the request goes to it.
+func TestARestartedHarnessIsHandedWhatTheOldProcessAcknowledged(t *testing.T) {
+	manager := New(seededHost(), Options{})
+	ackedThenDetached(t, manager, "proc-before")
+
+	sink := reattach(t, manager, "proc-after")
+
+	if posts := manager.byID["req_1"].Posts; posts != 0 {
+		t.Fatalf("the redelivered request still counts %d post(s) of the process that died", posts)
+	}
+	if len(sink.briefs) != 1 || sink.briefs[0].RequestID != "req_1" {
+		t.Fatalf(
+			"the restarted harness got %d brief(s); the request its predecessor acknowledged "+
+				"would sit unanswered until its deadline", len(sink.briefs),
+		)
+	}
+	// Owned by the new connection now: its reply is accepted.
+	if err := manager.OnAck(context.Background(), "conn-2", "req_1", AckAccepted, SessionResumed); err != nil {
+		t.Fatalf("the new process could not acknowledge its brief: %v", err)
+	}
+}
+
+// The other half: a reconnect of the SAME process is still working on its turn.
+// Handing it the brief again would admit the same delta twice.
+func TestAReconnectFromTheSameProcessIsNotHandedItAgain(t *testing.T) {
+	manager := New(seededHost(), Options{})
+	ackedThenDetached(t, manager, "proc-same")
+
+	sink := reattach(t, manager, "proc-same")
+
+	if len(sink.briefs) != 0 {
+		t.Fatalf("a reconnect of the same process got %d brief(s) it was already answering", len(sink.briefs))
+	}
+}
+
+// An older plugin sends no process id: the old rule, never a redelivery.
+func TestAPluginWithNoProcessIDKeepsTheOldRule(t *testing.T) {
+	manager := New(seededHost(), Options{})
+	ackedThenDetached(t, manager, "")
+
+	sink := reattach(t, manager, "")
+
+	if len(sink.briefs) != 0 {
+		t.Fatalf("%d brief(s) redelivered to a plugin that cannot say it restarted", len(sink.briefs))
+	}
+}
+
+// A harness that restarts on every brief must still END: each restart is a
+// redelivery, and the bound closes it as an error the platform can act on.
+func TestAHarnessRestartingOnEveryBriefEndsInRedeliveryExhausted(t *testing.T) {
+	manager := New(seededHost(), Options{Limits: Limits{MaxRedeliveries: 2}})
+	ackedThenDetached(t, manager, "proc-0")
+
+	for i := 1; i <= 3; i++ {
+		sink := reattach(t, manager, "proc-"+strconv.Itoa(i))
+		if manager.Open() == 0 {
+			if i != 3 {
+				t.Fatalf("closed after %d restart(s), before the bound of 2 redeliveries", i)
+			}
+			return
+		}
+		if len(sink.briefs) != 1 {
+			t.Fatalf("restart %d: %d brief(s), want the redelivered one", i, len(sink.briefs))
+		}
+		if err := manager.OnAck(context.Background(), "conn-2", "req_1", AckAccepted, SessionResumed); err != nil {
+			t.Fatalf("restart %d: OnAck: %v", i, err)
+		}
+		manager.Detach("conn-2")
+	}
+	t.Fatalf("%d request(s) still open after three restarts — a crash loop would never end", manager.Open())
 }

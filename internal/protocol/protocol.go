@@ -114,6 +114,24 @@ type ConnectTicketRequest struct {
 	InstanceID string       `json:"instanceId"`
 	Client     ClientFacts  `json:"client"`
 	Harness    HarnessFacts `json:"harness"`
+	// Plugin and Host are optional (#2236): the attached plugin's version and
+	// the machine's kind, for the Connect tab — never authority.
+	Plugin *PluginFacts `json:"plugin,omitempty"`
+	Host   *HostFacts   `json:"host,omitempty"`
+}
+
+// PluginFacts is the attached plugin's self-description, from its hello (#2236).
+type PluginFacts struct {
+	Version string `json:"version"`
+}
+
+// HostFacts is the machine's kind (#2236): the operating system and
+// architecture as Go names them, and the OS release when it can be read.
+// 🔴 Never a hostname, a user or a path.
+type HostFacts struct {
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
+	OSRelease string `json:"osRelease,omitempty"`
 }
 
 // ClientFacts is the companion's self-description, for the Agents screen.
@@ -260,6 +278,16 @@ type PostRequest struct {
 	// Audience is `external`, the only value in stage 1.
 	Audience    string       `json:"audience"`
 	Attachments []Attachment `json:"attachments,omitempty"`
+	// Question is present when the post is the agent ASKING (#2232).
+	Question *PostQuestion `json:"question,omitempty"`
+}
+
+// PostQuestion is what an agent's question offers (#2232): the harness's own
+// id for it, the choices, and whether several may be picked.
+type PostQuestion struct {
+	ID          string   `json:"id"`
+	Choices     []string `json:"choices"`
+	MultiSelect bool     `json:"multiSelect"`
 }
 
 // PostResponse answers a post.

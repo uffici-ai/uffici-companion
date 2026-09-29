@@ -75,7 +75,7 @@ func (r Release) Describe() string {
 func (r Release) Fetch(ctx context.Context, asset string) ([]byte, error) {
 	for _, origin := range []string{r.base(), r.api()} {
 		if !secureOrigin(origin) {
-			return nil, fmt.Errorf("setup: %s is not https — a token or a download over plain http is refused (loopback excepted, for tests)", origin)
+			return nil, fmt.Errorf("%s is not https — a token or a download over plain http is refused (loopback excepted, for tests)", origin)
 		}
 	}
 	if r.Token == "" {
@@ -112,25 +112,25 @@ func (r Release) assetAPIURL(ctx context.Context, asset string) (string, error) 
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(raw, &listing); err != nil {
-		return "", fmt.Errorf("setup: reading the release listing of %s: %w", r.Describe(), err)
+		return "", fmt.Errorf("reading the release listing of %s: %w", r.Describe(), err)
 	}
 	for _, a := range listing.Assets {
 		if a.Name == asset {
 			// 🔴 The Bearer header goes wherever this URL points, so the listing
 			// may only send it back to the API it came from.
 			if !strings.HasPrefix(a.URL, r.api()+"/repos/") {
-				return "", fmt.Errorf("setup: the release listing of %s names an asset outside its API — refusing it", r.Describe())
+				return "", fmt.Errorf("the release listing of %s names an asset outside its API — refusing it", r.Describe())
 			}
 			return a.URL, nil
 		}
 	}
-	return "", fmt.Errorf("setup: %s has no asset named %s", r.Describe(), asset)
+	return "", fmt.Errorf("%s has no asset named %s", r.Describe(), asset)
 }
 
 func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("setup: building the request for %s: %w", r.Describe(), err)
+		return nil, fmt.Errorf("building the request for %s: %w", r.Describe(), err)
 	}
 	if accept != "" {
 		req.Header.Set("Accept", accept)
@@ -142,21 +142,21 @@ func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
 	}
 	resp, err := r.client().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("setup: fetching from %s: the request failed (%s)", r.Describe(), classify(err))
+		return nil, fmt.Errorf("fetching from %s: the request failed (%s)", r.Describe(), classify(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("setup: %s has no such release or asset (404) — is there a release yet, and is the repository public or a token set?", r.Describe())
+		return nil, fmt.Errorf("%s has no such release or asset (404) — is there a release yet, and is the repository public or a token set?", r.Describe())
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("setup: fetching from %s answered %d", r.Describe(), resp.StatusCode)
+		return nil, fmt.Errorf("fetching from %s answered %d", r.Describe(), resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, MaxAssetBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("setup: reading from %s: %w", r.Describe(), err)
+		return nil, fmt.Errorf("reading from %s: %w", r.Describe(), err)
 	}
 	if len(body) > MaxAssetBytes {
-		return nil, fmt.Errorf("setup: an asset of %s is larger than %d bytes, which no release of ours is", r.Describe(), MaxAssetBytes)
+		return nil, fmt.Errorf("an asset of %s is larger than %d bytes, which no release of ours is", r.Describe(), MaxAssetBytes)
 	}
 	return body, nil
 }
@@ -191,11 +191,11 @@ func (r Release) FetchVerified(ctx context.Context, asset string) ([]byte, error
 	}
 	expected, err := ParseChecksums(sums)
 	if err != nil {
-		return nil, fmt.Errorf("setup: %s of %s: %w", ChecksumsFile, r.Describe(), err)
+		return nil, fmt.Errorf("%s of %s: %w", ChecksumsFile, r.Describe(), err)
 	}
 	want, ok := expected[asset]
 	if !ok {
-		return nil, fmt.Errorf("setup: %s of %s does not list %s — refusing an asset the release did not vouch for", ChecksumsFile, r.Describe(), asset)
+		return nil, fmt.Errorf("%s of %s does not list %s — refusing an asset the release did not vouch for", ChecksumsFile, r.Describe(), asset)
 	}
 	body, err := r.Fetch(ctx, asset)
 	if err != nil {
@@ -203,7 +203,7 @@ func (r Release) FetchVerified(ctx context.Context, asset string) ([]byte, error
 	}
 	sum := sha256.Sum256(body)
 	if got := hex.EncodeToString(sum[:]); got != want {
-		return nil, fmt.Errorf("setup: %s from %s does not match its published checksum — refusing to install it", asset, r.Describe())
+		return nil, fmt.Errorf("%s from %s does not match its published checksum — refusing to install it", asset, r.Describe())
 	}
 	return body, nil
 }

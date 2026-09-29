@@ -34,7 +34,7 @@ type ProbeResult struct {
 // would be refused `instance_conflict` by that same daemon, which would report
 // a healthy machine as a broken one.
 func (h *Host) Probe(ctx context.Context) ProbeResult {
-	ticket, err := h.api.mintConnect(ctx, h.harness(), h.version)
+	ticket, err := h.api.mintConnect(ctx, h.harness(), h.version, h.plugin(), h.hostFacts)
 	if err != nil {
 		return failedProbe(err)
 	}

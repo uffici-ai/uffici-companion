@@ -159,7 +159,7 @@ var knownSteps = map[string]bool{
 	"secondConnection": true, "wait": true,
 }
 
-var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true}
+var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}
 
 // Load reads and validates a script.
 func Load(r io.Reader) (*Script, error) {
@@ -298,7 +298,7 @@ func (s *Script) Validate() error {
 			}
 		case "expectPost":
 			if step.Matcher != "" && !knownMatchers[step.Matcher] {
-				return fmt.Errorf("fixture: step %d uses matcher %q; known matchers are nonEmpty, contains, matches", i, step.Matcher)
+				return fmt.Errorf("fixture: step %d uses matcher %q; known matchers are nonEmpty, contains, matches, question", i, step.Matcher)
 			}
 			if (step.Matcher == "contains" || step.Matcher == "matches") && step.Value == "" {
 				return fmt.Errorf("fixture: step %d uses matcher %q with no value, which matches everything", i, step.Matcher)

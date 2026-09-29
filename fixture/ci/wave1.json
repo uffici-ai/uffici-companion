@@ -65,6 +65,25 @@
           }
         }
       ]
+    },
+    "boards": {
+      "id": "conv_ci_boards",
+      "offset": "",
+      "entries": [
+        {
+          "id": "b1",
+          "cursor": "c0001",
+          "at": "2026-09-18T10:00:00Z",
+          "kind": "message",
+          "text": "Do we have a board for the Lisbon launch? Ask me which one I mean with your clarify tool, offering 'Uffici task board' and 'Another app'. [ask-a-question]",
+          "author": {
+            "type": "member",
+            "id": "member_3",
+            "label": "Marta Silva",
+            "self": false
+          }
+        }
+      ]
     }
   },
   "steps": [
@@ -361,18 +380,100 @@
       "outcome": "cancelled",
       "withinMs": 60000,
       "note": "The expiry's close. `deadlineMs: 500` is the assertion; this waits for what it causes."
+    },
+    {
+      "step": "ring",
+      "conversation": "boards",
+      "reason": "mentioned",
+      "causeEntry": "b1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000,
+      "note": "🔴 #2232: the agent ASKS. The model mock calls Hermes's clarify on the marker (a real model is asked to in words), and the plugin turns it into the question card."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "question",
+      "withinMs": 120000,
+      "note": "🔴 `question`, never `nonEmpty`: a harness that fell back to plain text also posts, and the person would get a numbered list instead of the card."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "boards",
+      "outcome": "answered",
+      "withinMs": 120000,
+      "note": "🔴 The question SETTLES its request: the person sees the card, not a working line, and the deadline stops running against a turn that is waiting on them."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "boards",
+      "entries": [
+        {
+          "id": "b2",
+          "cursor": "c0002",
+          "at": "2026-09-18T10:02:00Z",
+          "kind": "message",
+          "text": "Uffici task board",
+          "author": {
+            "type": "member",
+            "id": "member_3",
+            "label": "Marta Silva",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "boards",
+      "reason": "mentioned",
+      "causeEntry": "b2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "The answer, as the card posts it. The plugin resolves the waiting clarify with it rather than starting a turn, and acknowledges `resumed`."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectNoOpener"
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000,
+      "note": "The turn that asked carries on and answers — on THIS request, the one that carried the answer."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "boards",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "The asking turn's end closes the answering request: without the continuation it would close nothing, and this request would expire."
     }
   ],
   "assert": {
-    "ringsDelivered": 7,
-    "openersSent": 2,
+    "ringsDelivered": 9,
+    "openersSent": 3,
     "closes": {
-      "answered": 5,
+      "answered": 7,
       "cancelled": 2
     },
     "sessions": {
-      "fresh": 2,
-      "resumed": 5
+      "fresh": 3,
+      "resumed": 6
     },
     "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds."
   }

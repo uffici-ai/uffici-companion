@@ -44,7 +44,9 @@ type autoPlugin struct {
 	manager *requests.Manager
 	session requests.Session
 	answer  string
-	silent  bool
+	// question makes the post a question (#2232).
+	question *contracts.Question
+	silent   bool
 	// noClose posts and then stops, leaving the request open for a cancel.
 	noClose bool
 }
@@ -55,7 +57,7 @@ func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error 
 		if a.silent {
 			return
 		}
-		_ = a.manager.OnPost(ctx, "conn-1", brief.RequestID, a.answer)
+		_ = a.manager.OnPost(ctx, "conn-1", brief.RequestID, a.answer, a.question)
 		if a.noClose {
 			return
 		}
@@ -519,5 +521,32 @@ func TestARunWaitsForAPluginAndSaysSoWhenNoneComes(t *testing.T) {
 	// claim the absent plugin still needs.
 	if result.RingsDelivered != 0 {
 		t.Fatalf("%d rings were delivered, want 0 — the script must not start", result.RingsDelivered)
+	}
+}
+
+// 🔴 #2232: `question` is met only by a post that CARRIED a question — a harness
+// that fell back to asking in plain text posts words, and the card never shows.
+func TestTheQuestionMatcherNeedsAPostThatCarriesOne(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectPost", Matcher: "question", WithinMs: 300},
+	}
+	asks := &autoPlugin{
+		session: requests.SessionFresh, answer: "Which one?",
+		question: &contracts.Question{ID: "clarify_1", Choices: []string{"a", "b"}},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{}), asks)
+	if result, err := r.runner.Run(context.Background()); err != nil || !result.OK() {
+		t.Fatalf("a question post did not meet `question`: %v %v", err, result.Unmet)
+	}
+
+	plain := &autoPlugin{session: requests.SessionFresh, answer: "Which one? 1. a 2. b"}
+	r = newRig(t, script(steps, fixture.Assertions{}), plain)
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("a plain-text question met `question` — the card would never have shown")
 	}
 }

@@ -145,6 +145,6 @@ func planService(goos, userHome, binary, gatewayURL, companionHome, uid string) 
 			},
 		}, nil
 	default:
-		return servicePlan{}, fmt.Errorf("setup: no service shape for %s — Linux (systemd) and macOS (launchd) are supported", goos)
+		return servicePlan{}, fmt.Errorf("no service shape for %s — Linux (systemd) and macOS (launchd) are supported", goos)
 	}
 }

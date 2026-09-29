@@ -86,6 +86,8 @@ func newRigWith(t *testing.T, harness func() (string, string), configure ...func
 	host, err := gateway.New(gateway.Options{
 		BaseURL: double.URL(), Key: gatewaytest.Key, InstanceID: instanceID, Version: "1.2.3",
 		Harness:    harness,
+		Plugin:     func() string { return "0.4.0" },
+		HostFacts:  &protocol.HostFacts{OS: "linux", Arch: "amd64", OSRelease: "Debian GNU/Linux 13 (trixie)"},
 		HTTPClient: double.Client(),
 		Logger:     slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Sleep:      r.sleep,
@@ -271,7 +273,7 @@ func TestTheWholeTurnAgainstTheDouble(t *testing.T) {
 		t.Fatalf("the opener is %+v, want 1040–1042 with the agent's own", opener)
 	}
 
-	messageID, err := r.host.Post(ctx, requestID, conversationID, "On it.")
+	messageID, err := r.host.Post(ctx, requestID, conversationID, "On it.", nil)
 	if err != nil || messageID == "" {
 		t.Fatalf("Post: %q %v", messageID, err)
 	}
@@ -293,6 +295,32 @@ func TestTheWholeTurnAgainstTheDouble(t *testing.T) {
 		facts[0].Client.Version != "1.2.3" || facts[0].Harness.Kind != "hermes" {
 		t.Fatalf("the connection ticket was minted with %+v", facts)
 	}
+	// 🔴 #2236: the plugin's version and the machine's kind ride the same ticket —
+	// the facts the Connect tab shows and an out-of-date notice will read.
+	if facts[0].Plugin == nil || facts[0].Plugin.Version != "0.4.0" ||
+		facts[0].Host == nil || facts[0].Host.OS != "linux" || facts[0].Host.OSRelease != "Debian GNU/Linux 13 (trixie)" {
+		t.Fatalf("the connection ticket carried plugin %+v and host %+v", facts[0].Plugin, facts[0].Host)
+	}
+}
+
+// 🔴 #2232: a question rides the post in the protocol's shape — the double
+// validates every body against protocol/v1 and refuses one that is off-contract.
+func TestAQuestionRidesThePostInTheProtocolsShape(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	question := &contracts.Question{ID: "clarify_1", Choices: nil, MultiSelect: false}
+	if _, err := r.host.Post(context.Background(), requestID, conversationID, "Anything else?", question); err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if refusals := r.double.Refusals(); len(refusals) != 0 {
+		t.Fatalf("the double refused the question post: %v", refusals)
+	}
+	posts := r.double.Posts()
+	if len(posts) != 1 || posts[0].Question == nil || posts[0].Question.ID != "clarify_1" ||
+		posts[0].Question.Choices == nil {
+		t.Fatalf("the platform received %+v, want the question with an (empty) choice list", posts)
+	}
 }
 
 func TestAPostWhoseAnswerWasLostIsOneMessage(t *testing.T) {
@@ -303,7 +331,7 @@ func TestAPostWhoseAnswerWasLostIsOneMessage(t *testing.T) {
 	r.double.Inject("posts", gatewaytest.Injected{
 		Status: http.StatusServiceUnavailable, Body: gatewaytest.Envelope("platform_unavailable", true, nil), AfterEffect: true,
 	})
-	messageID, err := r.host.Post(context.Background(), requestID, conversationID, "once")
+	messageID, err := r.host.Post(context.Background(), requestID, conversationID, "once", nil)
 	if err != nil {
 		t.Fatalf("Post: %v", err)
 	}
@@ -322,7 +350,7 @@ func TestTwoPostsAreTwoMessages(t *testing.T) {
 	r.open(t)
 	r.ring(t)
 	for range 2 {
-		if _, err := r.host.Post(context.Background(), requestID, conversationID, "part"); err != nil {
+		if _, err := r.host.Post(context.Background(), requestID, conversationID, "part", nil); err != nil {
 			t.Fatalf("Post: %v", err)
 		}
 	}
@@ -405,7 +433,7 @@ func TestPostingToAClosedRequestIsClassified(t *testing.T) {
 	if err := r.host.CloseRequest(ctx, requestID, contracts.OutcomeAnswered, ""); err != nil {
 		t.Fatal(err)
 	}
-	_, err := r.host.Post(ctx, requestID, conversationID, "late")
+	_, err := r.host.Post(ctx, requestID, conversationID, "late", nil)
 	if classOf(err) != contracts.ClassRequestClosed {
 		t.Fatalf("a post to a closed request answered %v, want class request_closed", err)
 	}

@@ -111,7 +111,16 @@ func TestACallPayloadNeverReachesALogLine(t *testing.T) {
 	if !sawMarkerOnTheWire {
 		t.Fatal("no result carried the marker, so its absence from the log would prove nothing")
 	}
+	// 🔴 Polled, never read once: the surface SENDS a call's result before it logs
+	// the call, so the last result frame can reach this test before its log line
+	// exists. The one-shot read failed the release train's check on a loaded runner
+	// (ledger class 24).
 	logged := logs.String()
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(logged, `"msg":"call answered"`) < len(calls) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		logged = logs.String()
+	}
 	if strings.Count(logged, `"msg":"call answered"`) < len(calls) {
 		t.Fatalf("expected a log line per call, got:\n%s", logged)
 	}

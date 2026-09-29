@@ -18,7 +18,7 @@ func TestTheStubRefusesWhatTheContractRefuses(t *testing.T) {
 	if err := host.Ack(ctx, ""); err == nil {
 		t.Fatal("an ack with no ring id was accepted")
 	}
-	if _, err := host.Post(ctx, "", "conv_1", "text"); err == nil {
+	if _, err := host.Post(ctx, "", "conv_1", "text", nil); err == nil {
 		t.Fatal("a post with no request id was accepted")
 	}
 	if err := host.CloseRequest(ctx, "", contracts.OutcomeAnswered, ""); err == nil {

@@ -32,6 +32,7 @@ type Host struct {
 	requests      map[string]openRequest
 	acked         []string
 	posts         int
+	questions     []contracts.Question
 	openerReads   int
 	deltaReads    int
 }
@@ -141,13 +142,16 @@ func (h *Host) ReadOpener(_ context.Context, conversationID, through string, _ i
 }
 
 // Post records one outbound message.
-func (h *Host) Post(_ context.Context, requestID, conversationID, _ string) (string, error) {
+func (h *Host) Post(_ context.Context, requestID, conversationID, _ string, question *contracts.Question) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("memory: Post needs a request and a conversation")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.posts++
+	if question != nil {
+		h.questions = append(h.questions, *question)
+	}
 	return fmt.Sprintf("msg_%03d", h.posts), nil
 }
 
@@ -233,4 +237,11 @@ func (h *Host) DeliverCancel(requestID string, reason contracts.CancelReason) er
 	h.mu.Unlock()
 	handler(requestID, reason)
 	return nil
+}
+
+// Questions returns every question a post carried (#2232), in order.
+func (h *Host) Questions() []contracts.Question {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]contracts.Question(nil), h.questions...)
 }

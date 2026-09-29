@@ -4,11 +4,23 @@
 	"useGitignore": true,
 	"dictionaries": ["typescript", "node", "go", "softwareTerms", "companies", "misc", "filetypes"],
 	"words": [
+		"acked",
+		"acks",
+		"covercheck",
+		"coverpkg",
+		"coverprofile",
 		"doorbell",
+		"gatewaytest",
 		"golangci",
+		"goldens",
+		"goreleaser",
+		"healthz",
 		"ldflags",
 		"openclaw",
+		"sigstore",
+		"trixie",
 		"uffici",
+		"unrewritten",
 		"velcra"
 	],
 	"ignorePaths": [".git", "go.sum"]

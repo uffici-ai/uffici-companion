@@ -125,7 +125,7 @@ func (d *doorbell) dispatch(finished chan<- struct{}) {
 func (d *doorbell) connectOnce(ctx context.Context, policy *backoff) (endKind, time.Duration, string) {
 	h := d.host
 	minted := h.harness()
-	ticket, err := h.api.mintConnect(ctx, minted, h.version)
+	ticket, err := h.api.mintConnect(ctx, minted, h.version, h.plugin(), h.hostFacts)
 	if err != nil {
 		return mintEnd(err)
 	}

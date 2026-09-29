@@ -50,6 +50,34 @@
 				],
 				"additionalProperties": false
 			}
+		},
+		"question": {
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string",
+					"pattern": "^[\\w-]{1,200}$"
+				},
+				"choices": {
+					"maxItems": 10,
+					"type": "array",
+					"items": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 200,
+						"pattern": "\\S"
+					}
+				},
+				"multiSelect": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"id",
+				"choices",
+				"multiSelect"
+			],
+			"additionalProperties": false
 		}
 	},
 	"required": [

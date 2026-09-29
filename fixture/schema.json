@@ -101,7 +101,7 @@
         "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
         "outcome": { "type": "string" },
         "session": { "enum": ["fresh", "resumed"] },
-        "matcher": { "enum": ["nonEmpty", "contains", "matches"] },
+        "matcher": { "enum": ["nonEmpty", "contains", "matches", "question"] },
         "value": { "type": "string" },
         "cursor": { "type": "string" },
         "afterFirstPost": { "type": "boolean" },

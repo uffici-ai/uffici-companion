@@ -54,6 +54,11 @@ type Options struct {
 	// Harness reports the attached harness's kind and version, read at each
 	// connection. Nil, or empty answers, report `unknown`.
 	Harness func() (kind, version string)
+	// Plugin reports the attached plugin's version (#2236), read at each
+	// connection. Nil, or an empty answer, reports none.
+	Plugin func() string
+	// HostFacts describes this machine (#2236); nil takes the local one.
+	HostFacts *protocol.HostFacts
 	// HTTPClient carries the TLS configuration (a dev CA, a proxy). Nil takes a
 	// default client with a 30-second timeout.
 	HTTPClient *http.Client
@@ -69,6 +74,8 @@ type Host struct {
 	api       *client
 	version   string
 	harnessOf func() (string, string)
+	pluginOf  func() string
+	hostFacts *protocol.HostFacts
 	log       *slog.Logger
 	sleep     sleeper
 	backoff   *backoff
@@ -128,12 +135,33 @@ func New(options Options) (*Host, error) {
 		},
 		version:   version,
 		harnessOf: options.Harness,
+		pluginOf:  options.Plugin,
+		hostFacts: hostFactsOr(options.HostFacts),
 		log:       logger,
 		sleep:     sleep,
 		backoff:   newBackoff(),
 		requests:  map[string]string{},
 		acked:     map[string]struct{}{},
 	}, nil
+}
+
+// hostFactsOr is the given facts, or this machine's.
+func hostFactsOr(facts *protocol.HostFacts) *protocol.HostFacts {
+	if facts != nil {
+		return facts
+	}
+	return localHostFacts()
+}
+
+// plugin reads the attached plugin's facts, nil when no plugin said hello.
+func (h *Host) plugin() *protocol.PluginFacts {
+	if h.pluginOf == nil {
+		return nil
+	}
+	if version := h.pluginOf(); version != "" {
+		return &protocol.PluginFacts{Version: clipFact(version)}
+	}
+	return nil
 }
 
 // harness reads the attached harness's facts, `unknown` when there are none.
@@ -318,7 +346,7 @@ func (h *Host) ReadOpener(ctx context.Context, conversationID, through string, b
 // Post sends one message. The `postId` is minted here, once per call, and every
 // retry of the call carries the same one — so a post that reached the platform
 // but whose answer was lost is answered with the same message, never a second.
-func (h *Host) Post(ctx context.Context, requestID, conversationID, text string) (string, error) {
+func (h *Host) Post(ctx context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("gateway: Post needs a request and a conversation")
 	}
@@ -329,7 +357,10 @@ func (h *Host) Post(ctx context.Context, requestID, conversationID, text string)
 	var answer protocol.PostResponse
 	err = h.api.ticketed(ctx, conversationID, http.MethodPost,
 		"/v1/conversations/"+url.PathEscape(conversationID)+"/posts", nil,
-		protocol.PostRequest{PostID: postID, RequestID: requestID, Text: text, Audience: "external"},
+		protocol.PostRequest{
+			PostID: postID, RequestID: requestID, Text: text, Audience: "external",
+			Question: toPostQuestion(question),
+		},
 		&answer, controlAttempts, h.sleep)
 	if err != nil {
 		h.logFailure("post", err)
@@ -461,3 +492,16 @@ func newUUID() (string, error) {
 }
 
 var _ contracts.AgentsHost = (*Host)(nil)
+
+// toPostQuestion carries a harness's question onto the post (#2232).
+func toPostQuestion(question *contracts.Question) *protocol.PostQuestion {
+	if question == nil {
+		return nil
+	}
+	choices := question.Choices
+	if choices == nil {
+		// The protocol requires the list; a question with no choices is open-ended.
+		choices = []string{}
+	}
+	return &protocol.PostQuestion{ID: question.ID, Choices: choices, MultiSelect: question.MultiSelect}
+}

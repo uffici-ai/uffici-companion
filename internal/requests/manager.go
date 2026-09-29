@@ -117,6 +117,9 @@ type Manager struct {
 
 	sink   PluginSink
 	connID string
+	// processID is the harness process the plugin last attached for (#2234):
+	// a different one on the next attach is a restart, not a reconnect.
+	processID string
 	// budget is the context budget the attached plugin declared in hello.
 	budget int
 }
@@ -159,6 +162,49 @@ func (m *Manager) Attach(connID string, sink PluginSink, budgetTokens int) {
 	m.sink = sink
 	m.connID = connID
 	m.budget = budgetTokens
+}
+
+// BindProcess records which harness PROCESS the attached plugin speaks for, and
+// answers how many requests it handed back for delivery (#2234).
+//
+// 🔴 A reconnect and a restart look identical at the connection: both are a new
+// plugin connection after the old one ended. They are opposite for an
+// acknowledged request. A reconnect of the same process is still working on it,
+// so it stays open and its reply is accepted on the new connection. A restarted
+// process holds nothing of the old one's turn, so nobody is working on it — on
+// hermes-01 it sat silent until its deadline. The plugin's `processId` tells the
+// two apart: a DIFFERENT id moves every acknowledged request back to delivered,
+// so the attach's RedeliverOpen sends it again, counted as a redelivery — a
+// harness that restarts on every brief still ends in `redelivery_exhausted`.
+//
+// An empty id (an older plugin) changes nothing and forgets nothing: the old
+// rule, never a redelivery. Call it after Attach and before RedeliverOpen.
+func (m *Manager) BindProcess(processID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if processID == "" {
+		return 0
+	}
+	previous := m.processID
+	m.processID = processID
+	if previous == "" || previous == processID {
+		// The first process this companion has seen holds everything it has, and a
+		// reconnect of the same one is still working.
+		return 0
+	}
+	reopened := 0
+	for _, request := range m.byID {
+		switch request.State {
+		case StateAcked, StateOpening, StatePosting:
+			if m.advanceLocked(request, StateDelivered) {
+				// The new process answers from the start; the old one's posts do not
+				// count against the new answer's cap.
+				request.Posts = 0
+				reopened++
+			}
+		}
+	}
+	return reopened
 }
 
 // Detach forgets the plugin connection. Requests that were never acknowledged
@@ -490,8 +536,9 @@ func (m *Manager) redeliver(ctx context.Context, request *Request) error {
 	return m.deliver(ctx, request)
 }
 
-// OnPost forwards one post upstream, immediately.
-func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string) error {
+// OnPost forwards one post upstream, immediately. A non-nil question makes it
+// the harness ASKING the person (#2232); it counts as a post like any other.
+func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string, question *contracts.Question) error {
 	request, err := m.requestOn(connID, requestID)
 	if err != nil {
 		return err
@@ -515,7 +562,7 @@ func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string) er
 		return m.closeUpstream(ctx, request, contracts.OutcomeError, "post_cap_exceeded", byCompanion)
 	}
 
-	if _, err := m.host.Post(ctx, requestID, request.ConversationID, text); err != nil {
+	if _, err := m.host.Post(ctx, requestID, request.ConversationID, text, question); err != nil {
 		// 🔴 Handled HERE and answered nil: the plugin sent a valid frame, and a
 		// platform failure is not a protocol error on the local wire. Returning
 		// it would close the plugin's connection and take every other open

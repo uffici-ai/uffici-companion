@@ -31,7 +31,7 @@ func Doctor(ctx context.Context, config Config, out io.Writer) int {
 	_, _ = fmt.Fprintln(out, "uffici doctor")
 	say("agents host", config.GatewayURL)
 
-	host, err := buildGatewayHost(config, slog.New(slog.DiscardHandler), nil)
+	host, err := buildGatewayHost(config, slog.New(slog.DiscardHandler), nil, nil)
 	if err != nil {
 		say("ready", "no — "+err.Error())
 		return ExitConfig

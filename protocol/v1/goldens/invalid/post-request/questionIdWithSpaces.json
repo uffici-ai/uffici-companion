@@ -1,0 +1,14 @@
+{
+	"reason": "a question id is the alphabet the answer route accepts — the card answers by it",
+	"value": {
+		"postId": "5e4d3c2b-1a09-4f8e-9d7c-6b5a4f3e2d1c",
+		"requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21",
+		"text": "Which printer — the one on the second floor, or reception?",
+		"audience": "external",
+		"question": {
+			"id": "clarify 7",
+			"choices": [],
+			"multiSelect": false
+		}
+	}
+}

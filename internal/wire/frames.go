@@ -193,12 +193,16 @@ type PluginHello struct {
 	PluginVersion       string `json:"pluginVersion"`
 	Token               string `json:"token"`
 	ContextBudgetTokens int    `json:"contextBudgetTokens"`
+	// ProcessID is minted once per harness process (#2234): the same id on a
+	// reconnect is the same process, a different one is a restarted harness.
+	// Optional — an older plugin omits it. Not a secret.
+	ProcessID string `json:"processId,omitempty"`
 }
 
 // String redacts the token so the struct is safe to format.
 func (h PluginHello) String() string {
 	return "PluginHello{harness=" + h.Harness + " harnessVersion=" + h.HarnessVersion +
-		" pluginVersion=" + h.PluginVersion + " token=<redacted> }"
+		" pluginVersion=" + h.PluginVersion + " processId=" + h.ProcessID + " token=<redacted> }"
 }
 
 // CompanionHello is the companion's answer.
@@ -207,7 +211,13 @@ type CompanionHello struct {
 	CompanionVersion string `json:"companionVersion"`
 	AgentSlug        string `json:"agentSlug,omitempty"`
 	OrgSlug          string `json:"orgSlug,omitempty"`
+	// Features is what this companion can carry beyond every v1 companion
+	// (#2232): `question`. Optional, so an older plugin reads nothing new.
+	Features []string `json:"features,omitempty"`
 }
+
+// FeatureQuestion says a post may carry a question (#2232).
+const FeatureQuestion = "question"
 
 // Cause is the recorded human cause a request answers.
 type Cause struct {
@@ -266,6 +276,16 @@ type Post struct {
 	Envelope
 	RequestID string `json:"requestId"`
 	Text      string `json:"text"`
+	// Question is present when the harness is ASKING (#2232): the text is the
+	// question, and it reaches the person as the question card.
+	Question *Question `json:"question,omitempty"`
+}
+
+// Question is what a harness's question offers.
+type Question struct {
+	ID          string   `json:"id"`
+	Choices     []string `json:"choices"`
+	MultiSelect bool     `json:"multiSelect"`
 }
 
 // Done closes a request.

@@ -52,8 +52,21 @@ One type name; who received it is the only thing telling the shapes apart.
 The platform sizes to that budget with its own estimator; the companion never
 estimates.
 
+`processId`, optional, is a nonce the plugin mints once per harness **process**.
+A reconnect from the same process sends the same id, and the companion keeps the
+requests that process acknowledged: the harness is still working on them. A
+different id is a restarted harness, which holds nothing of the old one's turns,
+so the companion delivers every request the old process had acknowledged again,
+counted against the redelivery bound so a harness that restarts on every brief
+still ends in `redelivery_exhausted`. A plugin that omits it keeps the older
+rule, under which an acknowledged request is never redelivered and sits until
+its deadline after a restart.
+
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
-`orgSlug`.
+`orgSlug`. `features`, optional, lists what this companion can carry beyond what
+every v1 companion does, so a newer plugin never sends an older companion a field
+it would drop: `question` means a `post` may carry a question. An absent list
+means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
 
@@ -121,6 +134,14 @@ Sent **only** after an accepted ack with `session: fresh`, and before the turn.
 ### `post` — plugin → companion
 
 `requestId` and `text`. **Every post means "more coming"**; `done` closes.
+
+`question`, optional, makes the post the harness **asking** the person: the text
+is the question, and it reaches them as the question card. It carries the
+harness's own `id` for the question — which the answer names — the `choices`
+offered (at most ten, possibly none for an open question) and `multiSelect`. The
+person's answer arrives as the NEXT brief's delta, like any message, and a typed
+reply answers too. Sent only to a companion whose `hello` lists the `question`
+feature; to any other, a harness falls back to asking in plain text.
 
 ### `done` — plugin → companion
 

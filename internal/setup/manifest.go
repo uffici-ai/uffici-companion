@@ -67,12 +67,12 @@ func compiled() (*jsonschema.Schema, error) {
 		compiler := jsonschema.NewCompiler()
 		const id = "https://uffici.ai/companion/plugin/v1/manifest.schema.json"
 		if err := schemas.AddResource(compiler, id, manifestSchema); err != nil {
-			schemaErr = fmt.Errorf("setup: the embedded manifest schema did not load: %w", err)
+			schemaErr = fmt.Errorf("the embedded manifest schema did not load: %w", err)
 			return
 		}
 		schemaDoc, schemaErr = compiler.Compile(id)
 		if schemaErr != nil {
-			schemaErr = fmt.Errorf("setup: the embedded manifest schema did not compile: %w", schemaErr)
+			schemaErr = fmt.Errorf("the embedded manifest schema did not compile: %w", schemaErr)
 		}
 	})
 	return schemaDoc, schemaErr
@@ -91,18 +91,18 @@ func ParseManifest(raw []byte) (Manifest, error) {
 	}
 	instance, err := schemas.Parse(raw)
 	if err != nil {
-		return Manifest{}, fmt.Errorf("setup: parsing %s: %w", ManifestFile, err)
+		return Manifest{}, fmt.Errorf("parsing %s: %w", ManifestFile, err)
 	}
 	if err := schema.Validate(instance); err != nil {
 		if locations := schemas.SafeLocations(err); len(locations) > 0 {
-			return Manifest{}, fmt.Errorf("setup: %s does not match the manifest schema at %s — a plugin release this companion cannot install; update the companion or the plugin",
+			return Manifest{}, fmt.Errorf("%s does not match the manifest schema at %s — a plugin release this companion cannot install; update the companion or the plugin",
 				ManifestFile, strings.Join(locations, ", "))
 		}
-		return Manifest{}, fmt.Errorf("setup: %s does not match the manifest schema", ManifestFile)
+		return Manifest{}, fmt.Errorf("%s does not match the manifest schema", ManifestFile)
 	}
 	var manifest Manifest
 	if err := json.Unmarshal(raw, &manifest); err != nil {
-		return Manifest{}, fmt.Errorf("setup: reading %s: %w", ManifestFile, err)
+		return Manifest{}, fmt.Errorf("reading %s: %w", ManifestFile, err)
 	}
 	// 🔴 The plugin directory is REPLACED on install, so it must be the plugin's
 	// own and nothing broader: at least two segments, the last one the plugin's
@@ -111,11 +111,11 @@ func ParseManifest(raw []byte) (Manifest, error) {
 	segments := strings.Split(manifest.PluginDir, "/")
 	for _, segment := range segments {
 		if segment == ".." || segment == "." || segment == "" {
-			return Manifest{}, fmt.Errorf("setup: %s names a pluginDir that leaves the harness home: %q", ManifestFile, manifest.PluginDir)
+			return Manifest{}, fmt.Errorf("%s names a pluginDir that leaves the harness home: %q", ManifestFile, manifest.PluginDir)
 		}
 	}
 	if len(segments) < 2 || segments[len(segments)-1] != manifest.Name {
-		return Manifest{}, fmt.Errorf("setup: %s names pluginDir %q; it must be a directory named after the plugin (%q) inside the harness home, never the harness's plugin folder itself", ManifestFile, manifest.PluginDir, manifest.Name)
+		return Manifest{}, fmt.Errorf("%s names pluginDir %q; it must be a directory named after the plugin (%q) inside the harness home, never the harness's plugin folder itself", ManifestFile, manifest.PluginDir, manifest.Name)
 	}
 	if manifest.EnvFile == "" {
 		manifest.EnvFile = ".env"
@@ -141,7 +141,7 @@ func (m Manifest) RenderEnv(vars map[string]string) (map[string]string, error) {
 			return match
 		})
 		if len(missing) > 0 {
-			return nil, fmt.Errorf("setup: %s uses a placeholder this companion does not provide in %s: ${%s}",
+			return nil, fmt.Errorf("%s uses a placeholder this companion does not provide in %s: ${%s}",
 				ManifestFile, name, strings.Join(missing, "}, ${"))
 		}
 		out[name] = value

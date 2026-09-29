@@ -46,6 +46,8 @@ type PostRecord struct {
 	ConversationID string
 	Text           string
 	At             time.Time
+	// Question is set when the post asked the person something (#2232).
+	Question *contracts.Question
 }
 
 // CloseRecord is one closed request.
@@ -132,7 +134,7 @@ func (h *Host) ReadOpener(_ context.Context, conversationID, through string, bud
 }
 
 // Post records one outbound message and returns its id.
-func (h *Host) Post(_ context.Context, requestID, conversationID, text string) (string, error) {
+func (h *Host) Post(_ context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("fixture: Post needs a request and a conversation")
 	}
@@ -140,6 +142,7 @@ func (h *Host) Post(_ context.Context, requestID, conversationID, text string) (
 	defer h.mu.Unlock()
 	h.posts = append(h.posts, PostRecord{
 		RequestID: requestID, ConversationID: conversationID, Text: text, At: time.Now(),
+		Question: question,
 	})
 	return fmt.Sprintf("msg_%03d", len(h.posts)), nil
 }

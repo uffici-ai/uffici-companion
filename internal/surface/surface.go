@@ -47,10 +47,14 @@ type Surface struct {
 	// `ready` frame arrives.
 	pendingSink   requests.PluginSink
 	pendingBudget int
+	// pendingProcess is the connecting plugin's harness process id (#2234).
+	pendingProcess string
 	// harnessKind and harnessVersion are the last plugin's hello — the facts
 	// the companion reports to the platform on its next connection.
 	harnessKind    string
 	harnessVersion string
+	// pluginVersion is the last plugin's own version, reported likewise (#2236).
+	pluginVersion string
 }
 
 // HarnessFacts reports the harness the last plugin said it translates for, or
@@ -59,6 +63,14 @@ func (s *Surface) HarnessFacts() (kind, version string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.harnessKind, s.harnessVersion
+}
+
+// PluginVersion reports the last plugin's own version (#2236), or empty before
+// any plugin said hello.
+func (s *Surface) PluginVersion() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pluginVersion
 }
 
 // Options configure a Surface.
@@ -149,13 +161,16 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 	s.attachedConn = conn
 	s.pendingSink = sink
 	s.pendingBudget = hello.ContextBudgetTokens
+	s.pendingProcess = hello.ProcessID
 	s.harnessKind, s.harnessVersion = hello.Harness, hello.HarnessVersion
+	s.pluginVersion = hello.PluginVersion
 	s.mu.Unlock()
 	s.log.Info("plugin connected",
 		slog.String("conn", connID),
 		slog.String("harness", hello.Harness),
 		slog.String("harnessVersion", hello.HarnessVersion),
 		slog.String("pluginVersion", hello.PluginVersion),
+		slog.String("processId", hello.ProcessID),
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
 	)
 
@@ -193,7 +208,7 @@ func (s *Surface) maybeReady(ctx context.Context, connID string, raw []byte) boo
 	}
 
 	s.mu.Lock()
-	sink, budget := s.pendingSink, s.pendingBudget
+	sink, budget, process := s.pendingSink, s.pendingBudget, s.pendingProcess
 	s.pendingSink = nil
 	s.mu.Unlock()
 	if sink == nil {
@@ -202,11 +217,15 @@ func (s *Surface) maybeReady(ctx context.Context, connID string, raw []byte) boo
 	}
 
 	s.manager.Attach(connID, sink, budget)
+	// 🔴 Before the redelivery below: a RESTARTED harness is handed what its
+	// predecessor had acknowledged, a reconnect of the same one is not (#2234).
+	reopened := s.manager.BindProcess(process)
 	var ready wire.Ready
 	_ = json.Unmarshal(raw, &ready)
 	s.log.Info("plugin ready",
 		slog.String("conn", connID),
 		slog.String("harnessVersion", ready.HarnessVersion),
+		slog.Int("reopenedAfterRestart", reopened),
 	)
 	// Anything that arrived while the harness was starting goes out now.
 	if err := s.manager.RedeliverOpen(ctx); err != nil {
@@ -347,7 +366,7 @@ func (s *Surface) dispatch(ctx context.Context, connID string, raw []byte) (wire
 		return s.toCloseReason(s.manager.OnAck(ctx, connID, frame.RequestID,
 			requests.AckOutcome(frame.Outcome), requests.Session(frame.Session)))
 	case *wire.Post:
-		return s.toCloseReason(s.manager.OnPost(ctx, connID, frame.RequestID, frame.Text))
+		return s.toCloseReason(s.manager.OnPost(ctx, connID, frame.RequestID, frame.Text, questionOf(frame.Question)))
 	case *wire.Done:
 		return s.toCloseReason(s.manager.OnDone(ctx, connID, frame.RequestID,
 			contracts.Outcome(frame.Outcome), frame.ErrorClass))
@@ -539,6 +558,9 @@ func (f *frameSink) sendRaw(ctx context.Context, raw []byte) error {
 func (f *frameSink) sendCompanionHello(ctx context.Context, version string) error {
 	return f.send(ctx, map[string]any{
 		"v": wire.Version, "type": "hello", "companionVersion": version,
+		// 🔴 What this companion carries beyond every v1 companion (#2232): a plugin
+		// sends a question only to a companion that says it can relay one.
+		"features": []string{wire.FeatureQuestion},
 	})
 }
 
@@ -622,4 +644,12 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
+}
+
+// questionOf carries a post's question from the wire to the host (#2232).
+func questionOf(question *wire.Question) *contracts.Question {
+	if question == nil {
+		return nil
+	}
+	return &contracts.Question{ID: question.ID, Choices: question.Choices, MultiSelect: question.MultiSelect}
 }

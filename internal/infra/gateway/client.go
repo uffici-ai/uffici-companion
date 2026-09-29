@@ -99,12 +99,14 @@ func (c *client) call(ctx context.Context, method, path string, query url.Values
 
 // mintConnect mints a connection ticket — seconds-lived and single-use, so one
 // per dial.
-func (c *client) mintConnect(ctx context.Context, harness protocol.HarnessFacts, version string) (string, error) {
+func (c *client) mintConnect(ctx context.Context, harness protocol.HarnessFacts, version string, plugin *protocol.PluginFacts, host *protocol.HostFacts) (string, error) {
 	var answer protocol.TicketResponse
 	err := c.call(ctx, http.MethodPost, "/v1/tickets/connect", nil, c.key, protocol.ConnectTicketRequest{
 		InstanceID: c.instanceID,
 		Client:     protocol.ClientFacts{Name: ClientName, Version: version},
 		Harness:    harness,
+		Plugin:     plugin,
+		Host:       host,
 	}, &answer)
 	if err != nil {
 		return "", err

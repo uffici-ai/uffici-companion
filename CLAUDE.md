@@ -26,6 +26,12 @@ Requires Go (the version pinned in [go.mod](go.mod)) and
 [golangci-lint](https://golangci-lint.run). The Markdown link guard runs inside
 `go test` — this module depends on no other toolchain, by design.
 
+The documentation is checked in a job of its own,
+[.github/workflows/lint-docs.yml](.github/workflows/lint-docs.yml): Markdown lint
+and spelling against [.markdownlint-cli2.jsonc](.markdownlint-cli2.jsonc) and
+[cspell.json](cspell.json), with Node and the two tools installed by exact version
+in the job, so the check above stays Go only.
+
 ## Layout
 
 - `install.sh` — the one-line installer: fetches a release archive, verifies it, installs the binary and hands over to `uffici setup`. Run by the tests against a loopback release.
