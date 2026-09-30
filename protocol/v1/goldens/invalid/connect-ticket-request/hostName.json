@@ -13,7 +13,7 @@
 		"host": {
 			"os": "linux",
 			"arch": "amd64",
-			"hostname": "hermes-01"
+			"hostname": "example-host"
 		}
 	}
 }

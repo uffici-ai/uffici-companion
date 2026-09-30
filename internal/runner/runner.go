@@ -39,6 +39,15 @@ const DefaultWait = 2 * time.Second
 // than leaving the order to whichever goroutine is scheduled sooner.
 const AttachWait = 15 * time.Second
 
+// RestartHarnessLine is what a `restartHarness` step asks the run's driver to
+// act on (#2235).
+//
+// 🔴 A published literal: `scripts/hermes-e2e.mjs` and the plugin's
+// `dev/e2e.py` restart the harness's container when the companion logs it, and
+// both are pinned to this spelling from the platform's root. Rewording it here
+// alone would leave the step waiting on a restart nobody performs.
+const RestartHarnessLine = "restart the harness"
+
 // Plugin is what the runner can do to the attached plugin, for the steps that
 // exercise reconnection and refusal.
 //
@@ -153,6 +162,10 @@ type Runner struct {
 	// whichever request happened to be rung most recently.
 	lastOnConversation map[string]string
 	ringMu             sync.Mutex
+
+	// announce tells the run's driver something only it can do — restart the
+	// harness. Nil in a run with no driver, where `restartHarness` fails.
+	announce func(line string)
 }
 
 // New builds a Runner.
@@ -179,6 +192,10 @@ func (r *Runner) SetAttachWait(wait time.Duration) {
 		r.attachWait = wait
 	}
 }
+
+// SetAnnounce sets how the runner asks the run's driver to act: the daemon logs
+// the line, and the driver following that log acts on it.
+func (r *Runner) SetAnnounce(announce func(line string)) { r.announce = announce }
 
 // Observer is the runner's view of the state machine.
 func (r *Runner) Observer() requests.Observer { return (*observer)(r) }
@@ -350,6 +367,11 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return errorText(r.plugin.Disconnect())
 	case "secondConnection":
 		return r.secondConnection(ctx)
+	case "refuseNextQuestion":
+		r.host.RefuseNextQuestion()
+		return ""
+	case "restartHarness":
+		return r.restartHarness(ctx, step)
 	default:
 		// Unreachable: Validate refuses unknown steps at load. Stated rather than
 		// ignored, because a silently skipped step is a removed assertion.
@@ -541,6 +563,22 @@ func (r *Runner) secondConnection(ctx context.Context) string {
 		return fmt.Sprintf("the second connection closed with %q, want \"already_attached\"", reason)
 	}
 	return ""
+}
+
+// restartHarness asks the driver to restart the harness, then waits until a NEW
+// harness process has had the open request redelivered (#2234, #2235).
+//
+// 🔴 The redelivery is the evidence, not the reconnect: a plugin that reconnects
+// from the SAME process is still working on its turn and gets nothing again, so
+// waiting for an attach alone would pass on a driver that restarted nothing.
+func (r *Runner) restartHarness(ctx context.Context, step fixture.Step) string {
+	if r.announce == nil {
+		return "the script restarts the harness, but this run has no driver to do it"
+	}
+	before := r.countRedeliveries()
+	r.announce(RestartHarnessLine)
+	return r.waitFor(ctx, step.WithinMs, func() bool { return r.countRedeliveries() > before },
+		"no request was redelivered to a restarted harness")
 }
 
 // waitFor polls a condition until it holds or the window closes.

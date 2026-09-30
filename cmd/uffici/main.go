@@ -14,10 +14,12 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/app"
 	"github.com/uffici-ai/uffici-companion/internal/build"
@@ -42,6 +44,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(args) > 0 && args[0] == "setup" {
 		return setupCommand(args[1:], stdout, stderr)
+	}
+	if len(args) > 0 && args[0] == "upgrade" {
+		return upgradeCommand(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("uffici", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -317,9 +322,132 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 				Code:      pairingCode,
 			})
 		},
-		Doctor: func(ctx context.Context) int { return app.Doctor(ctx, resolved, stdout) },
+		// Setup has just restarted the service it installed: wait for it to
+		// answer, so the doctor asks it rather than replacing its doorbell (#2257).
+		Doctor: func(ctx context.Context) int {
+			options := app.DoctorOptions{}
+			if !*noService {
+				options.AwaitCompanion = setupAwaitCompanion
+				options.ExpectVersion = build.Version()
+			}
+			return app.DoctorWith(ctx, resolved, stdout, options)
+		},
 	}, stdout)
 }
+
+// upgradeCommand is `uffici upgrade` (#2250): the companion and the attached
+// harness's plugin to their latest releases, with nothing to type — the setup
+// record names the harness, its home and the agents host.
+func upgradeCommand(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("uffici upgrade", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	home := flags.String("home", "", "the companion's home directory (default $UFFICI_HOME or ~/.uffici)")
+	check := flags.Bool("check", false, "only report installed versus latest: exit 0 when current, 10 when an upgrade exists")
+	dryRun := flags.Bool("dry-run", false, "announce every step and perform none")
+	version := flags.String("version", "", "pin the companion release (default: the latest); also how a newer build is replaced on purpose")
+	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: the latest)")
+	// Set by the replaced binary when it hands over to the new one: the version
+	// it had, for the before → after line. Not for people.
+	fromVersion := flags.String("from-version", "", "")
+	if err := flags.Parse(args); err != nil {
+		return setup.ExitConfig
+	}
+	if flags.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: unexpected argument %q\n", flags.Arg(0))
+		return setup.ExitConfig
+	}
+	if runtime.GOOS == "windows" {
+		_, _ = fmt.Fprintln(stderr, "uffici upgrade: Windows is not supported; see the README for the platforms that are")
+		return setup.ExitConfig
+	}
+	// The record names the agents host; the doctor's environment is set from
+	// it below, once it has been read.
+	resolved, err := app.LoadConfig(func(key string) string {
+		if key == "UFFICI_AGENTS_HOST" {
+			return "fixture"
+		}
+		return os.Getenv(key)
+	}, app.Config{Home: *home, Version: build.Version()})
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: %v\n", err)
+		return setup.ExitConfig
+	}
+	binary, err := os.Executable()
+	if err == nil {
+		binary, err = filepath.EvalSymlinks(binary)
+	}
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: cannot find this binary's path: %v\n", err)
+		return setup.ExitFailed
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: cannot find your home directory: %v\n", err)
+		return setup.ExitFailed
+	}
+	client, err := app.HTTPClient(os.Getenv("UFFICI_CA_FILE"))
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: %v\n", err)
+		return setup.ExitConfig
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
+	defer stop()
+	return setup.Upgrade(ctx, setup.UpgradeOptions{
+		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion,
+		Current: build.Version(), FromVersion: *fromVersion,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, UserHome: userHome, CompanionHome: resolved.Home,
+		Binary: binary, UID: strconv.Itoa(os.Getuid()),
+		Env: os.Getenv, LookPath: exec.LookPath, Runner: setup.ExecRunner{},
+		Release: func(repo, version string) setup.Release {
+			return setup.Release{
+				Owner: "uffici-ai", Repo: repo, Version: version,
+				// 🔴 Read from the environment, never a flag: a flag's value is in
+				// the process list and the shell history.
+				Token:   os.Getenv("UFFICI_GITHUB_TOKEN"),
+				BaseURL: os.Getenv("UFFICI_RELEASES_BASE_URL"),
+				APIURL:  os.Getenv("UFFICI_RELEASES_API_URL"),
+				Client:  client,
+			}
+		},
+		// The environment travels as it is (the token with it, never in argv).
+		Exec: func(path string, argv []string) error {
+			return syscall.Exec(path, append([]string{path}, argv...), os.Environ())
+		},
+		RunningVersion: func(ctx context.Context) (string, bool) {
+			return app.RunningCompanionVersion(ctx, resolved)
+		},
+		Doctor: func(ctx context.Context) int {
+			record, err := setup.ReadRecord(resolved.Home)
+			if err != nil || record.GatewayURL == "" {
+				// Set up with neither service nor pairing: nothing to prove.
+				_, _ = fmt.Fprintln(stdout, "uffici upgrade: no agents host is recorded, so the doctor has nothing to prove")
+				return setup.ExitOK
+			}
+			doctorConfig, err := app.LoadConfig(func(key string) string {
+				switch key {
+				case "UFFICI_AGENTS_HOST":
+					return "gateway"
+				case "UFFICI_GATEWAY_URL":
+					return record.GatewayURL
+				}
+				return os.Getenv(key)
+			}, app.Config{Home: resolved.Home, Version: build.Version()})
+			if err != nil {
+				_, _ = fmt.Fprintf(stdout, "uffici upgrade: %v\n", err)
+				return setup.ExitConfig
+			}
+			options := app.DoctorOptions{}
+			if record.Service {
+				options = app.DoctorOptions{AwaitCompanion: setupAwaitCompanion, ExpectVersion: build.Version()}
+			}
+			return app.DoctorWith(ctx, doctorConfig, stdout, options)
+		},
+	}, stdout)
+}
+
+// setupAwaitCompanion is how long setup's doctor waits for the service it just
+// restarted to answer on the wire.
+const setupAwaitCompanion = 10 * time.Second
 
 // harnessName is what --harness may be: it becomes a repository name.
 var harnessName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)

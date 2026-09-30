@@ -90,6 +90,10 @@ type Host struct {
 	// companion's on-receipt Ack of the same ring sends nothing twice.
 	acked   map[string]struct{}
 	ackedAt []string
+	// doorbellID is the connection id of the doorbell that said hello, empty
+	// while none is connected (#2257): what `uffici doctor` reads from a running
+	// companion instead of opening a second doorbell that would replace it.
+	doorbellID string
 }
 
 // requestMemory bounds the request → conversation map a close reads.
@@ -201,6 +205,20 @@ func (h *Host) OpenDoorbell(ctx context.Context, handlers contracts.Handlers) (c
 func (h *Host) release() {
 	h.mu.Lock()
 	h.open = false
+	h.mu.Unlock()
+}
+
+// DoorbellState reports whether the doorbell is connected, and its connection
+// id — the platform's, never a credential.
+func (h *Host) DoorbellState() (connected bool, connectionID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.doorbellID != "", h.doorbellID
+}
+
+func (h *Host) setDoorbell(connectionID string) {
+	h.mu.Lock()
+	h.doorbellID = connectionID
 	h.mu.Unlock()
 }
 
@@ -504,4 +522,12 @@ func toPostQuestion(question *contracts.Question) *protocol.PostQuestion {
 		choices = []string{}
 	}
 	return &protocol.PostQuestion{ID: question.ID, Choices: choices, MultiSelect: question.MultiSelect}
+}
+
+// nonEmpty is value, or fallback when value is empty.
+func nonEmpty(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
 }

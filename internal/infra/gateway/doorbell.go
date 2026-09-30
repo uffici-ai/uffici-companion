@@ -71,6 +71,7 @@ func (d *doorbell) run(ctx context.Context) {
 	policy := d.host.backoff
 	for ctx.Err() == nil {
 		kind, retryAfter, reason := d.connectOnce(ctx, policy)
+		d.host.setDoorbell("")
 		if ctx.Err() != nil {
 			return
 		}
@@ -247,6 +248,7 @@ func (d *doorbell) connectOnce(ctx context.Context, policy *backoff) (endKind, t
 				}
 				policy.connected()
 				helloAt = h.api.now()
+				h.setDoorbell(nonEmpty(hello.ConnectionID, "unnamed"))
 				h.log.Info("the doorbell is connected", slog.String("connectionId", hello.ConnectionID))
 			case protocol.FrameRing:
 				var ring protocol.Ring

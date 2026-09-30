@@ -89,6 +89,8 @@
             "injectCancel",
             "disconnectPlugin",
             "secondConnection",
+            "refuseNextQuestion",
+            "restartHarness",
             "wait"
           ]
         },

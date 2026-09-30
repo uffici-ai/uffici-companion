@@ -9,8 +9,10 @@ package websocket
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -26,7 +28,8 @@ import (
 // WirePath is where a plugin connects over TCP.
 const WirePath = "/v1/ring"
 
-// HealthPath answers a readiness probe on the TCP listener.
+// HealthPath answers a readiness probe on either listener (the socket answers it
+// too: `uffici doctor` reads a running companion there, #2257).
 const HealthPath = "/healthz"
 
 // SocketPathMax is the longest Unix socket path the platform accepts.
@@ -52,7 +55,23 @@ type Health struct {
 	Status         string `json:"status"`
 	AgentsHost     string `json:"agentsHost"`
 	PluginAttached bool   `json:"pluginAttached"`
+	// Doorbell is the gateway doorbell's state, "connected" or "reconnecting";
+	// empty when the agents host has none (the fixture). ConnectionID is the
+	// platform's id for the connected doorbell. Both are what `uffici doctor`
+	// reports for a running companion (#2257) — never a credential.
+	Doorbell     string `json:"doorbell,omitempty"`
+	ConnectionID string `json:"connectionId,omitempty"`
+	// Version is the running companion's own version: what tells a doctor or
+	// an upgrade that the process answering is the binary on disk, and not the
+	// one it replaced (#2250).
+	Version string `json:"version,omitempty"`
 }
+
+// Doorbell states a Health reports.
+const (
+	DoorbellConnected    = "connected"
+	DoorbellReconnecting = "reconnecting"
+)
 
 // HealthFunc reports the companion's health.
 type HealthFunc func() Health
@@ -77,7 +96,7 @@ type Options struct {
 	SocketPath string
 	// TCPAddr is the loopback address, for the tcp transport.
 	TCPAddr string
-	// Health answers `/healthz` on the TCP transport.
+	// Health answers `/healthz`, on the TCP port and the socket alike.
 	Health HealthFunc
 }
 
@@ -320,8 +339,47 @@ func writeJSON(w http.ResponseWriter, health Health) {
 	w.Header().Set("Content-Type", "application/json")
 	// A failed write to a probe's connection is the prober going away, which is
 	// ordinary — but it is swallowed deliberately and visibly, not silently.
-	_, _ = fmt.Fprintf(w, `{"status":%q,"agentsHost":%q,"pluginAttached":%t}`,
-		health.Status, health.AgentsHost, health.PluginAttached)
+	_ = json.NewEncoder(w).Encode(health)
+}
+
+// ErrNoCompanion is ReadHealth's answer when nothing answers on the wire's
+// address: no companion is running there.
+var ErrNoCompanion = errors.New("websocket: no companion answers on the wire's address")
+
+// ReadHealth asks the companion serving `options` for its health, over the
+// same socket or loopback port a plugin would use (#2257).
+//
+// 🔴 Its errors are CLASSIFIED, like ProbeClose's: a dial error renders the
+// socket path inside `$UFFICI_HOME`, the directory that holds the wire token.
+func ReadHealth(ctx context.Context, options Options) (Health, error) {
+	client := &http.Client{}
+	target := "http://" + options.TCPAddr + HealthPath
+	if options.Kind == contracts.TransportSocket || options.Kind == "" {
+		socket := options.SocketPath
+		transport := &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+			},
+		}
+		defer transport.CloseIdleConnections()
+		client = &http.Client{Transport: transport}
+		target = "http://companion" + HealthPath
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return Health{}, ErrNoCompanion
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		return Health{}, ErrNoCompanion
+	}
+	defer func() { _ = response.Body.Close() }()
+	var health Health
+	if response.StatusCode != http.StatusOK ||
+		json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&health) != nil || health.Status == "" {
+		return Health{}, ErrNoCompanion
+	}
+	return health, nil
 }
 
 // ProbeClose opens a connection the way a plugin would and reports the close

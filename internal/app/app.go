@@ -268,6 +268,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		if config.AttachWait > 0 {
 			scriptRunner.SetAttachWait(config.AttachWait)
 		}
+		scriptRunner.SetAnnounce(func(line string) { logger.Info(line) })
 		// The script's expectations and the operational log both watch the
 		// state machine, which takes one observer.
 		observer = observe.Fanout(scriptRunner.Observer(), observer)
@@ -278,9 +279,17 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	listener, err := wstransport.Listen(wstransport.Options{
 		Kind: config.Transport, SocketPath: config.SocketPath, TCPAddr: config.TCPAddr,
 		Health: func() wstransport.Health {
-			return wstransport.Health{
+			health := wstransport.Health{
 				Status: "ok", AgentsHost: string(config.AgentsHost), PluginAttached: manager.Attached(),
+				Version: config.Version,
 			}
+			if reporter, ok := host.(doorbellReporter); ok {
+				health.Doorbell = wstransport.DoorbellReconnecting
+				if connected, id := reporter.DoorbellState(); connected {
+					health.Doorbell, health.ConnectionID = wstransport.DoorbellConnected, id
+				}
+			}
+			return health
 		},
 	})
 	if err != nil {

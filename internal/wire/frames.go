@@ -212,12 +212,18 @@ type CompanionHello struct {
 	AgentSlug        string `json:"agentSlug,omitempty"`
 	OrgSlug          string `json:"orgSlug,omitempty"`
 	// Features is what this companion can carry beyond every v1 companion
-	// (#2232): `question`. Optional, so an older plugin reads nothing new.
+	// (#2232): `question` and `redelivery`. Optional, so an older plugin reads nothing new.
 	Features []string `json:"features,omitempty"`
 }
 
 // FeatureQuestion says a post may carry a question (#2232).
 const FeatureQuestion = "question"
+
+// FeatureRedelivery says a restarted harness process is handed again every request
+// its predecessor had accepted (#2234). A plugin whose harness also resumes an
+// interrupted turn on its own declines that resume, or the person is answered twice
+// (#2273).
+const FeatureRedelivery = "redelivery"
 
 // Cause is the recorded human cause a request answers.
 type Cause struct {

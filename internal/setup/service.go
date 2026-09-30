@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Runner starts a command. Injected so a test records what would run instead
@@ -26,7 +27,7 @@ type ExecRunner struct{}
 // output, trimmed: "exit status 1" from systemctl says nothing, its stderr
 // says "Failed to connect to bus".
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	out, err := command(ctx, name, args...).CombinedOutput()
 	if err != nil {
 		text := strings.TrimSpace(string(out))
 		if text == "" {
@@ -39,11 +40,25 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) (string,
 
 // Stdout implements Runner.Stdout with os/exec.
 func (ExecRunner) Stdout(ctx context.Context, name string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, name, args...).Output()
+	out, err := command(ctx, name, args...).Output()
 	if err != nil {
 		return "", fmt.Errorf("%s exited with an error: %w", name, err)
 	}
 	return string(out), nil
+}
+
+// waitDelay bounds how long a command's output is read after the command
+// itself ended or was killed.
+const waitDelay = 5 * time.Second
+
+// command builds the process a Runner starts. 🔴 WaitDelay: a context kill
+// reaches only the direct process, and a child it left holding stdout (a
+// harness restart that daemonised a gateway) would otherwise keep the output
+// read — and the upgrade — waiting forever.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = waitDelay
+	return cmd
 }
 
 // ServiceLabel is the launchd label and the systemd unit name.

@@ -157,6 +157,7 @@ var knownSteps = map[string]bool{
 	"expectOffset": true, "injectCancel": true,
 	"disconnectPlugin": true, "expectRedelivery": true,
 	"secondConnection": true, "wait": true,
+	"refuseNextQuestion": true, "restartHarness": true,
 }
 
 var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}

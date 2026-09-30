@@ -80,6 +80,32 @@ tab and run it again on the same machine: it pairs again and replaces the key, a
 keeps working for a short overlap. Without a pairing code, re-running the line upgrades the
 companion and the plugin and keeps the key it has.
 
+### Upgrade it
+
+```sh
+uffici upgrade           # the companion and the plugin, to their latest releases
+uffici upgrade --check   # only say what is installed and what is released
+```
+
+`uffici upgrade` needs no flags: `uffici setup` remembers the harness, its home and your agents
+host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the latest companion
+for this machine, verifies it against the release's checksum list and swaps it in beside the
+old one, so a failed download or check leaves the installed binary untouched. The new binary
+then installs the plugin from its latest release, sets the harness's configuration again,
+restarts the companion's service, restarts the harness when it runs as a service (otherwise
+it tells you how), runs the doctor, and prints what moved from which version to which. It
+keeps the agent key and never pairs.
+
+- `--check` changes nothing: it exits 0 when everything is current and 10 when an upgrade
+  exists, so a scheduled job can ask.
+- `--dry-run` says every step and does none.
+- It never downgrades. `--version X.Y.Z` (and `--plugin-version X.Y.Z`) installs a given
+  release on purpose, including over a build newer than the latest.
+- A machine set up before `setup.json` existed has nothing to read: run `uffici setup` once
+  (with `--no-pair`, it keeps the key), then upgrade from then on.
+- While a repository is private, set `UFFICI_GITHUB_TOKEN` in the environment, as for the
+  install.
+
 **Without a code in the line** — a machine you pair by hand — the pairing step prints a code
 instead, which an administrator approves in the portal (see
 [Pair it with your agent](#pair-it-with-your-agent)). That step asks you to confirm which
@@ -206,9 +232,9 @@ systemctl --user enable --now ai.uffici.companion
 loginctl enable-linger "$USER"   # keep it running when you are not logged in
 ```
 
-The companion reads its binary and its agent key when it starts. After you upgrade it or pair
-it again by hand, restart it — `systemctl --user restart ai.uffici.companion` — or re-run
-`uffici setup`, which restarts the service for you.
+The companion reads its binary and its agent key when it starts. After you pair it again by
+hand, restart it — `systemctl --user restart ai.uffici.companion` — or re-run `uffici setup`,
+which restarts the service for you; `uffici upgrade` restarts it too.
 
 On macOS the setup writes the equivalent launch agent, `~/Library/LaunchAgents/ai.uffici.companion.plist`,
 and loads it with `launchctl`.
@@ -275,10 +301,12 @@ export UFFICI_GATEWAY_URL=https://agents.uffici.ai   # unless already in your sh
 uffici doctor
 ```
 
-The doctor proves the connection from this machine: the key is readable, a connection ticket
-is issued, the connection opens, Uffici says hello, and it closes. When it cannot connect it
-prints the reason and Uffici's own instruction, never the key. It briefly takes the place of a
-running companion on the same machine, which reconnects by itself afterwards.
+When the companion is running on this machine, the doctor asks it: whether its connection to
+Uffici is up, and whether the harness's plugin is attached. It does not open a second
+connection, which would take the running companion's place. When no companion is running, the
+doctor proves the connection itself: the key is readable, a connection ticket is issued, the
+connection opens, Uffici says hello, and it closes. When it cannot connect it prints the reason
+and Uffici's own instruction, never the key.
 
 In the portal, the agent shows **Online** within a minute of the companion starting. Send it
 a message in a conversation it participates in: the plugin wakes your harness, and the answer

@@ -56,6 +56,8 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `injectCancel` | Cancels from the platform: `reason`, `afterFirstPost` or `afterMs` |
 | `disconnectPlugin` / `expectRedelivery` | Drops the plugin and asserts the brief comes again |
 | `secondConnection` | Asserts a second plugin is refused with `already_attached` |
+| `refuseNextQuestion` | The platform fails the next post that carries a question (`platform_unavailable`), so the companion withdraws the request that asked — the one real way a turn waiting on a question is cancelled |
+| `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
 | `wait` | `ms` |
 
 🔴 **Every expectation is scoped to the CURRENT request** — the one the most

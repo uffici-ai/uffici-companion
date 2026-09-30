@@ -894,7 +894,7 @@ func reattach(t *testing.T, manager *Manager, processID string) *recorder {
 	return sink
 }
 
-// 🔴 #2234: on hermes-01 `hermes gateway restart` dropped the request in flight.
+// 🔴 #2234: on a real Hermes machine `hermes gateway restart` dropped the request in flight.
 // The companion kept it open because the harness "may still be working" — true
 // of a reconnect, false of a restart, and the plugin's hello could not say which.
 // A NEW process holds nothing of the old one's turn, so the request goes to it.

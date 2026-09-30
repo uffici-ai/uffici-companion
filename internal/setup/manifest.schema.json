@@ -95,6 +95,26 @@
       "description": "One sentence the person is told after the install, saying how to make the harness load the plugin.",
       "type": "string",
       "minLength": 1
+    },
+    "restartCommand": {
+      "description": "The argv that restarts the harness when it runs as a service, which `uffici upgrade` runs after installing a new plugin. It must return once the restart is done. It runs only when `restartService` names a service definition that exists on this machine and the harness home is `defaultHome`; otherwise the person is told `restart`, because a restart command for a harness run by hand may start it in the foreground.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "restartService": {
+      "description": "The harness's own service definition for `defaultHome`, per service manager: the systemd user unit's name (without `.service`) and the launchd agent's label. Its file existing is what makes `restartCommand` safe to run.",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "systemd": { "type": "string", "pattern": "^[A-Za-z0-9@._-]+$" },
+        "launchd": { "type": "string", "pattern": "^[A-Za-z0-9._-]+$" }
+      }
     }
+  },
+  "dependentRequired": {
+    "restartCommand": ["restartService"],
+    "restartService": ["restartCommand"]
   }
 }

@@ -54,6 +54,14 @@ type Manifest struct {
 	EnvFile         string            `json:"envFile,omitempty"`
 	Env             map[string]string `json:"env"`
 	Restart         string            `json:"restart"`
+	RestartCommand  []string          `json:"restartCommand,omitempty"`
+	RestartService  *RestartService   `json:"restartService,omitempty"`
+}
+
+// RestartService names the harness's own service definition, per manager.
+type RestartService struct {
+	Systemd string `json:"systemd,omitempty"`
+	Launchd string `json:"launchd,omitempty"`
 }
 
 var (

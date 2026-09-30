@@ -84,6 +84,44 @@
           }
         }
       ]
+    },
+    "desk": {
+      "id": "conv_ci_desk",
+      "offset": "",
+      "entries": [
+        {
+          "id": "d1",
+          "cursor": "c0001",
+          "at": "2026-09-18T11:00:00Z",
+          "kind": "message",
+          "text": "Which office should I book a desk in? Ask me with your clarify tool, offering 'Lisbon' and 'Porto'. [ask-a-question]",
+          "author": {
+            "type": "member",
+            "id": "member_4",
+            "label": "Inês Rocha",
+            "self": false
+          }
+        }
+      ]
+    },
+    "porto": {
+      "id": "conv_ci_porto",
+      "offset": "",
+      "entries": [
+        {
+          "id": "p1",
+          "cursor": "c0001",
+          "at": "2026-09-18T12:00:00Z",
+          "kind": "message",
+          "text": "Summarise where the Porto account stands. [answer-slowly]",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
     }
   },
   "steps": [
@@ -462,19 +500,132 @@
       "outcome": "answered",
       "withinMs": 240000,
       "note": "The asking turn's end closes the answering request: without the continuation it would close nothing, and this request would expire."
+    },
+    {
+      "step": "refuseNextQuestion",
+      "note": "🔴 #2235, a cancel mid-question. A question SETTLES its request, so the platform has nothing open to cancel; the one real path that cancels a turn blocked on a question is its question post failing upstream, which makes the companion withdraw the request that asked. The plugin must release the question before it stops the turn (#2233), or the turn keeps Hermes's session and the next ring waits behind it until its deadline."
+    },
+    {
+      "step": "ring",
+      "conversation": "desk",
+      "reason": "mentioned",
+      "causeEntry": "d1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "desk",
+      "outcome": "error",
+      "withinMs": 120000,
+      "note": "The refused question: the companion closes the asking request as an error, which is what tells the person, and withdraws it from the plugin."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "desk",
+      "entries": [
+        {
+          "id": "d2",
+          "cursor": "c0002",
+          "at": "2026-09-18T11:05:00Z",
+          "kind": "message",
+          "text": "Lisbon, please — go ahead and book it.",
+          "author": {
+            "type": "member",
+            "id": "member_4",
+            "label": "Inês Rocha",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "desk",
+      "reason": "mentioned",
+      "causeEntry": "d2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "The person's next message. The turn that asked must be over by now; if it still held the session, this ring would queue behind it and expire."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "[mock]",
+      "withinMs": 120000,
+      "note": "`contains` the mock's reply prefix, not `nonEmpty`: a turn that asked again would post the question, and that is not the answer this scenario is for."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "desk",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "ring",
+      "conversation": "porto",
+      "reason": "mentioned",
+      "causeEntry": "p1",
+      "throughCursor": "c0001",
+      "deadlineMs": 240000,
+      "note": "🔴 #2235, a harness restart mid-turn. The marker holds the model's answer for 30s, so the turn is still running when the harness restarts."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "restartHarness",
+      "withinMs": 240000,
+      "note": "The driver restarts the harness's container on the line this logs. The step holds until the NEW process has been handed the request again (#2234); a reconnect of the old one would get nothing."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 240000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "porto",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "The request the old process held, answered by the new one — never left to its deadline."
     }
   ],
   "assert": {
-    "ringsDelivered": 9,
-    "openersSent": 3,
+    "ringsDelivered": 12,
+    "openersSent": 5,
     "closes": {
-      "answered": 7,
-      "cancelled": 2
+      "answered": 9,
+      "cancelled": 2,
+      "error": 1
     },
     "sessions": {
-      "fresh": 3,
-      "resumed": 6
+      "fresh": 5,
+      "resumed": 8
     },
-    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds."
+    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).",
+    "posts": 9
   }
 }

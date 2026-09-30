@@ -126,11 +126,24 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		}
 	}
 
+	record := Record{Harness: opts.Harness, GatewayURL: opts.GatewayURL, Service: !opts.NoService}
 	if opts.Harness != "" {
-		if err := installPlugin(ctx, opts, out, do); err != nil {
+		installed, err := installPlugin(ctx, opts, out, do)
+		if err != nil {
 			_, _ = fmt.Fprintf(out, "uffici setup: %v\n", err)
 			return ExitFailed
 		}
+		_, _ = fmt.Fprintln(out, installed.manifest.Restart)
+		record.HarnessHome, record.PluginDir = installed.home, installed.manifest.PluginDir
+	}
+
+	// What `uffici upgrade` reads, so it needs no flags (#2250). Written after
+	// every step it describes has succeeded, and never on a dry run.
+	if err := do(fmt.Sprintf("remember this setup in %s", filepath.Join(opts.CompanionHome, RecordFile)), func() error {
+		return WriteRecord(opts.CompanionHome, record)
+	}); err != nil {
+		_, _ = fmt.Fprintf(out, "uffici setup: remembering the setup: %v\n", err)
+		return ExitFailed
 	}
 
 	if opts.DryRun {
@@ -177,34 +190,40 @@ func installService(ctx context.Context, opts Options, do func(string, func() er
 	return nil
 }
 
-func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(string, func() error) error) error {
+// installedPlugin is what installPlugin put where.
+type installedPlugin struct {
+	manifest Manifest
+	home     string
+}
+
+func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(string, func() error) error) (installedPlugin, error) {
 	repo := "uffici-for-" + opts.Harness
 	release := opts.Release(repo)
 	asset := repo + ".tar.gz"
 	_, _ = fmt.Fprintf(out, "fetching %s from %s\n", asset, release.Describe())
 	data, err := release.FetchVerified(ctx, asset)
 	if err != nil {
-		return err
+		return installedPlugin{}, err
 	}
 	stage, err := os.MkdirTemp("", "uffici-plugin-")
 	if err != nil {
-		return err
+		return installedPlugin{}, err
 	}
 	defer func() { _ = os.RemoveAll(stage) }()
 	top, err := extractTar(data, stage, repo)
 	if err != nil {
-		return fmt.Errorf("unpacking %s: %w", asset, err)
+		return installedPlugin{}, fmt.Errorf("unpacking %s: %w", asset, err)
 	}
 	raw, err := os.ReadFile(filepath.Join(top, ManifestFile))
 	if err != nil {
-		return fmt.Errorf("%s carries no %s at its top level", asset, ManifestFile)
+		return installedPlugin{}, fmt.Errorf("%s carries no %s at its top level", asset, ManifestFile)
 	}
 	manifest, err := ParseManifest(raw)
 	if err != nil {
-		return err
+		return installedPlugin{}, err
 	}
 	if manifest.Harness != opts.Harness {
-		return fmt.Errorf("%s is for the harness %q, not %q", asset, manifest.Harness, opts.Harness)
+		return installedPlugin{}, fmt.Errorf("%s is for the harness %q, not %q", asset, manifest.Harness, opts.Harness)
 	}
 	_, _ = fmt.Fprintf(out, "plugin %s %s, for %s\n", manifest.Name, NonEmpty(manifest.Version, "(unversioned)"), manifest.Harness)
 
@@ -216,7 +235,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		home = expandHome(manifest.DefaultHome, opts.UserHome)
 	}
 	if !filepath.IsAbs(home) {
-		return fmt.Errorf("the harness home %q is not an absolute path — set --harness-home or %s to one", home, manifest.HomeEnv)
+		return installedPlugin{}, fmt.Errorf("the harness home %q is not an absolute path — set --harness-home or %s to one", home, manifest.HomeEnv)
 	}
 	// Every tool the manifest will run is checked BEFORE anything is removed
 	// or written, so a missing tool fails with the harness untouched.
@@ -225,7 +244,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 			continue
 		}
 		if _, err := opts.LookPath(argv[0]); err != nil {
-			return fmt.Errorf("%s is not on the PATH — install %s first, or run this from the environment that has it", argv[0], opts.Harness)
+			return installedPlugin{}, fmt.Errorf("%s is not on the PATH — install %s first, or run this from the environment that has it", argv[0], opts.Harness)
 		}
 	}
 
@@ -239,11 +258,11 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		}
 		return copyTree(top, dest)
 	}); err != nil {
-		return fmt.Errorf("installing the plugin: %w", err)
+		return installedPlugin{}, fmt.Errorf("installing the plugin: %w", err)
 	}
 
 	if len(manifest.Config) > 0 && len(manifest.ConfigSet) == 0 {
-		return fmt.Errorf("%s lists configuration to set but no configSet command", ManifestFile)
+		return installedPlugin{}, fmt.Errorf("%s lists configuration to set but no configSet command", ManifestFile)
 	}
 	for _, cfg := range manifest.Config {
 		argv := append(append([]string{}, manifest.ConfigSet...), cfg.Key, cfg.Value)
@@ -251,7 +270,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 			_, err := opts.Runner.Run(ctx, argv[0], argv[1:]...)
 			return err
 		}); err != nil {
-			return fmt.Errorf("configuring %s: %w", opts.Harness, err)
+			return installedPlugin{}, fmt.Errorf("configuring %s: %w", opts.Harness, err)
 		}
 	}
 
@@ -262,7 +281,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		"home":          home,
 	})
 	if err != nil {
-		return err
+		return installedPlugin{}, err
 	}
 	if len(env) > 0 {
 		envPath := filepath.Join(home, manifest.EnvFile)
@@ -280,7 +299,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		if err := do(fmt.Sprintf("write %s into %s", strings.Join(sortedKeys(env), ", "), envPath), func() error {
 			return mergeEnvFile(envPath, env)
 		}); err != nil {
-			return fmt.Errorf("writing the plugin's environment: %w", err)
+			return installedPlugin{}, fmt.Errorf("writing the plugin's environment: %w", err)
 		}
 	}
 
@@ -288,10 +307,9 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		_, err := opts.Runner.Run(ctx, manifest.Enable[0], manifest.Enable[1:]...)
 		return err
 	}); err != nil {
-		return fmt.Errorf("enabling the plugin: %w", err)
+		return installedPlugin{}, fmt.Errorf("enabling the plugin: %w", err)
 	}
-	_, _ = fmt.Fprintln(out, manifest.Restart)
-	return nil
+	return installedPlugin{manifest: manifest, home: home}, nil
 }
 
 // lastLine is the last non-empty line of text, trimmed.

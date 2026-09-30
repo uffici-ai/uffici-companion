@@ -239,3 +239,45 @@ func TestPairingNeedsATerminalOnlyWhenItWillAsk(t *testing.T) {
 		}
 	}
 }
+
+// ── uffici upgrade (#2250) ──────────────────────────────────────────────────
+
+func TestUpgradeRefusesBadFlagsAndAMachineWithoutARecord(t *testing.T) {
+	for _, args := range [][]string{{"upgrade", "--nope"}, {"upgrade", "--home", t.TempDir(), "extra"}} {
+		var out, errOut bytes.Buffer
+		if code := run(args, &out, &errOut); code != 2 {
+			t.Fatalf("%v: exit %d, want 2", args, code)
+		}
+	}
+	var out, errOut bytes.Buffer
+	if code := run([]string{"upgrade", "--home", t.TempDir(), "--check"}, &out, &errOut); code != 2 || !strings.Contains(out.String(), "uffici setup --no-pair") {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+}
+
+// The command reads the record and asks the plugin's release for its latest
+// version; a pinned companion version is what lets a development build (the one
+// under test) be compared at all.
+func TestUpgradeCheckReadsTheRecordAndTheLatestRelease(t *testing.T) {
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, "setup.json"), []byte(`{"harness":"hermes","gatewayUrl":"https://agents.example","service":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/uffici-ai/uffici-for-hermes/releases/latest" {
+			_, _ = w.Write([]byte(`{"tag_name":"v0.5.0","assets":[]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("UFFICI_RELEASES_BASE_URL", server.URL)
+	t.Setenv("UFFICI_RELEASES_API_URL", server.URL)
+	t.Setenv("UFFICI_GITHUB_TOKEN", "")
+	t.Setenv("UFFICI_CA_FILE", "")
+	var out, errOut bytes.Buffer
+	code := run([]string{"upgrade", "--home", home, "--check", "--version", "0.5.0"}, &out, &errOut)
+	if code != 10 || !strings.Contains(out.String(), "plugin     not installed → 0.5.0 available") {
+		t.Fatalf("exit %d, want 10:\n%s%s", code, out.String(), errOut.String())
+	}
+}

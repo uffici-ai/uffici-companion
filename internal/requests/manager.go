@@ -172,7 +172,7 @@ func (m *Manager) Attach(connID string, sink PluginSink, budgetTokens int) {
 // acknowledged request. A reconnect of the same process is still working on it,
 // so it stays open and its reply is accepted on the new connection. A restarted
 // process holds nothing of the old one's turn, so nobody is working on it — on
-// hermes-01 it sat silent until its deadline. The plugin's `processId` tells the
+// a real Hermes machine it sat silent until its deadline. The plugin's `processId` tells the
 // two apart: a DIFFERENT id moves every acknowledged request back to delivered,
 // so the attach's RedeliverOpen sends it again, counted as a redelivery — a
 // harness that restarts on every brief still ends in `redelivery_exhausted`.

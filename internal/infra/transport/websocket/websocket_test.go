@@ -221,6 +221,35 @@ func TestHealthAnswersOnTheTCPTransport(t *testing.T) {
 	}
 }
 
+// `uffici doctor` reads a running companion's doorbell over the same socket a
+// plugin uses (#2257), and learns "nothing is running" from an absent one.
+func TestReadHealthReadsARunningCompanionOverTheSocket(t *testing.T) {
+	path := filepath.Join(shortTempDir(t), "wire.sock")
+	options := Options{Kind: contracts.TransportSocket, SocketPath: path}
+	if _, err := ReadHealth(context.Background(), options); !errors.Is(err, ErrNoCompanion) {
+		t.Fatalf("with nothing listening ReadHealth answered %v, want ErrNoCompanion", err)
+	}
+	listener, err := Listen(Options{
+		Kind: contracts.TransportSocket, SocketPath: path,
+		Health: func() Health {
+			return Health{Status: "ok", AgentsHost: "gateway", Doorbell: DoorbellConnected, ConnectionID: "c-1"}
+		},
+	})
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	health, err := ReadHealth(context.Background(), options)
+	if err != nil || health.Doorbell != DoorbellConnected || health.ConnectionID != "c-1" || health.AgentsHost != "gateway" {
+		t.Fatalf("ReadHealth answered %+v, %v", health, err)
+	}
+	// A dial error names the socket path, inside the home that holds the token.
+	_, err = ReadHealth(context.Background(), Options{Kind: contracts.TransportTCP, TCPAddr: "127.0.0.1:1"})
+	if !errors.Is(err, ErrNoCompanion) || strings.Contains(err.Error(), "127.0.0.1") {
+		t.Fatalf("an unanswered port gave %v — want the classified error alone", err)
+	}
+}
+
 func TestTheTCPTransportDefaultsItsAddress(t *testing.T) {
 	// Not bound here — only that the default is the documented loopback port,
 	// never a wildcard interface.

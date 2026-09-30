@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -69,6 +70,32 @@ func (r Release) Describe() string {
 		return fmt.Sprintf("%s/%s (latest release)", r.Owner, r.Repo)
 	}
 	return fmt.Sprintf("%s/%s v%s", r.Owner, r.Repo, r.Version)
+}
+
+// LatestVersion is the version of the repository's latest release, without its
+// `v`, read from the API's release listing (which answers a public repository
+// without a token, and a private one with it).
+func (r Release) LatestVersion(ctx context.Context) (string, error) {
+	if !secureOrigin(r.api()) {
+		return "", fmt.Errorf("%s is not https — a token or a download over plain http is refused (loopback excepted, for tests)", r.api())
+	}
+	raw, err := r.get(ctx, fmt.Sprintf("%s/repos/%s/%s/releases/latest", r.api(), r.Owner, r.Repo), "application/vnd.github+json")
+	if err != nil {
+		return "", err
+	}
+	var listing struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.Unmarshal(raw, &listing); err != nil || !strings.HasPrefix(listing.TagName, "v") {
+		return "", fmt.Errorf("the latest release of %s/%s names no version tag", r.Owner, r.Repo)
+	}
+	version := strings.TrimPrefix(listing.TagName, "v")
+	// A tag that is not a release version would compare as 0.0.0 and read as
+	// "a downgrade" or "current" — never trusted.
+	if _, ok := parseVersion(version); !ok {
+		return "", fmt.Errorf("the latest release of %s/%s is tagged %q, which is not a release version", r.Owner, r.Repo, listing.TagName)
+	}
+	return version, nil
 }
 
 // Fetch downloads one asset by name.
@@ -164,11 +191,21 @@ func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
 // secureOrigin admits https anywhere and plain http on loopback only, where a
 // test serves a release from the same machine.
 func secureOrigin(origin string) bool {
-	if strings.HasPrefix(origin, "https://") {
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	if parsed.Scheme == "https" {
 		return true
 	}
-	rest := strings.TrimPrefix(origin, "http://")
-	return rest != origin && (strings.HasPrefix(rest, "127.0.0.1") || strings.HasPrefix(rest, "localhost") || strings.HasPrefix(rest, "[::1]"))
+	// 🔴 The HOST, compared exactly: a prefix match admitted
+	// `http://localhost.example` and `http://127.0.0.1.nip.io`, which would carry
+	// the token in the clear to whoever answers them.
+	switch parsed.Hostname() {
+	case "127.0.0.1", "localhost", "::1":
+		return parsed.Scheme == "http"
+	}
+	return false
 }
 
 // classify keeps a transport error's kind and drops its text: an error from

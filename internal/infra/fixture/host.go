@@ -28,6 +28,8 @@ type Host struct {
 	// conversation and the through cursor, which is what an offset commits to.
 	requests map[string]openRequest
 	rings    int
+	// refuseQuestion makes the next post carrying a question fail (#2235).
+	refuseQuestion bool
 
 	// Recorded for the terminal tally and for the runner's expectations.
 	acked  []string
@@ -140,6 +142,10 @@ func (h *Host) Post(_ context.Context, requestID, conversationID, text string, q
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if question != nil && h.refuseQuestion {
+		h.refuseQuestion = false
+		return "", errQuestionRefused
+	}
 	h.posts = append(h.posts, PostRecord{
 		RequestID: requestID, ConversationID: conversationID, Text: text, At: time.Now(),
 		Question: question,
@@ -215,6 +221,35 @@ func (h *Host) DeliverCancel(requestID string, reason contracts.CancelReason) er
 	handler(requestID, reason)
 	return nil
 }
+
+// RefuseNextQuestion makes the next post that carries a question fail, as a
+// platform that could not take it would (#2235).
+//
+// 🔴 It is the one real way a turn waiting on a question is cancelled: the
+// question SETTLES its request, so the platform has nothing open to cancel — but
+// when the question's post fails, the companion withdraws the request that asked,
+// and the harness's turn is still blocked on the question. A plugin that only
+// stops that turn leaves it holding the harness's session, and the person's next
+// message waits behind it until its deadline.
+func (h *Host) RefuseNextQuestion() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.refuseQuestion = true
+}
+
+// questionRefused is the platform's answer to a refused question post: a class and
+// the sentence the agent relays, like every host failure (decision 32).
+type questionRefused struct{}
+
+func (questionRefused) Error() string { return "fixture: the platform refused the question post" }
+
+func (questionRefused) ErrorClass() string { return "platform_unavailable" }
+
+func (questionRefused) ErrorInstruction() string {
+	return "The platform could not take the question; tell the person to ask again."
+}
+
+var errQuestionRefused error = questionRefused{}
 
 // RingsDelivered reports how many rings the fixture played.
 func (h *Host) RingsDelivered() int {

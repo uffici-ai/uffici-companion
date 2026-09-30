@@ -558,9 +558,11 @@ func (f *frameSink) sendRaw(ctx context.Context, raw []byte) error {
 func (f *frameSink) sendCompanionHello(ctx context.Context, version string) error {
 	return f.send(ctx, map[string]any{
 		"v": wire.Version, "type": "hello", "companionVersion": version,
-		// 🔴 What this companion carries beyond every v1 companion (#2232): a plugin
-		// sends a question only to a companion that says it can relay one.
-		"features": []string{wire.FeatureQuestion},
+		// 🔴 What this companion carries beyond every v1 companion: a plugin sends a
+		// question only to a companion that says it can relay one (#2232), and leaves
+		// a restarted harness's interrupted turns to a companion that redelivers them
+		// (#2273).
+		"features": []string{wire.FeatureQuestion, wire.FeatureRedelivery},
 	})
 }
 

@@ -102,7 +102,10 @@ func TestParseManifestDotSegmentIsRefused(t *testing.T) {
 }
 
 func TestSecureOrigin(t *testing.T) {
-	for origin, ok := range map[string]bool{"https://github.com": true, "http://127.0.0.1:1234": true, "http://localhost:9": true, "http://[::1]:8": true, "http://github.com": false, "ftp://x": false} {
+	for origin, ok := range map[string]bool{
+		"https://github.com": true, "http://127.0.0.1:1234": true, "http://localhost:9": true, "http://[::1]:8": true,
+		"http://github.com": false, "ftp://x": false, "http://localhost.example": false, "http://127.0.0.1.nip.io": false, "ftp://localhost": false,
+	} {
 		if got := secureOrigin(origin); got != ok {
 			t.Fatalf("secureOrigin(%q) = %v", origin, got)
 		}
@@ -524,6 +527,13 @@ func TestRunInstallsEverythingInOrder(t *testing.T) {
 	if r.doctor != 1 {
 		t.Fatal("the doctor did not run")
 	}
+	// What `uffici upgrade` reads (#2250): the harness, its resolved home, the
+	// plugin's directory and the agents host — and no secret.
+	record, err := ReadRecord(r.opts.CompanionHome)
+	if err != nil || record.Harness != "hermes" || record.HarnessHome != r.home ||
+		record.PluginDir != "plugins/uffici-for-hermes" || record.GatewayURL != "https://agents.example" || !record.Service {
+		t.Fatalf("the setup record is %+v, %v", record, err)
+	}
 	// Pairing runs BEFORE the service, and each step is announced before it acts.
 	text := r.out.String()
 	if strings.Index(text, "step: pair") > strings.Index(text, "step: write the service") {
@@ -570,6 +580,9 @@ func TestRunDryRunPerformsNothing(t *testing.T) {
 		if !strings.Contains(r.out.String(), want) {
 			t.Fatalf("the plan does not say %q:\n%s", want, r.out)
 		}
+	}
+	if _, err := ReadRecord(r.opts.CompanionHome); !errors.Is(err, ErrNoRecord) {
+		t.Fatalf("a dry run wrote the setup record: %v", err)
 	}
 }
 

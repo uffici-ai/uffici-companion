@@ -550,3 +550,106 @@ func TestTheQuestionMatcherNeedsAPostThatCarriesOne(t *testing.T) {
 		t.Fatal("a plain-text question met `question` — the card would never have shown")
 	}
 }
+
+// 🔴 #2235: `refuseNextQuestion` fails the question's post the way a platform that
+// could not take it would, so the companion withdraws the request that asked — the
+// one real path that cancels a turn waiting on a question. Only the NEXT question
+// is refused: the ring after it is the one the scenario needs answered.
+func TestRefuseNextQuestionFailsOnlyTheNextQuestion(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "refuseNextQuestion"},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "error", WithinMs: 1000},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectPost", Matcher: "question", WithinMs: 1000},
+	}
+	asks := &autoPlugin{
+		session: requests.SessionFresh, answer: "Which one?", noClose: true,
+		question: &contracts.Question{ID: "clarify_1", Choices: []string{"a", "b"}},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{}), asks)
+	result, err := r.runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("the refusal scenario failed: %v %v", err, result.Unmet)
+	}
+	closes := r.host.Closes()
+	if len(closes) == 0 || closes[0].ErrorClass != "platform_unavailable" {
+		t.Fatalf("the refused question closed as %+v, want an error of class platform_unavailable", closes)
+	}
+	if posts := r.host.Posts(); len(posts) != 1 || posts[0].RequestID != "req_3" {
+		t.Fatalf("posts %+v, want only the second ring's question", posts)
+	}
+}
+
+// restartRig is a rig whose driver answers `restartHarness` by reconnecting the
+// plugin from the process `next` names.
+func restartRig(t *testing.T, next string) *Runner {
+	t.Helper()
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectAck", Outcome: "accepted", WithinMs: 1000},
+		{Step: "restartHarness", WithinMs: 300},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, silent: true})
+	r.manager.BindProcess("process-1")
+	r.runner.SetAnnounce(func(string) {
+		sink := &autoPlugin{manager: r.manager, session: requests.SessionFresh, silent: true}
+		r.manager.Detach("conn-1")
+		r.manager.Attach("conn-2", sink, 48000)
+		r.manager.BindProcess(next)
+		_ = r.manager.RedeliverOpen(context.Background())
+	})
+	return r.runner
+}
+
+// 🔴 #2235: the step passes only when a NEW harness process had the acknowledged
+// request redelivered (#2234) — a driver that reconnected the same process, or none
+// at all, restarted nothing.
+func TestRestartHarnessNeedsARedeliveryToANewProcess(t *testing.T) {
+	runner := restartRig(t, "process-2")
+	result, err := runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("a restart into a new process did not pass: %v %v", err, result.Unmet)
+	}
+	if result.Counts.Redeliveries != 1 {
+		t.Fatalf("%d redelivery/ies, want 1", result.Counts.Redeliveries)
+	}
+
+	runner = restartRig(t, "process-1")
+	result, err = runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("a reconnect of the SAME process passed as a restart")
+	}
+}
+
+func TestRestartHarnessAnnouncesThePublishedLine(t *testing.T) {
+	runner := restartRig(t, "process-2")
+	var got []string
+	inner := runner.announce
+	runner.SetAnnounce(func(line string) { got = append(got, line); inner(line) })
+	if _, err := runner.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) != 1 || got[0] != "restart the harness" {
+		t.Fatalf("announced %q, want the one published line", got)
+	}
+}
+
+func TestRestartHarnessWithNoDriverIsAMiss(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "restartHarness", WithinMs: 100},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{}), &autoPlugin{session: requests.SessionFresh, silent: true})
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
+		t.Fatalf("a restart with nobody to perform it passed: %v", result.Unmet)
+	}
+}

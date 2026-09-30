@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway/gatewaytest"
+	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
 	"github.com/uffici-ai/uffici-companion/internal/registry"
 )
@@ -312,7 +313,103 @@ func doctorConfig(t *testing.T, double *gatewaytest.Double) Config {
 	home := shortHome(t)
 	writeKey(t, home, 0o600)
 	return Config{Home: home, AgentsHost: registry.KindGateway, GatewayURL: double.URL(),
-		CAFile: writeCA(t, double, home), Version: "9.9.9"}
+		CAFile: writeCA(t, double, home), Version: "9.9.9",
+		Transport: "socket", SocketPath: filepath.Join(home, SocketFile), TCPAddr: "127.0.0.1:0"}
+}
+
+// startDaemon runs the companion on config, as the machine's service would,
+// until the test ends.
+func startDaemon(t *testing.T, config Config) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan int, 1)
+	go func() {
+		code, _ := Run(ctx, config, &syncBuffer{})
+		done <- code
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Error("the daemon did not stop")
+		}
+	})
+}
+
+// 🔴 #2257: the doctor presents this machine's instance id, and the gateway
+// keeps one doorbell per instance — so a doctor that probed on a machine whose
+// companion was running replaced that companion's doorbell, at the end of
+// every setup. It must ask the running companion and open nothing.
+func TestTheDoctorAsksARunningCompanionAndOpensNoSecondDoorbell(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	config := doctorConfig(t, double)
+	startDaemon(t, config)
+	waitUntil(t, "the doorbell", double.Connected)
+	upgrades, mints := double.Upgrades(), double.Mints("connect")
+
+	out := &syncBuffer{}
+	if code := Doctor(context.Background(), config, out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if double.Upgrades() != upgrades || double.Mints("connect") != mints {
+		t.Fatalf("the doctor opened a doorbell of its own beside the running companion's: %d upgrades, %d mints (were %d, %d)",
+			double.Upgrades(), double.Mints("connect"), upgrades, mints)
+	}
+	for _, want := range []string{"running on this machine — asked it", "connected (connection ", "plugin       not attached"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("the doctor did not say %q:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), gatewaytest.Key) {
+		t.Fatalf("the doctor printed the key:\n%s", out.String())
+	}
+}
+
+// Setup restarts the service and runs the doctor at once, before the service
+// listens: the doctor waits for it rather than probing in that window.
+func TestTheDoctorWaitsForAServiceThatIsStillStarting(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	config := doctorConfig(t, double)
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		startDaemon(t, config)
+	}()
+
+	out := &syncBuffer{}
+	code := DoctorWith(context.Background(), config, out, DoctorOptions{AwaitCompanion: 10 * time.Second})
+	if code != ExitOK || !strings.Contains(out.String(), "running on this machine — asked it") {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if double.Upgrades() != 1 {
+		t.Fatalf("%d doorbells for one companion — the doctor probed instead of waiting", double.Upgrades())
+	}
+}
+
+// A running companion that cannot connect is reported as such — and still not
+// probed past, which would fail for the same reason and replace nothing useful.
+func TestTheDoctorReportsARunningCompanionThatIsNotConnected(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	double.Inject("connect", gatewaytest.Injected{Status: 401, Body: gatewaytest.Envelope("unauthorized", false, nil)})
+	config := doctorConfig(t, double)
+	startDaemon(t, config)
+	waitUntil(t, "the companion's wire", func() bool {
+		_, err := wstransport.ReadHealth(context.Background(), wireOptions(config))
+		return err == nil
+	})
+
+	out := &syncBuffer{}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if code := Doctor(ctx, config, out); code != ExitMiss {
+		t.Fatalf("exit %d, want %d:\n%s", code, ExitMiss, out.String())
+	}
+	if !strings.Contains(out.String(), "not connected — the running companion is still trying") {
+		t.Fatalf("the doctor said:\n%s", out.String())
+	}
 }
 
 func TestTheDoctorProvesTheDoorbell(t *testing.T) {
@@ -327,6 +424,9 @@ func TestTheDoctorProvesTheDoorbell(t *testing.T) {
 	}
 	if double.Upgrades() != 1 {
 		t.Fatalf("%d upgrades for one probe", double.Upgrades())
+	}
+	if !strings.Contains(out.String(), "not running on this machine") {
+		t.Fatalf("the doctor did not say why it probed:\n%s", out.String())
 	}
 }
 
@@ -412,5 +512,32 @@ func TestARefusedGatewayURLNeverEchoesItsCredentials(t *testing.T) {
 	}), Config{})
 	if err == nil || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// After setup or upgrade restarts the service, an answer from the process being
+// replaced says nothing about the new binary (launchd's bootout is
+// asynchronous): the doctor waits for the version it expects and otherwise
+// says the restart did not take.
+func TestTheDoctorWaitsForTheVersionItExpects(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	config := doctorConfig(t, double) // the daemon reports 9.9.9
+	startDaemon(t, config)
+	waitUntil(t, "the doorbell", double.Connected)
+
+	out := &syncBuffer{}
+	if code := DoctorWith(context.Background(), config, out, DoctorOptions{AwaitCompanion: time.Second, ExpectVersion: "10.0.0"}); code != ExitMiss {
+		t.Fatalf("exit %d, want %d:\n%s", code, ExitMiss, out.String())
+	}
+	if !strings.Contains(out.String(), "running 9.9.9, not 10.0.0") || double.Upgrades() != 1 {
+		t.Fatalf("the doctor did not name the stale version, or probed (%d upgrades):\n%s", double.Upgrades(), out.String())
+	}
+	out = &syncBuffer{}
+	if code := DoctorWith(context.Background(), config, out, DoctorOptions{AwaitCompanion: time.Second, ExpectVersion: "9.9.9"}); code != ExitOK {
+		t.Fatalf("the expected version answered %d:\n%s", code, out.String())
+	}
+	if version, ok := RunningCompanionVersion(context.Background(), config); !ok || version != "9.9.9" {
+		t.Fatalf("RunningCompanionVersion answered %q, %v", version, ok)
 	}
 }

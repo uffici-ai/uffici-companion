@@ -626,13 +626,15 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 
 // 🔴 #2232: the companion says it can relay a question, and a post carrying one
 // reaches the platform WITH it — the plugin asks through the card only when told.
+// 🔴 #2273: and it says it redelivers to a restarted harness, which is what lets the
+// plugin decline its harness's own resume of the same turn.
 func TestAQuestionIsAdvertisedAndRelayed(t *testing.T) {
 	r := newRig(t)
 	conn := r.dial(t, testToken, true)
 	hello := receive(t, conn)
 	features, _ := hello["features"].([]any)
-	if len(features) != 1 || features[0] != "question" {
-		t.Fatalf("the companion's hello lists %v, want [question]", hello["features"])
+	if len(features) != 2 || features[0] != "question" || features[1] != "redelivery" {
+		t.Fatalf("the companion's hello lists %v, want [question redelivery]", hello["features"])
 	}
 	raw, _ := json.Marshal(hello)
 	if err := wire.Validate(raw); err != nil {
