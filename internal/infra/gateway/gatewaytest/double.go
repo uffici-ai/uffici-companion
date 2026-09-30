@@ -84,6 +84,10 @@ type Double struct {
 	// HeartbeatSeconds is sent in `hello`, and the double pings at that period
 	// unless Silent is set.
 	HeartbeatSeconds int
+	// CloseLag is how long an ended session still reads as live (#2276): a
+	// real registry lags the socket, and a test that closes "the next" session
+	// must not mistake the last one for it. Zero in most tests.
+	CloseLag time.Duration
 	// ConversationTTL is a conversation ticket's lifetime.
 	ConversationTTL time.Duration
 	// PairingTTL is how long a pairing code lives (#1966).
@@ -385,7 +389,12 @@ func (d *Double) heartbeat(ctx context.Context, s *session) {
 // readAcks reads the client's frames: acks, and 🔴 NOTHING ELSE — any other
 // frame is a protocol error and a disconnect, as on the gateway.
 func (d *Double) readAcks(ctx context.Context, s *session) {
-	defer close(s.closed)
+	defer func() {
+		// A replica's registry learns a socket ended a moment after the client
+		// does; CloseLag makes that moment long enough for a test to meet.
+		time.Sleep(d.CloseLag)
+		close(s.closed)
+	}()
 	for {
 		_, raw, err := s.conn.Read(ctx)
 		if err != nil {
@@ -739,6 +748,17 @@ func (d *Double) OffsetOf(conversationID string) (string, error) {
 func (d *Double) Connected() bool {
 	_, err := d.live()
 	return err == nil
+}
+
+// Sessions counts every doorbell socket the double ever accepted, open or not.
+// 🔴 A test that closes "the next" session waits on this, never on
+// LiveSessions alone (#2276): right after a close, the session just ended can
+// still read as live while its replacement is not yet accepted, and a close
+// aimed then lands on the dead one and leaves the new one open.
+func (d *Double) Sessions() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.sessions)
 }
 
 // LiveSessions counts the doorbell sockets still open on the double — what a

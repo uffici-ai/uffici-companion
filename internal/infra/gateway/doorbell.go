@@ -75,9 +75,9 @@ func (d *doorbell) run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		// Reporting a harness that became known is not a disconnect: no handler
-		// hears of it and no backoff is spent (#2105).
-		if kind == endHarnessKnown {
+		// Reporting new harness facts is not a disconnect: no handler hears of it
+		// and no backoff is spent (#2105, #2277).
+		if kind == endFactsChanged {
 			continue
 		}
 		if !d.enqueue(ctx, disconnected(reason)) {
@@ -125,8 +125,8 @@ func (d *doorbell) dispatch(finished chan<- struct{}) {
 // connectOnce is one connection's whole life, and why it ended.
 func (d *doorbell) connectOnce(ctx context.Context, policy *backoff) (endKind, time.Duration, string) {
 	h := d.host
-	minted := h.harness()
-	ticket, err := h.api.mintConnect(ctx, minted, h.version, h.plugin(), h.hostFacts)
+	minted, mintedPlugin := h.harness(), h.plugin()
+	ticket, err := h.api.mintConnect(ctx, minted, h.version, mintedPlugin, h.hostFacts)
 	if err != nil {
 		return mintEnd(err)
 	}
@@ -217,9 +217,13 @@ func (d *doorbell) connectOnce(ctx context.Context, policy *backoff) (endKind, t
 			// so this connection may have reported the harness `unknown`. Once the
 			// facts are known it reconnects ONCE to report them — presence keeps
 			// meaning "the companion is connected" and names what answers.
-			if minted.Kind == "unknown" && h.harness().Kind != "unknown" {
-				h.log.Info("the harness is known now; reconnecting to report it")
-				return endHarnessKnown, 0, "harness_known"
+			// 🔴 #2277: and the same for any later change — an upgrade restarts
+			// the harness under a connected companion, so the new plugin says hello
+			// with the harness already known. A plugin that went away is not a
+			// change: presence keeps the last facts until the next ones arrive.
+			if factsChanged(minted, mintedPlugin, h.harness(), h.plugin()) {
+				h.log.Info("the harness facts changed; reconnecting to report them")
+				return endFactsChanged, 0, "facts_changed"
 			}
 		case <-watchdog.C:
 			// 🔴 Three missed heartbeats: the gateway's own idle rule, applied
@@ -384,4 +388,27 @@ func (c *claim) Close() error {
 		c.d.host.release()
 	})
 	return nil
+}
+
+// factsChanged reports whether the attached harness's facts differ from those a
+// connection was minted with (#2277). Only KNOWN facts count: a plugin that
+// detached reads as `unknown`, and reporting that would reconnect twice on every
+// harness restart.
+func factsChanged(minted protocol.HarnessFacts, mintedPlugin *protocol.PluginFacts, current protocol.HarnessFacts, currentPlugin *protocol.PluginFacts) bool {
+	if current.Kind == "unknown" {
+		return false
+	}
+	if current != minted {
+		return true
+	}
+	// A plugin that reports no version is not a change either: it cannot be told
+	// from one that detached, and presence keeps the last version it knew.
+	return pluginVersion(currentPlugin) != "" && pluginVersion(currentPlugin) != pluginVersion(mintedPlugin)
+}
+
+func pluginVersion(facts *protocol.PluginFacts) string {
+	if facts == nil {
+		return ""
+	}
+	return facts.Version
 }

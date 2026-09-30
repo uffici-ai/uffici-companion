@@ -155,6 +155,20 @@ func pair(args []string, stdout, stderr io.Writer) int {
 	})
 }
 
+// terminalConfirm asks on this process's terminal — /dev/tty, so the pipe a
+// `curl | sh` feeds stdin never answers — and reports no answer when there is no
+// terminal at all (#2278).
+func terminalConfirm(out io.Writer) func(string) (bool, bool) {
+	return func(question string) (bool, bool) {
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return false, false
+		}
+		defer func() { _ = tty.Close() }()
+		return setup.AskRestart(tty, out, question)
+	}
+}
+
 // pairingNeedsTerminal decides whether `uffici setup` must read pairing's
 // confirmation from the terminal: only when it will pair, ask (no --yes, no
 // portal-issued code — the admin who issued it chose the agent), actually act
@@ -206,7 +220,14 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
 	dryRun := flags.Bool("dry-run", false, "print every action and perform none")
 	codeFlag := flags.String("pairing-code", "", "the pairing code in the command the portal gave (XXXX-XXXX); pairs with no question, and again over a key already in place")
+	restart := flags.Bool("restart-harness", false, "restart the harness once its plugin is installed, without asking (only where it runs as its own service)")
+	noRestart := flags.Bool("no-restart-harness", false, "never restart the harness; say how to instead")
 	if err := flags.Parse(args); err != nil {
+		return setup.ExitConfig
+	}
+	restartChoice, err := setup.ParseRestartChoice(*restart, *noRestart)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: %v\n", err)
 		return setup.ExitConfig
 	}
 	pairingCode := ""
@@ -294,6 +315,8 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		NoService:      *noService,
 		AssumeYes:      *yes,
 		DryRun:         *dryRun,
+		RestartHarness: restartChoice,
+		Confirm:        terminalConfirm(stdout),
 		GOOS:           runtime.GOOS,
 		UserHome:       userHome,
 		CompanionHome:  resolved.Home,
@@ -349,7 +372,14 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	// Set by the replaced binary when it hands over to the new one: the version
 	// it had, for the before → after line. Not for people.
 	fromVersion := flags.String("from-version", "", "")
+	restart := flags.Bool("restart-harness", false, "restart the harness once its plugin is upgraded, without asking (only where it runs as its own service)")
+	noRestart := flags.Bool("no-restart-harness", false, "never restart the harness; say how to instead")
 	if err := flags.Parse(args); err != nil {
+		return setup.ExitConfig
+	}
+	restartChoice, err := setup.ParseRestartChoice(*restart, *noRestart)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici upgrade: %v\n", err)
 		return setup.ExitConfig
 	}
 	if flags.NArg() > 0 {
@@ -395,6 +425,7 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	return setup.Upgrade(ctx, setup.UpgradeOptions{
 		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion,
 		Current: build.Version(), FromVersion: *fromVersion,
+		RestartHarness: restartChoice, Confirm: terminalConfirm(stdout),
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, UserHome: userHome, CompanionHome: resolved.Home,
 		Binary: binary, UID: strconv.Itoa(os.Getuid()),
 		Env: os.Getenv, LookPath: exec.LookPath, Runner: setup.ExecRunner{},

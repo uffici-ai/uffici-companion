@@ -45,6 +45,13 @@ type Options struct {
 
 	NoPair, NoService, AssumeYes, DryRun bool
 
+	// RestartHarness is the person's say on restarting the harness once its
+	// plugin is installed (#2278); AssumeYes counts as a yes. Confirm asks when
+	// neither decided; nil Confirm is a run with no terminal, which leaves the
+	// harness alone.
+	RestartHarness RestartChoice
+	Confirm        func(question string) (yes, answered bool)
+
 	// Facts about the machine.
 	GOOS, UserHome, CompanionHome, Binary, UID string
 	Env                                        func(string) string
@@ -133,7 +140,17 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 			_, _ = fmt.Fprintf(out, "uffici setup: %v\n", err)
 			return ExitFailed
 		}
-		_, _ = fmt.Fprintln(out, installed.manifest.Restart)
+		// AFTER the companion's service: the plugin the restarted harness loads
+		// says hello to the companion that will serve it.
+		choice := opts.RestartHarness
+		if choice == RestartAsk && opts.AssumeYes {
+			choice = RestartYes
+		}
+		line := restartHarness(ctx, harnessRestart{
+			GOOS: opts.GOOS, UserHome: opts.UserHome, UID: opts.UID, Env: opts.Env, Runner: opts.Runner,
+			Choice: choice, Confirm: opts.Confirm, DryRun: opts.DryRun,
+		}, installed, do, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format+"\n", args...) })
+		_, _ = fmt.Fprintf(out, "%s: %s\n", opts.Harness, line)
 		record.HarnessHome, record.PluginDir = installed.home, installed.manifest.PluginDir
 	}
 

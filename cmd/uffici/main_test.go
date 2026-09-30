@@ -281,3 +281,14 @@ func TestUpgradeCheckReadsTheRecordAndTheLatestRelease(t *testing.T) {
 		t.Fatalf("exit %d, want 10:\n%s%s", code, out.String(), errOut.String())
 	}
 }
+
+// #2278: the two restart flags contradict each other, on both commands.
+func TestTheRestartFlagsContradictEachOther(t *testing.T) {
+	for _, command := range []string{"setup", "upgrade"} {
+		var out, errOut bytes.Buffer
+		code := run([]string{command, "--restart-harness", "--no-restart-harness", "--home", t.TempDir()}, &out, &errOut)
+		if code != 2 || !strings.Contains(errOut.String(), "contradict each other") {
+			t.Fatalf("%s: exit %d, stderr %q", command, code, errOut.String())
+		}
+	}
+}

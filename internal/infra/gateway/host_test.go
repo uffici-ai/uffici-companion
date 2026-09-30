@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -68,6 +69,12 @@ func newRig(t *testing.T, configure ...func(*gatewaytest.Double)) *rig {
 // newRigWith is newRig with the attached harness's facts under the test's control.
 func newRigWith(t *testing.T, harness func() (string, string), configure ...func(*gatewaytest.Double)) *rig {
 	t.Helper()
+	return newRigWithPlugin(t, harness, func() string { return "0.4.0" }, configure...)
+}
+
+// newRigWithPlugin is newRigWith with the attached plugin's version read live.
+func newRigWithPlugin(t *testing.T, harness func() (string, string), plugin func() string, configure ...func(*gatewaytest.Double)) *rig {
+	t.Helper()
 	double := gatewaytest.New()
 	for _, apply := range configure {
 		apply(double)
@@ -86,7 +93,7 @@ func newRigWith(t *testing.T, harness func() (string, string), configure ...func
 	host, err := gateway.New(gateway.Options{
 		BaseURL: double.URL(), Key: gatewaytest.Key, InstanceID: instanceID, Version: "1.2.3",
 		Harness:    harness,
-		Plugin:     func() string { return "0.4.0" },
+		Plugin:     plugin,
 		HostFacts:  &protocol.HostFacts{OS: "linux", Arch: "amd64", OSRelease: "Debian GNU/Linux 13 (trixie)"},
 		HTTPClient: double.Client(),
 		Logger:     slog.New(slog.NewJSONHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
@@ -198,6 +205,22 @@ func waitFor(t *testing.T, what string, condition func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// lagClose keeps an ended session reading as live for a while, as a real
+// registry does — the window #2276 lost a close in, made wide enough to hit on
+// every run instead of one release in many.
+func lagClose(d *gatewaytest.Double) { d.CloseLag = 300 * time.Millisecond }
+
+// waitForSession waits until the n-th doorbell session is the only live one, so
+// a close that follows reaches IT (#2276): the previous session can still read
+// as live after the companion heard it end, and its replacement is not accepted
+// yet.
+func waitForSession(t *testing.T, r *rig, n int) {
+	t.Helper()
+	waitFor(t, "session "+strconv.Itoa(n)+" as the only live socket", func() bool {
+		return r.double.Sessions() == n && r.double.LiveSessions() == 1
+	})
 }
 
 func nextEnd(t *testing.T, r *rig) string {
@@ -791,10 +814,10 @@ func TestARingIsAckedWhileItsHandlerIsStillBusy(t *testing.T) {
 // hello, then is `replaced`. The streak must survive the hello, or the pair
 // swaps about once a second for ever (#2077 review).
 func TestAReplacementFlapGoesToTheCeiling(t *testing.T) {
-	r := newRig(t)
+	r := newRig(t, lagClose)
 	r.open(t)
-	for range 2 {
-		waitFor(t, "a live socket", func() bool { return r.double.LiveSessions() == 1 })
+	for i := range 2 {
+		waitForSession(t, r, i+1)
 		// The companion may tear this session down before the close lands (that
 		// is the flap); either way it is gone, which is what this asks for.
 		if err := r.double.CloseSocket(websocket.StatusNormalClosure, "replaced"); err != nil && !gatewaytest.IsGone(err) {
@@ -815,10 +838,10 @@ func TestAReplacementFlapGoesToTheCeiling(t *testing.T) {
 // ordinary step. Read through the injected clock (#2106 review) — on the wall
 // clock this path could not be exercised without waiting a heartbeat.
 func TestAConnectionThatHeldAHeartbeatEndsTheConflictStreak(t *testing.T) {
-	r := newRig(t)
+	r := newRig(t, lagClose)
 	r.open(t)
 	for i := range 2 {
-		waitFor(t, "a live socket", func() bool { return r.double.LiveSessions() == 1 })
+		waitForSession(t, r, i+1)
 		if i == 1 {
 			waitFor(t, "the second hello", func() bool { return strings.Count(r.logs.String(), "the doorbell is connected") >= 2 })
 			r.advance(31 * time.Second)
@@ -835,6 +858,72 @@ func TestAConnectionThatHeldAHeartbeatEndsTheConflictStreak(t *testing.T) {
 	waitFor(t, "two backoff delays", func() bool { return len(r.backoffDelays()) >= 2 })
 	if d := r.backoffDelays()[1]; d >= gateway.BackoffCeiling {
 		t.Fatalf("a replacement after a connection held a heartbeat waited %v — the streak survived it", d)
+	}
+}
+
+// 🔴 #2277: an upgrade restarts the harness under a companion that is already
+// connected, so the new plugin says hello with the harness KNOWN. Reporting only
+// an unknown harness left presence naming the old plugin for the life of the
+// companion; any change in the facts a connection was minted with is reported,
+// once, and a plugin that merely went away is not a change worth a reconnect.
+func TestAPluginUpgradedUnderAKnownHarnessIsReportedOnce(t *testing.T) {
+	var mu sync.Mutex
+	kind, harnessVersion, pluginVersion := "hermes", "0.21.4", "0.4.0"
+	harness := func() (string, string) {
+		mu.Lock()
+		defer mu.Unlock()
+		return kind, harnessVersion
+	}
+	plugin := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return pluginVersion
+	}
+	r := newRigWithPlugin(t, harness, plugin, func(d *gatewaytest.Double) { d.HeartbeatSeconds = 1 })
+	r.open(t)
+	r.connected(t)
+	if facts := r.double.ConnectFacts(); len(facts) != 1 || facts[0].Plugin == nil || facts[0].Plugin.Version != "0.4.0" {
+		t.Fatalf("the first connection reported %+v, want plugin 0.4.0", facts)
+	}
+
+	// The harness restarts: its plugin detaches (nothing to report), then the
+	// new one says hello.
+	mu.Lock()
+	kind, harnessVersion, pluginVersion = "", "", ""
+	mu.Unlock()
+	time.Sleep(1500 * time.Millisecond)
+	if got := r.double.Upgrades(); got != 1 {
+		t.Fatalf("%d connections, want 1 — a plugin that went away is not a fact to report", got)
+	}
+	mu.Lock()
+	kind, harnessVersion, pluginVersion = "hermes", "0.21.4", "0.5.0"
+	mu.Unlock()
+	waitFor(t, "a connection naming the new plugin", func() bool {
+		facts := r.double.ConnectFacts()
+		last := facts[len(facts)-1]
+		return len(facts) == 2 && last.Plugin != nil && last.Plugin.Version == "0.5.0" && r.double.Connected()
+	})
+	time.Sleep(2500 * time.Millisecond)
+	if got := r.double.Upgrades(); got != 2 {
+		t.Fatalf("%d connections, want 2 — the upgrade was reported more than once", got)
+	}
+
+	// A harness upgraded in place is the same kind of change.
+	mu.Lock()
+	harnessVersion = "0.22.0"
+	mu.Unlock()
+	waitFor(t, "a connection naming the new harness version", func() bool {
+		facts := r.double.ConnectFacts()
+		last := facts[len(facts)-1]
+		return len(facts) == 3 && last.Harness.Version == "0.22.0" && r.double.Connected()
+	})
+	select {
+	case reason := <-r.ended:
+		t.Fatalf("OnDisconnect heard %q — reporting new facts is not a disconnect", reason)
+	default:
+	}
+	for _, d := range r.backoffDelays() {
+		t.Fatalf("reporting new facts waited a backoff of %v", d)
 	}
 }
 

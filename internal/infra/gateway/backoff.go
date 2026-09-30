@@ -28,11 +28,12 @@ const (
 	// endShutdown — the gateway is draining (`server_shutdown`, 1001): another
 	// replica is ready now, so reconnect promptly.
 	endShutdown
-	// endHarnessKnown — this side closed a connection minted with the harness
-	// `unknown` because its facts are known now (#2105). Not a fault: the
-	// doorbell redials at once, never consulting this policy, and reports no
-	// disconnect.
-	endHarnessKnown
+	// endFactsChanged — this side closed a connection because the harness's
+	// facts differ from those it was minted with: known now where they were
+	// `unknown` (#2105), or a new plugin or harness version (#2277). Not a
+	// fault: the doorbell redials at once, never consulting this policy, and
+	// reports no disconnect.
+	endFactsChanged
 )
 
 // backoff is the reconnect policy's state across attempts.

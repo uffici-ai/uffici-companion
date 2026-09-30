@@ -2,6 +2,7 @@ package setup
 
 import (
 	"archive/tar"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -57,6 +58,11 @@ type UpgradeOptions struct {
 	RunningVersion func(ctx context.Context) (string, bool)
 	// RestartTimeout bounds the harness restart; zero is DefaultRestartTimeout.
 	RestartTimeout time.Duration
+	// RestartHarness is the person's say on restarting the harness (#2278);
+	// Confirm asks when that is RestartAsk. Nil Confirm is a run with no
+	// terminal: the harness is not restarted.
+	RestartHarness RestartChoice
+	Confirm        func(question string) (yes, answered bool)
 }
 
 // Upgrade moves the companion and the attached harness's plugin to their latest
@@ -175,6 +181,16 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 		if record.Harness != "" {
 			args = append(args, "--plugin-version", plugin.target)
 		}
+		// The person's say travels with the handover; the new binary asks on the
+		// same terminal when there is none (#2278). 🔴 Only to a binary that knows
+		// the flags: a pinned downgrade hands over to an older release, whose flag
+		// parser would refuse them AFTER the swap — and refuse every re-run too.
+		switch {
+		case knowsRestartFlags(companionTarget):
+			args = append(args, opts.RestartHarness.Flags()...)
+		case opts.RestartHarness != RestartAsk:
+			say("uffici %s does not know %s: it restarts the harness as that release does", companionTarget, opts.RestartHarness.Flags()[0])
+		}
 		say("handing over to the new companion: uffici %s", strings.Join(args, " "))
 		err := opts.Exec(opts.Binary, args)
 		return fail("the new companion is installed but did not take over (%v) — run `uffici upgrade` again to finish: it restarts the service and installs the plugin", err)
@@ -217,7 +233,10 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 
 	harnessLine := "unchanged"
 	if plugin.move {
-		harnessLine = restartHarness(ctx, opts, installed, do, say)
+		harnessLine = restartHarness(ctx, harnessRestart{
+			GOOS: opts.GOOS, UserHome: opts.UserHome, UID: opts.UID, Env: opts.Env, Runner: opts.Runner,
+			Timeout: opts.RestartTimeout, Choice: opts.RestartHarness, Confirm: opts.Confirm, DryRun: opts.DryRun,
+		}, installed, do, say)
 	}
 
 	if opts.DryRun {
@@ -382,27 +401,140 @@ func binaryFromArchive(data []byte) ([]byte, error) {
 	}
 }
 
+// RestartChoice is the person's say on restarting the harness after its plugin
+// is installed (#2278).
+type RestartChoice int
+
+const (
+	// RestartAsk asks at a terminal, and without one leaves the harness alone.
+	RestartAsk RestartChoice = iota
+	// RestartYes restarts without asking (`--restart-harness`, `--yes`).
+	RestartYes
+	// RestartNo never restarts (`--no-restart-harness`).
+	RestartNo
+)
+
+// Flags are the command-line flags that carry this choice to another run.
+func (c RestartChoice) Flags() []string {
+	switch c {
+	case RestartYes:
+		return []string{"--restart-harness"}
+	case RestartNo:
+		return []string{"--no-restart-harness"}
+	}
+	return nil
+}
+
+// RestartFlagsSince is the first release whose binary knows --restart-harness
+// and --no-restart-harness (#2278).
+const RestartFlagsSince = "0.6.0"
+
+// knowsRestartFlags reports whether a release's binary parses the restart flags.
+func knowsRestartFlags(version string) bool {
+	v, ok := parseVersion(version)
+	since, _ := parseVersion(RestartFlagsSince)
+	return ok && compareVersions(v, since) >= 0
+}
+
+// ParseRestartChoice is the choice the two flags make; both at once is an error.
+func ParseRestartChoice(restart, noRestart bool) (RestartChoice, error) {
+	switch {
+	case restart && noRestart:
+		return RestartAsk, errors.New("--restart-harness and --no-restart-harness contradict each other; pass one")
+	case restart:
+		return RestartYes, nil
+	case noRestart:
+		return RestartNo, nil
+	}
+	return RestartAsk, nil
+}
+
+// AskRestart asks the restart question and reads the answer from in: an empty
+// line, y or yes is a yes (the question's default), n or no a no, and anything
+// else asks again. answered is false when in ends before an answer.
+// Not pairing's `confirm` (internal/app/pair.go), deliberately: that one mints a
+// key and defaults to no, and it cannot say that nobody answered.
+func AskRestart(in io.Reader, out io.Writer, question string) (yes, answered bool) {
+	reader := bufio.NewReader(in)
+	for {
+		_, _ = fmt.Fprint(out, question)
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			return false, false
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "", "y", "yes":
+			return true, true
+		case "n", "no":
+			return false, true
+		}
+		if err != nil {
+			return false, false
+		}
+	}
+}
+
+// harnessRestart is what restarting the harness decides from, for setup and
+// upgrade alike.
+type harnessRestart struct {
+	GOOS, UserHome, UID string
+	Env                 func(string) string
+	Runner              Runner
+	Timeout             time.Duration
+	Choice              RestartChoice
+	Confirm             func(question string) (yes, answered bool)
+	DryRun              bool
+}
+
 // restartHarness restarts the harness with the manifest's command when that is
-// safe, and otherwise tells the person how. It returns the summary line.
+// safe AND the person said so, and otherwise tells the person how. It returns
+// the summary line.
 //
 // 🔴 Safe means: the manifest declares both the command and the service it
 // restarts, that service's definition exists for this user, and the plugin went
 // into the harness's DEFAULT home. A harness run by hand has no service to
 // restart, and its restart command may then start it in the foreground — Hermes's
-// does — which would hang this upgrade; a non-default home is served by a
-// differently named service the manifest cannot know.
-func restartHarness(ctx context.Context, opts UpgradeOptions, installed installedPlugin, do func(string, func() error) error, say func(string, ...any)) string {
+// does — which would hang this run; a non-default home is served by a
+// differently named service the manifest cannot know. Safety is checked FIRST:
+// the person is never asked a question whose yes could not be carried out.
+//
+// 🔴 Said so means a flag, `--yes`, or a yes at the terminal (#2278): a
+// person's harness is never restarted without their say, so a run with none of
+// the three — a scheduled upgrade, a pipe with no terminal — leaves it alone.
+func restartHarness(ctx context.Context, r harnessRestart, installed installedPlugin, do func(string, func() error) error, say func(string, ...any)) string {
 	manifest := installed.manifest
 	if len(manifest.RestartCommand) == 0 || manifest.RestartService == nil {
 		say("%s", manifest.Restart)
 		return "restart it yourself to load the new plugin"
 	}
-	if !harnessServiceRunning(ctx, opts, *manifest.RestartService) ||
-		installed.home != expandHome(manifest.DefaultHome, opts.UserHome) {
+	if !harnessServiceRunning(ctx, r, *manifest.RestartService) ||
+		installed.home != expandHome(manifest.DefaultHome, r.UserHome) {
 		say("%s", manifest.Restart)
 		return "not run as a service here — restart it yourself to load the new plugin"
 	}
-	timeout := opts.RestartTimeout
+	switch r.Choice {
+	case RestartNo:
+		say("%s", manifest.Restart)
+		return "not restarted — you said no; restart it yourself to load the new plugin"
+	case RestartAsk:
+		if r.DryRun {
+			say("would ask whether to restart %s now to load the plugin", manifest.Harness)
+			return "would ask before restarting"
+		}
+		yes, answered := false, false
+		if r.Confirm != nil {
+			yes, answered = r.Confirm(fmt.Sprintf("Restart %s now to load the plugin? [Y/n] ", manifest.Harness))
+		}
+		switch {
+		case !answered:
+			say("%s", manifest.Restart)
+			return "not restarted — no terminal to ask (--restart-harness restarts it); restart it yourself to load the new plugin"
+		case !yes:
+			say("%s", manifest.Restart)
+			return "not restarted — you said no; restart it yourself to load the new plugin"
+		}
+	}
+	timeout := r.Timeout
 	if timeout == 0 {
 		timeout = DefaultRestartTimeout
 	}
@@ -410,11 +542,14 @@ func restartHarness(ctx context.Context, opts UpgradeOptions, installed installe
 	if err := do("run "+strings.Join(argv, " "), func() error {
 		restartCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
-		_, err := opts.Runner.Run(restartCtx, argv[0], argv[1:]...)
+		_, err := r.Runner.Run(restartCtx, argv[0], argv[1:]...)
 		return err
 	}); err != nil {
 		say("The harness restart failed (%v). %s", err, manifest.Restart)
 		return "restart failed — restart it yourself to load the new plugin"
+	}
+	if r.DryRun {
+		return "would restart"
 	}
 	return "restarted"
 }
@@ -424,18 +559,18 @@ func restartHarness(ctx context.Context, opts UpgradeOptions, installed installe
 // 🔴 Installed is not enough: a person who once installed the service and now
 // runs the gateway by hand has a stopped unit, and restarting it would start a
 // second gateway beside theirs.
-func harnessServiceRunning(ctx context.Context, opts UpgradeOptions, service RestartService) bool {
-	if !harnessServiceInstalled(service, opts.GOOS, opts.UserHome, opts.Env) {
+func harnessServiceRunning(ctx context.Context, r harnessRestart, service RestartService) bool {
+	if !harnessServiceInstalled(service, r.GOOS, r.UserHome, r.Env) {
 		return false
 	}
 	var argv []string
-	switch opts.GOOS {
+	switch r.GOOS {
 	case "linux":
 		argv = []string{"systemctl", "--user", "is-active", "--quiet", service.Systemd}
 	case "darwin":
-		argv = []string{"launchctl", "print", "gui/" + opts.UID + "/" + service.Launchd}
+		argv = []string{"launchctl", "print", "gui/" + r.UID + "/" + service.Launchd}
 	}
-	_, err := opts.Runner.Run(ctx, argv[0], argv[1:]...)
+	_, err := r.Runner.Run(ctx, argv[0], argv[1:]...)
 	return err == nil
 }
 

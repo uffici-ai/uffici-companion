@@ -949,3 +949,80 @@ func TestInstallServiceRefusesAnUnwritableHome(t *testing.T) {
 		t.Fatalf("exit %d:\n%s", code, r.out)
 	}
 }
+
+// restartableRig is a setup whose harness runs as its own user service and
+// whose manifest declares how to restart it — a restart is SAFE, so only the
+// person's say decides it (#2278).
+func restartableRig(t *testing.T) *rig {
+	t.Helper()
+	manifest := goodManifest()
+	manifest["restartCommand"] = []string{"hermes", "gateway", "restart"}
+	manifest["restartService"] = map[string]string{"systemd": "hermes-gateway", "launchd": "ai.hermes.gateway"}
+	r := newRig(t, manifest, false)
+	unit := filepath.Join(r.opts.UserHome, ".config", "systemd", "user", "hermes-gateway.service")
+	if err := os.MkdirAll(filepath.Dir(unit), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(unit, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// 🔴 #2278: the install restarts the harness when the person says so, and only
+// AFTER the companion's service — so the plugin it loads says hello to the
+// companion that will serve it.
+func TestRunRestartsTheHarnessOnYesAfterTheCompanion(t *testing.T) {
+	r := restartableRig(t)
+	r.opts.AssumeYes = true
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	companion, harness := -1, -1
+	for i, c := range r.runner.calls {
+		switch strings.Join(c, " ") {
+		case "systemctl --user restart " + ServiceLabel + ".service":
+			companion = i
+		case "hermes gateway restart":
+			harness = i
+		}
+	}
+	if harness < 0 || companion < 0 || harness < companion {
+		t.Fatalf("want the companion restarted, then the harness; ran %v", r.runner.calls)
+	}
+	if !strings.Contains(r.out.String(), "hermes: restarted") {
+		t.Fatalf("the outcome was not said:\n%s", r.out)
+	}
+}
+
+// 🔴 #2278: with no flag and no terminal, the install leaves the harness alone
+// and says how — and a terminal's answer, or a flag, decides otherwise.
+func TestRunAsksBeforeRestartingTheHarness(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		choice   RestartChoice
+		confirm  func(string) (bool, bool)
+		restarts bool
+		line     string
+	}{
+		{"no flag and no terminal", RestartAsk, nil, false, "hermes: not restarted — no terminal to ask"},
+		{"asked, yes", RestartAsk, func(string) (bool, bool) { return true, true }, true, "hermes: restarted"},
+		{"asked, no", RestartAsk, func(string) (bool, bool) { return false, true }, false, "hermes: not restarted — you said no"},
+		{"--no-restart-harness beats --yes", RestartNo, nil, false, "hermes: not restarted — you said no"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := restartableRig(t)
+			r.opts.RestartHarness, r.opts.Confirm = tc.choice, tc.confirm
+			r.opts.AssumeYes = tc.choice == RestartNo
+			if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			if got := r.runner.ran("hermes gateway restart"); got != tc.restarts {
+				t.Fatalf("restarted = %v, want %v:\n%s", got, tc.restarts, r.out)
+			}
+			if !strings.Contains(r.out.String(), tc.line) {
+				t.Fatalf("lacks %q:\n%s", tc.line, r.out)
+			}
+		})
+	}
+}

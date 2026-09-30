@@ -62,8 +62,13 @@ It does, in order:
 4. Downloads the plugin for your harness from that plugin's own release, checks it, installs
    it into the harness, switches the Uffici platform on in the harness's configuration, and
    points the plugin at the companion.
-5. Runs `uffici doctor` and tells you how to restart the harness. Once the harness is
-   restarted, the agent shows **Online** in the portal.
+5. Asks whether to restart the harness so it loads the plugin, and restarts it on a yes —
+   only when the harness runs as its own user service; otherwise it tells you how. Under a
+   pipe the question is read from your terminal; with no terminal the harness is left alone.
+   `--restart-harness` restarts without asking, `--no-restart-harness` never does, and
+   `--yes` counts as a yes. Once the harness is restarted, the agent shows **Online** in
+   the portal.
+6. Runs `uffici doctor`.
 
 Every step is announced before it runs. Add `--dry-run` to be told and nothing else: the
 script then installs no binary either. The script is [install.sh](install.sh) in this
@@ -92,12 +97,17 @@ host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the late
 for this machine, verifies it against the release's checksum list and swaps it in beside the
 old one, so a failed download or check leaves the installed binary untouched. The new binary
 then installs the plugin from its latest release, sets the harness's configuration again,
-restarts the companion's service, restarts the harness when it runs as a service (otherwise
-it tells you how), runs the doctor, and prints what moved from which version to which. It
-keeps the agent key and never pairs.
+restarts the companion's service, asks whether to restart the harness (as setup does, and
+only when it runs as a service; otherwise it tells you how), runs the doctor, and prints
+what moved from which version to which. It keeps the agent key and never pairs.
 
 - `--check` changes nothing: it exits 0 when everything is current and 10 when an upgrade
   exists, so a scheduled job can ask.
+- `--restart-harness` restarts the harness without asking; `--no-restart-harness` never
+  does. With neither and no terminal — a scheduled job — the harness is left alone, so a
+  scheduled upgrade that should restart it passes `--restart-harness`. Both flags arrived in
+  0.6.0: an older installed companion refuses them, so upgrade from it with plain
+  `uffici upgrade`, and the new binary asks at the terminal.
 - `--dry-run` says every step and does none.
 - It never downgrades. `--version X.Y.Z` (and `--plugin-version X.Y.Z`) installs a given
   release on purpose, including over a build newer than the latest.
@@ -149,7 +159,9 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `--pairing-code <XXXX-XXXX>` | The pairing code from the portal's line. Pairs with no approval and no question, and pairs again over a key already in place (a re-pair). |
 | `--no-pair` | Skip pairing: the key is already in place, or mounted from a Secret. |
 | `--no-service` | Skip installing the service. |
-| `--yes` | Pair without asking which agent and organization the key is for. |
+| `--yes` | Pair without asking which agent and organization the key is for, and restart the harness without asking. |
+| `--restart-harness` | Restart the harness once its plugin is installed, without asking — only where it runs as its own user service. |
+| `--no-restart-harness` | Never restart the harness; say how to instead. Wins over `--yes`. |
 | `--plugin-version <x.y.z>` | Pin the plugin release. Default: the latest. |
 | `--dry-run` | Print every action and perform none. Without `--pairing-code`, a key already in place is kept. |
 | `--home <dir>` | The companion's own directory, `~/.uffici` by default. |

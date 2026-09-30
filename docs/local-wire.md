@@ -87,8 +87,12 @@ The plugin's `hello` is also where the companion learns WHICH harness it serves,
 and the platform reads that on the doorbell's connection ticket. The doorbell opens
 at start, before any plugin, so its first connection reports the harness as
 `unknown`; once a `hello` has named it, the doorbell reconnects once, at its next
-heartbeat, to report it. Presence keeps meaning "the companion is
-connected", and the Agents screen names the harness that answers.
+heartbeat, to report it. The same happens whenever the facts change later: an
+upgrade restarts the harness under a connected companion, and the new plugin's
+`hello` names a new plugin or harness version, which the doorbell reports the
+same way. A plugin that merely went away changes nothing, so a harness restart
+costs one reconnect, not two. Presence keeps meaning "the companion is
+connected", and the Agents screen names the harness and plugin that answer.
 
 So: **`hello` means "I am here"; `ready` means "send me work".** The companion
 holds every ring until `ready` arrives, then delivers them — the same holding
