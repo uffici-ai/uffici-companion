@@ -185,6 +185,7 @@ The plugin hands the companion its own log lines and its harness's. The payload 
 - The companion redacts every line (the message, the logger name and every string inside `attrs`), drops harness lines below the effective harness floor and plugin lines below the plugin floor, and keeps the rest for shipping. The plugin never ships anything itself.
 - The result is `{accepted, dropped, disabled, busy, harnessLevel, pluginLevel, retryAfterSeconds?}`. `harnessLevel` and `pluginLevel` are the **effective** floors — the stricter of the machine's setting and the agent's in Uffici — and the plugin applies them from then on.
 - 🔴 **At most one in flight per plugin.** A second `logs.push` while one is being handled is answered **success** with `busy: true` and keeps nothing; the plugin sends it again later. `busy` is not an error class, and the class vocabulary stays closed.
+- The plugin pushes every ten seconds while no call is in flight, and once more as it disconnects, bounded at two seconds and after its periodic push has stopped, so the lines that explain a restart are not lost with the process.
 - `disabled: true` means shipping is off, on this machine or for the agent: the plugin drops what it queued and asks again after `retryAfterSeconds`.
 - The payload never reaches a log line, and the companion logs its answer at `debug`, not `info`.
 
