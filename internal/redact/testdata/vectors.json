@@ -1,0 +1,143 @@
+[
+  {
+    "name": "private-key-block",
+    "input": "key -----BEGIN RSA PRIVATE KEY-----\nMIIEow\nIBAAKC\n-----END RSA PRIVATE KEY----- end",
+    "expected": "key [redacted:private-key] end"
+  },
+  {
+    "name": "jwt",
+    "input": "session eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U ok",
+    "expected": "session [redacted:jwt] ok"
+  },
+  {
+    "name": "telegram-bot-path",
+    "input": "GET https://api.telegram.org/bot123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/getUpdates",
+    "expected": "GET https://api.telegram.org/bot[redacted]/getUpdates"
+  },
+  {
+    "name": "telegram-token",
+    "input": "token is 123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsawx now",
+    "expected": "token is [redacted:bot-token] now"
+  },
+  {
+    "name": "authorization-header",
+    "input": "headers Authorization: Bearer abcdefgh12345678, next",
+    "expected": "headers Authorization: [redacted], next"
+  },
+  {
+    "name": "authorization-header-json",
+    "input": "{\"authorization\": \"Basic dXNlcjpwYXNz\"}",
+    "expected": "{\"authorization\": \"[redacted]\"}"
+  },
+  {
+    "name": "bearer",
+    "input": "sent bearer abcdefgh.12345678 to the host",
+    "expected": "sent bearer [redacted] to the host"
+  },
+  {
+    "name": "url-userinfo",
+    "input": "connecting to postgres://app:s3cr3t-pw@db.internal:5432/app",
+    "expected": "connecting to postgres://[redacted]@db.internal:5432/app"
+  },
+  {
+    "name": "url-query-secret",
+    "input": "GET /callback?state=x&api_key=abc123&code=4/0Ab&next=/home",
+    "expected": "GET /callback?state=x&api_key=[redacted]&code=[redacted]&next=/home"
+  },
+  {
+    "name": "sk-key-openrouter",
+    "input": "OPENROUTER sk-or-v1-0123456789abcdef0123456789abcdef0123 failed",
+    "expected": "OPENROUTER [redacted:api-key] failed"
+  },
+  {
+    "name": "sk-key",
+    "input": "using sk-proj-AbCdEfGhIjKlMnOpQrStUvWx for the call",
+    "expected": "using [redacted:api-key] for the call"
+  },
+  {
+    "name": "slack-token",
+    "input": "slack xoxb-1234567890-abcdefghij done",
+    "expected": "slack [redacted:api-key] done"
+  },
+  {
+    "name": "github-token",
+    "input": "clone with ghp_0123456789abcdefghijABCDEFGHIJ012345 please",
+    "expected": "clone with [redacted:api-key] please"
+  },
+  {
+    "name": "aws-access-key",
+    "input": "aws AKIAIOSFODNN7EXAMPLE rejected",
+    "expected": "aws [redacted:api-key] rejected"
+  },
+  {
+    "name": "google-api-key",
+    "input": "maps AIzaSyA1234567890abcdefghijklmnopqrstuv ok",
+    "expected": "maps [redacted:api-key] ok"
+  },
+  {
+    "name": "webhook-secret",
+    "input": "signing with whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw ok",
+    "expected": "signing with [redacted:api-key] ok"
+  },
+  {
+    "name": "agent-key",
+    "input": "key ik_0123456789abcdef0123456789abcdef0123456789abcdef rejected",
+    "expected": "key [redacted:agent-key] rejected"
+  },
+  {
+    "name": "secret-assignment",
+    "input": "env OPENROUTER_API_KEY=abc123xyz DEBUG=1",
+    "expected": "env OPENROUTER_API_KEY=[redacted] DEBUG=1"
+  },
+  {
+    "name": "secret-field",
+    "input": "config {\"api_key\": \"abcd1234\", \"model\": \"x\"}",
+    "expected": "config {\"api_key\": \"[redacted]\", \"model\": \"x\"}"
+  },
+  {
+    "name": "pairing-code",
+    "input": "run uffici pair with ABCD-EF23 now",
+    "expected": "run uffici pair with [redacted:pairing-code] now"
+  },
+  {
+    "name": "long-path-segment",
+    "input": "POST /hooks/abcdefghijklmnopqrstuvwxyz0123456789ABCD/deliver",
+    "expected": "POST /hooks/[redacted]/deliver"
+  },
+  {
+    "name": "untouched",
+    "input": "tool call failed after 2 attempts; request 7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f, max_tokens: 1024",
+    "expected": "tool call failed after 2 attempts; request 7c1d2e3f-4a5b-4c6d-8e7f-9a0b1c2d3e4f, max_tokens: 1024"
+  },
+  {
+    "name": "redact-before-truncate",
+    "input": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U tail",
+    "truncateAt": 60,
+    "expected": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx [redacted:jwt] tail"
+  },
+  {
+    "name": "secret-attr-key",
+    "attrsInput": {
+      "password": "hunter2hunter2",
+      "api_key": "opaque-value-with-no-shape",
+      "x-auth-Token": "abc",
+      "nested": {
+        "client_secret": {
+          "v": "s3"
+        }
+      },
+      "prompt_tokens": 123,
+      "note": "fine"
+    },
+    "attrsExpected": {
+      "password": "[redacted]",
+      "api_key": "[redacted]",
+      "x-auth-Token": "[redacted]",
+      "nested": {
+        "client_secret": "[redacted]"
+      },
+      "prompt_tokens": 123,
+      "note": "fine"
+    }
+  }
+]

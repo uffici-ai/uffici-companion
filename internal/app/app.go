@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,17 +20,21 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
 	"github.com/uffici-ai/uffici-companion/internal/infra/fixture"
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
+	"github.com/uffici-ai/uffici-companion/internal/logship"
 	"github.com/uffici-ai/uffici-companion/internal/observe"
+	"github.com/uffici-ai/uffici-companion/internal/redact"
 	"github.com/uffici-ai/uffici-companion/internal/registry"
 	"github.com/uffici-ai/uffici-companion/internal/requests"
 	"github.com/uffici-ai/uffici-companion/internal/runner"
 	"github.com/uffici-ai/uffici-companion/internal/surface"
+	wirepkg "github.com/uffici-ai/uffici-companion/internal/wire"
 )
 
 // Exit codes, as the issue names them.
@@ -62,7 +67,18 @@ type Config struct {
 	TCPAddr     string
 	Once        bool
 	LogLevel    slog.Level
-	Version     string
+	// ShipLevel is the threshold at which the companion's own lines are captured
+	// for shipping (`UFFICI_LOG_SHIPPING_LEVEL`, default info). Independent of
+	// LogLevel: stdout keeps its own threshold.
+	ShipLevel slog.Level
+	// LogShipping is this machine's switch (`UFFICI_LOG_SHIPPING`, default on):
+	// off captures nothing and never asks Uffici for a logs ticket.
+	LogShipping bool
+	// HarnessLogLevel is this machine's floor for the harness's own lines
+	// (`UFFICI_LOG_LEVEL_HARNESS`, default warn). The stricter of it and the
+	// agent's level in Uffici wins.
+	HarnessLogLevel string
+	Version         string
 	// AttachWait bounds how long a `--once` run waits for a plugin whose harness
 	// is READY. Zero takes the runner's own default; a CI runner that gives a
 	// cold container minutes to boot passes a matching value, or the companion
@@ -160,11 +176,32 @@ func LoadConfig(env Env, flags Config) (Config, error) {
 		config.TCPAddr = fmt.Sprintf("127.0.0.1:%d", port)
 	}
 
-	level, err := parseLevel(env("UFFICI_LOG_LEVEL"))
+	level, err := parseLevel("UFFICI_LOG_LEVEL", env("UFFICI_LOG_LEVEL"))
 	if err != nil {
 		return config, err
 	}
 	config.LogLevel = level
+	shipLevel, err := parseLevel("UFFICI_LOG_SHIPPING_LEVEL", env("UFFICI_LOG_SHIPPING_LEVEL"))
+	if err != nil {
+		return config, err
+	}
+	config.ShipLevel = shipLevel
+	switch strings.ToLower(strings.TrimSpace(env("UFFICI_LOG_SHIPPING"))) {
+	case "", "on":
+		config.LogShipping = true
+	case "off":
+		config.LogShipping = false
+	default:
+		return config, fmt.Errorf("UFFICI_LOG_SHIPPING is %q; use on or off", env("UFFICI_LOG_SHIPPING"))
+	}
+	switch value := strings.ToLower(strings.TrimSpace(env("UFFICI_LOG_LEVEL_HARNESS"))); value {
+	case "":
+		config.HarnessLogLevel = "warn"
+	case "debug", "info", "warn", "error":
+		config.HarnessLogLevel = value
+	default:
+		return config, fmt.Errorf("UFFICI_LOG_LEVEL_HARNESS is %q; use debug, info, warn or error", env("UFFICI_LOG_LEVEL_HARNESS"))
+	}
 	return config, nil
 }
 
@@ -176,7 +213,7 @@ func loadGatewayConfig(env Env, config *Config) error {
 	}
 	raw := strings.TrimSpace(env("UFFICI_GATEWAY_URL"))
 	if raw == "" {
-		return fmt.Errorf("UFFICI_AGENTS_HOST=gateway needs UFFICI_GATEWAY_URL, like https://agents.uffici.ai")
+		return fmt.Errorf("UFFICI_AGENTS_HOST=gateway needs UFFICI_GATEWAY_URL, like https://agents.uffici.ai — or run uffici setup, which records it for this home")
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
@@ -196,7 +233,7 @@ func loadGatewayConfig(env Env, config *Config) error {
 	return nil
 }
 
-func parseLevel(value string) (slog.Level, error) {
+func parseLevel(name, value string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "", "info":
 		return slog.LevelInfo, nil
@@ -207,18 +244,18 @@ func parseLevel(value string) (slog.Level, error) {
 	case "error":
 		return slog.LevelError, nil
 	default:
-		return slog.LevelInfo, fmt.Errorf("UFFICI_LOG_LEVEL is %q; use debug, info, warn or error", value)
+		return slog.LevelInfo, fmt.Errorf("%s is %q; use debug, info, warn or error", name, value)
 	}
 }
 
 // Run starts the companion and returns its exit code.
 func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
-	logger := slog.New(slog.NewJSONHandler(out, &slog.HandlerOptions{Level: config.LogLevel}))
-
 	token, err := EnsureToken(config.Home, config.Token)
 	if err != nil {
 		return ExitConfig, err
 	}
+	logging := newLogging(config, out, token)
+	logger := logging.logger
 
 	// The fixture host is built here rather than through the registry when a
 	// script is in play, because the runner needs the concrete host to drive it.
@@ -275,6 +312,9 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	}
 	manager := requests.New(host, requests.Options{Observer: observer})
 	control.manager = manager
+	// Filled in below, once the surface exists; /healthz reads it through
+	// logging.shipper, which is atomic, never through this variable.
+	var shipper *logship.Shipper
 
 	listener, err := wstransport.Listen(wstransport.Options{
 		Kind: config.Transport, SocketPath: config.SocketPath, TCPAddr: config.TCPAddr,
@@ -289,6 +329,8 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 					health.Doorbell, health.ConnectionID = wstransport.DoorbellConnected, id
 				}
 			}
+			// Through the atomic pointer: this closure serves before the shipper exists.
+			health.Logs = logsHealth(config, logging.shipper.Load(), logging.ring)
 			return health
 		},
 	})
@@ -297,8 +339,22 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	}
 	defer func() { _ = listener.Close() }()
 
+	// A machine's log lines (#2264): the shipper runs only where the switch is on
+	// and the host takes logs; the plugin's `logs.push` is served either way, so
+	// a switched-off machine answers `disabled` rather than `unknown_op`.
+	shipper = newShipper(config, host, logging, func() contracts.LogClient {
+		client := contracts.LogClient{Name: gateway.ClientName, Version: config.Version}
+		if wire != nil {
+			client.HarnessKind, client.HarnessVersion = wire.HarnessFacts()
+			client.PluginVersion = wire.PluginVersion()
+		}
+		return client
+	})
+	pushes := &logship.PushHandler{Shipper: shipper, Ring: logging.ring, Redactor: logging.redactor}
+
 	wire, err = surface.New(listener, manager, surface.Options{
 		Token: token, Logger: logger, Version: config.Version,
+		Calls: map[string]surface.CallHandler{wireOpLogsPush: pushes.Handle},
 	})
 	if err != nil {
 		return ExitConfig, err
@@ -353,6 +409,22 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	// passed deadline into an expiry.
 	go tick(serveCtx, manager, logger)
 
+	// The shipper stops with the serve context and makes one flush of at most
+	// two seconds on its way out; waiting for it keeps that flush inside Run.
+	shipCtx, stopShipping := context.WithCancel(serveCtx)
+	defer stopShipping()
+	shipperDone := make(chan struct{})
+	if shipper != nil {
+		go func() {
+			defer close(shipperDone)
+			shipper.Run(shipCtx)
+		}()
+	} else {
+		close(shipperDone)
+	}
+	defer func() { <-shipperDone }()
+	defer stopServing()
+
 	if !config.Once {
 		<-serveCtx.Done()
 		return ExitOK, nil
@@ -367,11 +439,108 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		return ExitConfig, err
 	}
 	report(logger, result)
+	// The lines this run shipped (#2267). Canaries first — the wire token through
+	// every source's own capture path, so "no line carries the token" is a claim
+	// about redaction and not about a run that never tried — then the shipper is
+	// STOPPED and its shutdown flush drains the ring, so nothing races the count.
+	injectRedactionCanaries(serveCtx, logging, pushes, token)
+	stopShipping()
+	<-shipperDone
+	reportLogs(logger, logReportOf(fixtureHost.Batches(), token))
 	if !result.OK() {
 		return ExitMiss, nil
 	}
 	return ExitOK, nil
 }
+
+// wireOpLogsPush is the local wire's log op, named once here for the call map.
+const wireOpLogsPush = wirepkg.OpLogsPush
+
+// logging is the companion's logger and what ships its lines.
+type logging struct {
+	logger   *slog.Logger
+	ring     *logship.Ring
+	redactor *redact.Redactor
+	// tee is the ship side alone — a logger over it writes nothing to stdout.
+	tee *logship.Tee
+	// shipper is set once the host is known; the tee reads it on every record,
+	// so a switch-off in Uffici stops capture without rebuilding the logger.
+	shipper atomic.Pointer[logship.Shipper]
+}
+
+// newLogging builds the companion's logger: stdout exactly as before, teed into
+// the ship ring at the shipping threshold. The redactor knows this process's
+// wire token and, for the gateway kind, its agent key, so neither can ship even
+// if a line quotes it verbatim.
+//
+// 🔴 With the machine switch off the tee captures nothing, ever.
+func newLogging(config Config, out io.Writer, token string) *logging {
+	stdout := slog.NewJSONHandler(out, &slog.HandlerOptions{Level: config.LogLevel})
+	secrets := []string{token}
+	if config.AgentsHost == registry.KindGateway {
+		if key, err := LoadAgentKey(config.Home, config.AgentKey); err == nil {
+			secrets = append(secrets, key)
+		}
+	}
+	l := &logging{
+		ring: logship.NewRing(logship.DefaultMaxEntries, logship.DefaultMaxBytes, func() string {
+			return logship.FormatTS(time.Now())
+		}),
+		redactor: redact.New(secrets...),
+	}
+	tee := logship.NewTee(logship.TeeOptions{
+		Ring: l.ring, Redactor: l.redactor, Level: config.ShipLevel,
+		Enabled: func() bool {
+			if !config.LogShipping {
+				return false
+			}
+			if shipper := l.shipper.Load(); shipper != nil {
+				return shipper.Capturing()
+			}
+			return true
+		},
+	})
+	l.tee = tee
+	l.logger = slog.New(slog.NewMultiHandler(stdout, tee))
+	return l
+}
+
+// newShipper builds the log shipper, or nil — and nil means nothing ships and
+// nothing is minted: 🔴 the machine switch is off, or the host takes no logs.
+func newShipper(config Config, host contracts.AgentsHost, logging *logging, client func() contracts.LogClient) *logship.Shipper {
+	logHost, ok := host.(contracts.LogHost)
+	if !ok || !config.LogShipping {
+		return nil
+	}
+	activity, _ := host.(contracts.ControlPlaneActivity)
+	shipper := logship.NewShipper(logship.ShipperOptions{
+		Host: logHost, Activity: activity, Ring: logging.ring,
+		MachineHarnessLevel: config.HarnessLogLevel, PluginLevel: levelName(config.ShipLevel),
+		Logger: logging.logger, Client: client,
+	})
+	logging.shipper.Store(shipper)
+	return shipper
+}
+
+// logsHealth is the shipper's state as `/healthz` reports it.
+func logsHealth(config Config, shipper *logship.Shipper, ring *logship.Ring) *wstransport.HealthLogs {
+	logs := &wstransport.HealthLogs{Machine: "off", Uffici: "unknown", HarnessFloor: config.HarnessLogLevel,
+		Dropped: ring.Dropped()}
+	if !config.LogShipping || shipper == nil {
+		return logs
+	}
+	logs.Machine = "on"
+	logs.Uffici = "on"
+	if !shipper.Capturing() {
+		logs.Uffici = "off"
+	}
+	logs.HarnessFloor, _ = shipper.Floors()
+	logs.Dropped += shipper.Dropped()
+	return logs
+}
+
+// levelName is a slog level as the platform names it.
+func levelName(level slog.Level) string { return logship.LevelName(level) }
 
 // daemonPlugin is the runner's control over the attached plugin, implemented
 // against the real surface and transport.
@@ -459,6 +628,85 @@ func report(logger *slog.Logger, result runner.Result) {
 	}
 }
 
+// LogReport is what an --once run shipped, by source — counts only, never a
+// line (#2267). TokenLeaks counts shipped lines that still carry this run's wire
+// token: the plugin presents it in every hello, so it is the one secret a
+// fixture run holds, and any line carrying it is a redaction that failed.
+// Canaries counts the SOURCES whose own canary line shipped redacted — a total
+// of redactions could be met by ordinary traffic while a canary path was broken,
+// and zero leaks would then be a claim about nothing (#2259 review).
+type LogReport struct {
+	Companion, Plugin, Harness, Redactions, TokenLeaks, Canaries int
+}
+
+// canaryMessage starts every canary line; the token follows it, and redaction
+// replaces only the token.
+const canaryMessage = "redaction canary "
+
+// logReportOf counts the fixture host's recorded pushes.
+func logReportOf(batches []contracts.LogBatch, token string) LogReport {
+	var out LogReport
+	canaries := map[string]bool{}
+	for _, batch := range batches {
+		for _, entry := range batch.Entries {
+			switch entry.Source {
+			case "companion":
+				out.Companion++
+			case "plugin":
+				out.Plugin++
+			case "harness":
+				out.Harness++
+			}
+			out.Redactions += entry.Redactions
+			leaked := token != "" && (strings.Contains(entry.Message, token) ||
+				strings.Contains(entry.Attrs, token) || strings.Contains(entry.Logger, token))
+			if leaked {
+				out.TokenLeaks++
+			}
+			if strings.HasPrefix(entry.Message, canaryMessage) && entry.Redactions > 0 && !leaked {
+				canaries[entry.Source] = true
+			}
+		}
+	}
+	for _, source := range []string{"companion", "plugin", "harness"} {
+		if canaries[source] {
+			out.Canaries++
+		}
+	}
+	return out
+}
+
+// injectRedactionCanaries hands the capture paths one line per source that
+// carries the wire token, in its text and in an attribute: the companion's
+// through the tee (never stdout), the plugin's and the harness's through the
+// `logs.push` handler, exactly as a plugin would. A fixture run only.
+func injectRedactionCanaries(ctx context.Context, l *logging, pushes *logship.PushHandler, token string) {
+	slog.New(l.tee).Warn(canaryMessage+token, slog.String("probe", token))
+	entry := func(source string) map[string]any {
+		return map[string]any{
+			"ts": logship.FormatTS(time.Now()), "source": source, "level": "warn",
+			"logger": "uffici.canary", "message": canaryMessage + token,
+			"attrs": map[string]any{"probe": token},
+		}
+	}
+	payload, err := json.Marshal(map[string]any{"entries": []any{entry("plugin"), entry("harness")}})
+	if err == nil {
+		_, _ = pushes.Handle(ctx, payload)
+	}
+}
+
+// reportLogs logs the shipped-lines verdict beside the script's own.
+func reportLogs(logger *slog.Logger, r LogReport) {
+	logger.Info("logs shipped",
+		slog.Int("companion", r.Companion),
+		slog.Int("plugin", r.Plugin),
+		slog.Int("harness", r.Harness),
+		slog.Int("redactions", r.Redactions),
+		slog.Int("tokenLeaks", r.TokenLeaks),
+		slog.Int("canaries", r.Canaries),
+	)
+}
+
 // buildGatewayHost reads the key and the instance id from $UFFICI_HOME and
 // builds the real host through the registry.
 func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string, string), plugin func() string) (contracts.AgentsHost, error) {
@@ -474,9 +722,16 @@ func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string
 	if err != nil {
 		return nil, err
 	}
+	// 🔴 A SECOND client, not a copy of the first: HTTPClient clones the default
+	// transport per call, so log pushes get a connection pool of their own and
+	// never queue behind — or ahead of — a call a person is waiting on.
+	logsClient, err := HTTPClient(config.CAFile)
+	if err != nil {
+		return nil, err
+	}
 	reg, err := registry.New(registry.Config{AgentsHost: registry.KindGateway, Gateway: gateway.Options{
 		BaseURL: config.GatewayURL, Key: key, InstanceID: instanceID, Version: config.Version,
-		Harness: harness, Plugin: plugin, HTTPClient: httpClient,
+		Harness: harness, Plugin: plugin, HTTPClient: httpClient, LogsHTTPClient: logsClient,
 		Logger: logger.With(slog.String("component", "gateway")),
 	}})
 	if err != nil {

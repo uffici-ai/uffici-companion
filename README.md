@@ -27,7 +27,9 @@ It never calls a model and never executes a tool. It keeps nothing durable beyon
 instance id and its wire token. What the agent reads from a Uffici conversation and posts to
 it goes through Uffici, where it is authorized and recorded; what your harness does on its own
 — its local tools, its local memory — stays local, and this release does not route it through
-Uffici.
+Uffici. The one exception is its **log lines**, which it sends to Uffici so your organization
+can diagnose a machine without asking you for them — see
+[What leaves your machine](#what-leaves-your-machine).
 
 ## Requirements
 
@@ -309,9 +311,12 @@ redelivers one that was not acknowledged. With it off, a second replica is refus
 ## Verify it
 
 ```sh
-export UFFICI_GATEWAY_URL=https://agents.uffici.ai   # unless already in your shell
 uffici doctor
 ```
+
+On a machine `uffici setup` set up, the doctor reads your agents host from the setup it
+recorded. Elsewhere, set `UFFICI_GATEWAY_URL` first; it wins over the record when both are
+there.
 
 When the companion is running on this machine, the doctor asks it: whether its connection to
 Uffici is up, and whether the harness's plugin is attached. It does not open a second
@@ -331,7 +336,7 @@ The companion reads its environment once, at start.
 | Setting | Meaning |
 | --- | --- |
 | `UFFICI_AGENTS_HOST` | A **kind**, not an address: `gateway` (Uffici) or `fixture` (a scripted stand-in, for testing a plugin). Unset means `fixture`, so set `gateway` to reach Uffici. Anything else exits with status `2`. |
-| `UFFICI_GATEWAY_URL` | The agents host's HTTPS origin: the address your organization was given. Required with `gateway`, including for `pair`, `doctor` and `setup`. |
+| `UFFICI_GATEWAY_URL` | The agents host's HTTPS origin: the address your organization was given. Required with `gateway`, including for `setup`. `pair` and `doctor` fall back to the address `uffici setup` recorded for the same home. |
 | `UFFICI_HOME` | The companion's directory: the key, the instance id, the wire socket and token. Default `~/.uffici`; the container image uses `/var/lib/uffici`. |
 | `$UFFICI_HOME/agent-key` | The agent key, mode `600`. A world- or group-readable file is refused, never repaired. |
 | `UFFICI_AGENT_KEY` | The key as an environment value, **only** for a pod mounting it from a Secret. The file wins when both exist. |
@@ -342,6 +347,9 @@ The companion reads its environment once, at start.
 | `UFFICI_WIRE_TOKEN` | The wire token as an environment value, for a pod whose plugin container cannot read the file. Source it from a Secret. |
 | `UFFICI_CA_FILE` | An extra PEM bundle to trust, for an agents host behind your own certificate authority. `SSL_CERT_FILE` is honoured too. |
 | `UFFICI_LOG_LEVEL` | `debug`, `info` (default), `warn` or `error`. No level ever logs the key, a ticket or a message body. |
+| `UFFICI_LOG_SHIPPING` | `on` (default) or `off`: whether this machine's log lines are sent to Uffici at all. Set with `uffici setup --log-shipping`. Anything else exits with status `2`. |
+| `UFFICI_LOG_SHIPPING_LEVEL` | The lowest level of the companion's and the plugin's own lines that are sent: `debug`, `info` (default), `warn` or `error`. Independent of `UFFICI_LOG_LEVEL`. |
+| `UFFICI_LOG_LEVEL_HARNESS` | The lowest level of the **harness's** own lines that may leave this machine: `debug`, `info`, `warn` (default) or `error`. Set with `uffici setup --harness-log-level`. The stricter of this and the agent's level in Uffici applies. |
 | `UFFICI_GITHUB_TOKEN` | Read by the installer and by `uffici setup` to download from a private repository. Never printed. |
 
 ### Staying connected
@@ -361,6 +369,39 @@ person always learns that something went wrong instead of waiting on silence. A 
 that answers with an HTML page or a `403` is reported as `edge_challenge`; a DNS, TCP or TLS
 failure as `unreachable`. Technical detail goes to the companion's log, never to the
 conversation, and neither the key, a ticket nor any response body ever reaches a log line.
+
+### What leaves your machine
+
+Besides the conversation traffic above, the companion sends its **log lines** to Uffici: its
+own, the plugin's, and the harness's own lines the plugin hands it. This is what lets your
+organization see why a machine misbehaves without asking you to paste a log.
+
+- **Redacted twice.** Every line is redacted on this machine before it is kept — keys, bearer
+  tokens, signed URLs, provider keys, pairing codes, the wire token and the agent key itself —
+  and Uffici applies the same patterns again as it arrives. A value logged under a name like
+  `password`, `token`, `secret` or `api_key` is removed whole. Redaction removes the shapes of
+  secrets; it does not remove names or words.
+- 🔴 **Harness lines can contain conversation content**: a harness's warning can quote what
+  a person or a tool said. By default only the harness's **warnings and errors** leave; your
+  organization's owner can raise that to Info or Debug for a day at a time.
+- **Kept for at most 30 days**, then deleted. **Your organization's administrators and owners
+  can read them**, on the agent's Logs tab in Uffici, and every read is recorded.
+- **Lowest priority.** Lines are sent on their own connection, only while no conversation
+  call is in flight, at most one batch at a time; a full buffer drops the oldest line rather
+  than slow an answer.
+
+To narrow what leaves, or stop it:
+
+```sh
+uffici setup --harness-log-level=error    # only the harness's errors
+uffici setup --log-shipping=off           # nothing at all
+```
+
+Both are written into the service and kept by later runs of `uffici setup` and
+`uffici upgrade`. A machine set up by a companion that predates these switches has neither
+recorded, so its next `uffici upgrade` starts shipping at the defaults above; run
+`uffici setup --no-pair --log-shipping=off` first to keep it off. An administrator can also switch shipping off for the agent in Uffici; either
+switch stops all three sources. `uffici doctor` shows which applies.
 
 ## The plugin for your harness
 

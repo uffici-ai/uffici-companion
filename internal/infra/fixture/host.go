@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
+	"github.com/uffici-ai/uffici-companion/internal/infra/logsim"
 )
 
 // Host is a scripted AgentsHost.
@@ -18,6 +19,10 @@ import (
 // than the shape of the platform. Those needs are served by the runner instead,
 // which is not an AgentsHost.
 type Host struct {
+	// Recorder is the log side (#2264): a scriptable policy and every pushed
+	// batch, which a `--once` run reports and the end-to-end run asserts on.
+	*logsim.Recorder
+
 	script *Script
 	store  *store
 
@@ -81,7 +86,14 @@ func New(script *Script) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Host{script: script, store: built, requests: map[string]openRequest{}}, nil
+	recorder := logsim.NewRecorder()
+	if script.Logs != nil && script.Logs.HarnessLevel != "" {
+		recorder.SetShipping(true, script.Logs.HarnessLevel)
+	}
+	return &Host{
+		Recorder: recorder,
+		script:   script, store: built, requests: map[string]openRequest{},
+	}, nil
 }
 
 // OpenDoorbell registers the companion's handlers. Rings arrive when the runner

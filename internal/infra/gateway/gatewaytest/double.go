@@ -120,6 +120,10 @@ type Double struct {
 	reads         map[string]int
 	pairings      map[string]*pendingPairing
 	pairingSeq    int
+	logsShipping  LogsShipping
+	logsTickets   map[string]bool
+	logsGate      chan struct{}
+	logBatches    []protocol.LogBatch
 }
 
 type ringed struct {
@@ -150,6 +154,8 @@ func New() *Double {
 		closedReqs:       map[string]bool{},
 		postsByID:        map[string]string{},
 		reads:            map[string]int{},
+		logsShipping:     LogsShipping{Enabled: true, HarnessLevel: "warn"},
+		logsTickets:      map[string]bool{},
 	}
 	d.Server = httptest.NewTLSServer(http.HandlerFunc(d.serve))
 	return d
@@ -253,6 +259,10 @@ func (d *Double) serve(w http.ResponseWriter, r *http.Request) {
 		d.mint(w, r, "connect")
 	case r.Method == http.MethodPost && path == "/v1/tickets/conversation":
 		d.mint(w, r, "conversation")
+	case r.Method == http.MethodPost && path == "/v1/tickets/logs":
+		d.mintLogs(w, r)
+	case r.Method == http.MethodPost && path == "/v1/logs":
+		d.pushLogs(w, r)
 	case r.Method == http.MethodPost && path == "/v1/pairings":
 		d.openPairing(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(path, "/v1/pairings/"):

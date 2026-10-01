@@ -269,3 +269,23 @@ func TestDeliveringWithNoDoorbellIsRefused(t *testing.T) {
 		t.Fatal("a cancel was delivered with no doorbell open, reaching nobody silently")
 	}
 }
+
+// #2267: the script decides what a logs ticket answers, so the CI run can raise
+// the harness to info and assert that a turn's Hermes lines were shipped.
+func TestTheScriptSetsTheLogsTicketsHarnessLevel(t *testing.T) {
+	plain := newTestHost(t)
+	answer, err := plain.MintLogsTicket(context.Background())
+	if err != nil || !answer.Enabled || answer.HarnessLevel != "warn" {
+		t.Fatalf("an unscripted host answers %+v (%v), want on at warn — the platform's default", answer, err)
+	}
+	script := testScript()
+	script.Logs = &ScriptLogs{HarnessLevel: "info"}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	answer, err = host.MintLogsTicket(context.Background())
+	if err != nil || !answer.Enabled || answer.HarnessLevel != "info" || answer.Ticket == "" {
+		t.Fatalf("a scripted host answers %+v (%v), want on at info with a ticket", answer, err)
+	}
+}

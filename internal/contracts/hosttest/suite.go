@@ -36,6 +36,9 @@ type Subject struct {
 	OffsetOf func() (string, error)
 	// ConversationID is the seeded conversation.
 	ConversationID string
+	// Logs is the same host as a LogHost (#2264) — every implementation takes a
+	// machine's log lines, so the log cases run for each one.
+	Logs contracts.LogHost
 }
 
 // Factory builds a Subject seeded with the standard transcript below.
@@ -229,6 +232,32 @@ func Run(t *testing.T, name string, factory Factory) {
 			}
 			if err := subject.Host.Close(); err != nil {
 				t.Fatalf("closing twice: %v — shutdown paths call it from more than one place", err)
+			}
+		})
+
+		t.Run("a logs ticket answers the policy and a push is taken whole", func(t *testing.T) {
+			subject := factory(t)
+			if subject.Logs == nil {
+				t.Fatal("the subject offers no LogHost — every implementation takes logs")
+			}
+			ctx := context.Background()
+			shipping, err := subject.Logs.MintLogsTicket(ctx)
+			if err != nil || !shipping.Enabled || shipping.Ticket == "" || shipping.HarnessLevel == "" {
+				t.Fatalf("MintLogsTicket: %+v %v", shipping, err)
+			}
+			batch := contracts.LogBatch{
+				Client: contracts.LogClient{Name: "uffici-companion", Version: "1.2.3"},
+				Entries: []contracts.LogEntry{
+					{TS: "2026-09-29T12:00:00.000Z", Source: "companion", Level: "info", Message: "one"},
+					{TS: "2026-09-29T12:00:01.000Z", Source: "plugin", Level: "warn", Message: "two"},
+				},
+			}
+			result, err := subject.Logs.PushLogs(ctx, shipping.Ticket, batch)
+			if err != nil || result.Accepted != 2 {
+				t.Fatalf("PushLogs: %+v %v", result, err)
+			}
+			if _, err := subject.Logs.PushLogs(ctx, "not-the-ticket", batch); err == nil {
+				t.Fatal("a push under a ticket nobody issued was taken")
 			}
 		})
 	})

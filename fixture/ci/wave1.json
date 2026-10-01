@@ -1,5 +1,6 @@
 {
   "v": 1,
+  "logs": { "harnessLevel": "info" },
   "conversations": {
     "invoices": {
       "id": "conv_ci_invoices",
@@ -393,7 +394,7 @@
           "cursor": "c0003",
           "at": "2026-09-18T09:50:00Z",
           "kind": "message",
-          "text": "And the desk booking?",
+          "text": "And the desk booking? [answer-slowly]",
           "author": {
             "type": "member",
             "id": "member_2",
@@ -409,15 +410,15 @@
       "reason": "mentioned",
       "causeEntry": "o3",
       "throughCursor": "c0003",
-      "deadlineMs": 500,
-      "note": "🔴 500ms, not 1ms. The expiry this ring exists to demonstrate must close a request the plugin ACCEPTED, so the deadline has to outlive the ack — which arrives in single-digit milliseconds — and still be far inside the turn. At 1ms it was a coin flip against the 100ms expiry sweep: the run that lost it reported `resumed: 4` and `accepted: 6`, one ack short, and read as a plugin defect. The sweep's own interval is the floor here, not the ack latency."
+      "deadlineMs": 10000,
+      "note": "🔴 The expiry this ring exists to demonstrate must close a request the plugin ACCEPTED, so the deadline must outlive the ack and still fall inside the turn. Both ends were machine-calibrated before: 1ms lost to the 100ms expiry sweep, and 500ms lost to the ack itself on a runner at load 24, which reported `resumed` one short (#2305, ledger class 22). So the turn is made long on purpose — `[answer-slowly]` holds it for the mock's 30s — and the deadline sits far from both: 10s is twenty times the 500ms an ack overran and 20s inside the turn. `uffici-compose-profile.test.mjs` pins that pairing."
     },
     {
       "step": "expectClose",
       "conversation": "onboarding",
       "outcome": "cancelled",
       "withinMs": 60000,
-      "note": "The expiry's close. `deadlineMs: 500` is the assertion; this waits for what it causes."
+      "note": "The expiry's close. The ring's `deadlineMs` above is the assertion; this waits for what it causes."
     },
     {
       "step": "ring",

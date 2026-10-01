@@ -42,6 +42,10 @@ type Options struct {
 	// pairing runs even when a key is already in place: running a fresh command
 	// is how a machine is re-paired. Secret-class — never printed here.
 	PairingCode string
+	// Logs are this machine's log-shipping switch and harness floor, written
+	// into the service. The caller resolves them: a flag, else what the last
+	// setup recorded, else on and warn.
+	Logs LogSettings
 
 	NoPair, NoService, AssumeYes, DryRun bool
 
@@ -133,7 +137,10 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		}
 	}
 
-	record := Record{Harness: opts.Harness, GatewayURL: opts.GatewayURL, Service: !opts.NoService}
+	record := Record{
+		Harness: opts.Harness, GatewayURL: opts.GatewayURL, Service: !opts.NoService,
+		LogShipping: opts.Logs.shipping(), HarnessLogLevel: opts.Logs.harnessLevel(),
+	}
 	if opts.Harness != "" {
 		installed, err := installPlugin(ctx, opts, out, do)
 		if err != nil {
@@ -180,7 +187,7 @@ func NonEmpty(value, fallback string) string {
 }
 
 func installService(ctx context.Context, opts Options, do func(string, func() error) error) error {
-	plan, err := planService(opts.GOOS, opts.UserHome, opts.Binary, opts.GatewayURL, opts.CompanionHome, opts.UID)
+	plan, err := planService(opts.GOOS, opts.UserHome, opts.Binary, opts.GatewayURL, opts.CompanionHome, opts.UID, opts.Logs)
 	if err != nil {
 		return err
 	}

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
@@ -26,7 +27,7 @@ const ticketRenewBefore = 60 * time.Second
 
 // client is the JSON control plane and the ticket mints, over HTTPS.
 //
-// 🔴 The agent key is used on the two mints and NOWHERE else: every other call
+// 🔴 The agent key is used on the three mints and NOWHERE else: every other call
 // carries a ticket (#2065). The key and every ticket are secret-class — they go
 // into an `Authorization` header and never into a log line, an error string or
 // a URL.
@@ -40,6 +41,12 @@ type client struct {
 
 	mu      sync.Mutex
 	tickets map[string]conversationTicket
+
+	// inFlight and lastStart are the control plane's activity, read by the log
+	// shipper through Host.Busy so it never competes with a call a person is
+	// waiting on. Only the conversation client's are ever read.
+	inFlight  atomic.Int32
+	lastStart atomic.Int64
 }
 
 type conversationTicket struct {
@@ -49,17 +56,24 @@ type conversationTicket struct {
 
 // call is one HTTP exchange: a method, a path, the bearer, a body, a decoded answer.
 func (c *client) call(ctx context.Context, method, path string, query url.Values, bearer string, body, out any) error {
+	c.inFlight.Add(1)
+	c.lastStart.Store(c.now().UnixNano())
+	defer c.inFlight.Add(-1)
 	target := c.base.JoinPath(path)
 	if query != nil {
 		target.RawQuery = query.Encode()
 	}
 	var reader io.Reader
 	if body != nil {
-		raw, err := json.Marshal(body)
-		if err != nil {
+		// No HTML escaping: a log line heavy in `<`, `>` or `&` would grow up to
+		// six times on the wire and pass the body limit its size was built under.
+		var raw bytes.Buffer
+		encoder := json.NewEncoder(&raw)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(body); err != nil {
 			return fmt.Errorf("gateway: encoding a request body: %w", err)
 		}
-		reader = bytes.NewReader(raw)
+		reader = &raw
 	}
 	req, err := http.NewRequestWithContext(ctx, method, target.String(), reader)
 	if err != nil {

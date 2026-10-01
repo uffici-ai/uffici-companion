@@ -12,6 +12,8 @@ import (
 
 	"github.com/uffici-ai/uffici-companion/internal/infra/memory"
 	memtransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/memory"
+	"github.com/uffici-ai/uffici-companion/internal/logship"
+	"github.com/uffici-ai/uffici-companion/internal/redact"
 	"github.com/uffici-ai/uffici-companion/internal/requests"
 	"github.com/uffici-ai/uffici-companion/internal/surface"
 	"github.com/uffici-ai/uffici-companion/internal/wire"
@@ -154,4 +156,95 @@ func receiveFrame(t *testing.T, conn *memtransport.Conn) []byte {
 		t.Fatalf("receive: %v", err)
 	}
 	return raw
+}
+
+// 🔴 `logs.push` (#2264) through the real surface: answered, its line at DEBUG
+// while every other op's stays at INFO, its payload in no log line, and an
+// oversized push refused by the surface's own bound before any handler runs.
+func TestLogsPushIsAnsweredQuietlyAndLeavesNoContent(t *testing.T) {
+	logs := &syncBuffer{}
+	logger := slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	ring := logship.NewRing(100, 1<<20, func() string { return "2026-09-29T12:00:00.000Z" })
+	pushes := &logship.PushHandler{Ring: ring, Redactor: redact.New()}
+
+	listener := memtransport.NewListener("memory://logs-push")
+	manager := requests.New(memory.New(), requests.Options{})
+	companion, err := surface.New(listener, manager, surface.Options{
+		Token: "wire-token-for-the-logs-push-guard", Logger: logger,
+		Calls: map[string]surface.CallHandler{
+			wire.OpLogsPush: pushes.Handle,
+			"echo": func(context.Context, json.RawMessage) (json.RawMessage, error) {
+				return json.RawMessage(`{}`), nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("surface.New: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = companion.Serve(ctx) }()
+	defer func() { _ = listener.Close() }()
+	conn, err := listener.Dial()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendFrame(t, conn, map[string]any{"v": 1, "type": "hello", "harness": "hermes", "harnessVersion": "0.21.4",
+		"pluginVersion": "0.1.0", "token": "wire-token-for-the-logs-push-guard", "contextBudgetTokens": 48000})
+	sendFrame(t, conn, map[string]any{"v": 1, "type": "ready"})
+	receiveFrame(t, conn)
+
+	entry := map[string]any{"ts": "2026-09-29T12:00:00Z", "source": "harness", "level": "error", "message": payloadMarker}
+	calls := []map[string]any{
+		{"v": 1, "type": "call", "callId": "c-logs", "op": wire.OpLogsPush, "deadlineMs": 5000,
+			"payload": map[string]any{"entries": []any{entry}}},
+		{"v": 1, "type": "call", "callId": "c-echo", "op": "echo", "deadlineMs": 5000, "payload": map[string]any{}},
+		{"v": 1, "type": "call", "callId": "c-huge", "op": wire.OpLogsPush, "deadlineMs": 5000,
+			"payload": map[string]any{"entries": []any{map[string]any{"ts": "x", "source": "harness", "level": "error",
+				"message": strings.Repeat("z", wire.MaxCallPayloadBytes)}}}},
+	}
+	for _, frame := range calls {
+		sendFrame(t, conn, frame)
+	}
+	results := map[string]string{}
+	for range calls {
+		var result struct {
+			CallID string `json:"callId"`
+			Error  *struct {
+				Class string `json:"class"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(receiveFrame(t, conn), &result)
+		class := "ok"
+		if result.Error != nil {
+			class = result.Error.Class
+		}
+		results[result.CallID] = class
+	}
+	if results["c-logs"] != "ok" || results["c-huge"] != string(wire.ClassMalformedPayload) {
+		t.Fatalf("results %v", results)
+	}
+	if ring.Len() != 0 {
+		// No shipper: the machine switch is off, so nothing is kept.
+		t.Fatalf("a push was kept with shipping off: %d", ring.Len())
+	}
+
+	logged := logs.String()
+	deadline := time.Now().Add(5 * time.Second)
+	for strings.Count(logged, `"msg":"call answered"`) < len(calls) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		logged = logs.String()
+	}
+	for _, line := range strings.Split(logged, "\n") {
+		if !strings.Contains(line, `"msg":"call answered"`) {
+			continue
+		}
+		quiet := strings.Contains(line, `"op":"logs.push"`)
+		if quiet != strings.Contains(line, `"level":"DEBUG"`) {
+			t.Errorf("a logs.push answer must log at DEBUG and nothing else may: %s", line)
+		}
+	}
+	if strings.Contains(logged, payloadMarker) {
+		t.Fatalf("a pushed line reached the companion's own log:\n%s", logged)
+	}
 }

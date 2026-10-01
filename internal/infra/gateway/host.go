@@ -9,7 +9,7 @@
 // position (decision 40): cursors come from the ring and go straight back to
 // the platform, and nothing here decides what was answered.
 //
-// 🔴 Secrets: the agent key is sent on the two ticket mints and nowhere else,
+// 🔴 Secrets: the agent key is sent on the three ticket mints and nowhere else,
 // and neither the key, a ticket nor a response body ever reaches a log line or
 // an error string. Every error this package returns is an `*Error` built from a
 // class and a status (ledger class 18: an upstream body in a log).
@@ -62,6 +62,10 @@ type Options struct {
 	// HTTPClient carries the TLS configuration (a dev CA, a proxy). Nil takes a
 	// default client with a 30-second timeout.
 	HTTPClient *http.Client
+	// LogsHTTPClient is the log shipper's OWN client. 🔴 Never HTTPClient: a
+	// push must not share a connection pool with a call a person is waiting on.
+	// Nil builds a second default client.
+	LogsHTTPClient *http.Client
 	// Logger receives classified lines only. Nil discards.
 	Logger *slog.Logger
 	// Now and Sleep are the clock, injected so tests neither wait nor race it.
@@ -72,6 +76,7 @@ type Options struct {
 // Host is the gateway-backed AgentsHost.
 type Host struct {
 	api       *client
+	logsAPI   *client
 	version   string
 	harnessOf func() (string, string)
 	pluginOf  func() string
@@ -131,10 +136,23 @@ func New(options Options) (*Host, error) {
 	if version == "" {
 		version = "0.0.0-dev"
 	}
+	logsHTTP := options.LogsHTTPClient
+	if logsHTTP == nil {
+		// A pool of its own even here: a nil Transport is the shared default one.
+		logsHTTP = &http.Client{
+			Timeout:   30 * time.Second,
+			Transport: http.DefaultTransport.(*http.Transport).Clone(),
+		}
+	}
 	return &Host{
 		api: &client{
 			base: base, key: options.Key, instanceID: options.InstanceID,
 			userAgent: ClientName + "/" + version, http: httpClient, now: now,
+			tickets: map[string]conversationTicket{},
+		},
+		logsAPI: &client{
+			base: base, key: options.Key, instanceID: options.InstanceID,
+			userAgent: ClientName + "/" + version, http: logsHTTP, now: now,
 			tickets: map[string]conversationTicket{},
 		},
 		version:   version,

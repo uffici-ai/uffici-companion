@@ -1,0 +1,22 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/log-batch-response.schema.json",
+	"title": "log-batch-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"accepted": {
+			"type": "integer",
+			"minimum": 0,
+			"maximum": 9007199254740991
+		},
+		"filtered": {
+			"type": "integer",
+			"minimum": 0,
+			"maximum": 9007199254740991
+		}
+	},
+	"required": [
+		"accepted",
+		"filtered"
+	]
+}

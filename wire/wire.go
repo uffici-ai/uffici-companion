@@ -25,6 +25,7 @@ import (
 const Version = 1
 
 //go:embed v1/schema/*.json v1/golden/valid/*.json v1/golden/invalid/*.json v1/MANIFEST.json
+//go:embed v1/ops/*.json v1/golden/ops/valid/*.json v1/golden/ops/invalid/*.json
 var files embed.FS
 
 // FS is the contract's files, rooted at `v1/`.
@@ -51,6 +52,17 @@ type Manifest struct {
 		Valid   int `json:"valid"`
 		Invalid int `json:"invalid"`
 	} `json:"totals"`
+	// Ops are the call ops whose payloads carry their own schemas (`ops/`) and
+	// goldens (`golden/ops/`) — not frames, so outside Schemas and Totals.
+	Ops map[string]OpManifest `json:"ops"`
+}
+
+// OpManifest is one call op's committed expectation.
+type OpManifest struct {
+	// Schemas names the op's payload schemas: `request`, `result`.
+	Schemas        []string `json:"schemas"`
+	ValidGoldens   int      `json:"validGoldens"`
+	InvalidGoldens int      `json:"invalidGoldens"`
 }
 
 // LoadManifest reads the embedded MANIFEST.json.

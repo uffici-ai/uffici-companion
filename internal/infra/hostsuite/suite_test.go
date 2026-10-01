@@ -73,6 +73,7 @@ func fixtureSubject(t *testing.T) hosttest.Subject {
 		DeliverRing:    host.DeliverRing,
 		OffsetOf:       func() (string, error) { return host.OffsetOf("seeded") },
 		ConversationID: "conv_1",
+		Logs:           host,
 	}
 }
 
@@ -86,6 +87,7 @@ func memorySubject(t *testing.T) hosttest.Subject {
 		DeliverRing:    host.DeliverRing,
 		OffsetOf:       func() (string, error) { return host.OffsetOf("conv_1") },
 		ConversationID: "conv_1",
+		Logs:           host,
 	}
 }
 
@@ -95,6 +97,13 @@ var (
 	_ contracts.AgentsHost = (*fixture.Host)(nil)
 	_ contracts.AgentsHost = (*memory.Host)(nil)
 	_ contracts.AgentsHost = (*gateway.Host)(nil)
+
+	_ contracts.LogHost              = (*fixture.Host)(nil)
+	_ contracts.LogHost              = (*memory.Host)(nil)
+	_ contracts.LogHost              = (*gateway.Host)(nil)
+	_ contracts.ControlPlaneActivity = (*fixture.Host)(nil)
+	_ contracts.ControlPlaneActivity = (*memory.Host)(nil)
+	_ contracts.ControlPlaneActivity = (*gateway.Host)(nil)
 )
 
 // The real host, against the companion's gateway double (#2077): the one row
@@ -121,7 +130,7 @@ func gatewaySubject(t *testing.T) hosttest.Subject {
 	}
 	double.Seed(conversationID, gatewaytest.Conversation{Offset: hosttest.SeedOffset, Entries: entries})
 	host, err := gateway.New(gateway.Options{
-		BaseURL: double.URL(), Key: gatewaytest.Key, HTTPClient: double.Client(),
+		BaseURL: double.URL(), Key: gatewaytest.Key, HTTPClient: double.Client(), LogsHTTPClient: double.Client(),
 		InstanceID: "d4c3b2a1-f6e5-4d7c-8b9a-0f1e2d3c4b5a",
 		Sleep:      func(context.Context, time.Duration) error { return nil },
 	})
@@ -150,6 +159,7 @@ func gatewaySubject(t *testing.T) hosttest.Subject {
 		},
 		OffsetOf:       func() (string, error) { return double.OffsetOf(conversationID) },
 		ConversationID: conversationID,
+		Logs:           host,
 	}
 }
 

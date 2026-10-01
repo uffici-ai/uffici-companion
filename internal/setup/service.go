@@ -64,11 +64,25 @@ func command(ctx context.Context, name string, args ...string) *exec.Cmd {
 // ServiceLabel is the launchd label and the systemd unit name.
 const ServiceLabel = "ai.uffici.companion"
 
+// LogSettings are this machine's log-shipping switch and its floor for the
+// harness's own lines, written into the service so they hold across restarts.
+type LogSettings struct {
+	// Shipping is `on` or `off`; empty is `on`.
+	Shipping string
+	// HarnessLevel is `debug`, `info`, `warn` or `error`; empty is `warn`.
+	HarnessLevel string
+}
+
+func (l LogSettings) shipping() string { return NonEmpty(l.Shipping, "on") }
+
+func (l LogSettings) harnessLevel() string { return NonEmpty(l.HarnessLevel, "warn") }
+
 // SystemdUnit renders the user unit that keeps the companion running.
 //
-// The two settings the gateway host needs ride in the unit, so the service is
-// whole on its own: a person reading it sees where the companion connects.
-func SystemdUnit(binary, gatewayURL, home string) string {
+// The settings the gateway host needs ride in the unit, so the service is
+// whole on its own: a person reading it sees where the companion connects, and
+// whether — and how much of — its log leaves the machine.
+func SystemdUnit(binary, gatewayURL, home string, logs LogSettings) string {
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=Uffici companion",
@@ -80,6 +94,8 @@ func SystemdUnit(binary, gatewayURL, home string) string {
 		`Environment="UFFICI_AGENTS_HOST=gateway"`,
 		`Environment="UFFICI_GATEWAY_URL=` + unitEscape(gatewayURL) + `"`,
 		`Environment="UFFICI_HOME=` + unitEscape(home) + `"`,
+		`Environment="UFFICI_LOG_SHIPPING=` + logs.shipping() + `"`,
+		`Environment="UFFICI_LOG_LEVEL_HARNESS=` + logs.harnessLevel() + `"`,
 		`ExecStart="` + unitEscape(binary) + `" run`,
 		"Restart=always",
 		"RestartSec=2",
@@ -91,7 +107,7 @@ func SystemdUnit(binary, gatewayURL, home string) string {
 }
 
 // LaunchdPlist renders the launch agent that keeps the companion running.
-func LaunchdPlist(binary, gatewayURL, home string) string {
+func LaunchdPlist(binary, gatewayURL, home string, logs LogSettings) string {
 	return strings.Join([]string{
 		`<?xml version="1.0" encoding="UTF-8"?>`,
 		`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
@@ -103,6 +119,8 @@ func LaunchdPlist(binary, gatewayURL, home string) string {
 		`    <key>UFFICI_AGENTS_HOST</key><string>gateway</string>`,
 		`    <key>UFFICI_GATEWAY_URL</key><string>` + xmlEscape(gatewayURL) + `</string>`,
 		`    <key>UFFICI_HOME</key><string>` + xmlEscape(home) + `</string>`,
+		`    <key>UFFICI_LOG_SHIPPING</key><string>` + logs.shipping() + `</string>`,
+		`    <key>UFFICI_LOG_LEVEL_HARNESS</key><string>` + logs.harnessLevel() + `</string>`,
 		`  </dict>`,
 		`  <key>RunAtLoad</key><true/>`,
 		`  <key>KeepAlive</key><true/>`,
@@ -130,12 +148,12 @@ type servicePlan struct {
 
 // planService decides the service file and the commands for goos. userHome is
 // the person's home directory, not the companion's; uid is launchd's domain.
-func planService(goos, userHome, binary, gatewayURL, companionHome, uid string) (servicePlan, error) {
+func planService(goos, userHome, binary, gatewayURL, companionHome, uid string, logs LogSettings) (servicePlan, error) {
 	switch goos {
 	case "linux":
 		return servicePlan{
 			path:    filepath.Join(userHome, ".config", "systemd", "user", ServiceLabel+".service"),
-			content: SystemdUnit(binary, gatewayURL, companionHome),
+			content: SystemdUnit(binary, gatewayURL, companionHome, logs),
 			commands: [][]string{
 				{"systemctl", "--user", "daemon-reload"},
 				{"systemctl", "--user", "enable", ServiceLabel + ".service"},
@@ -151,7 +169,7 @@ func planService(goos, userHome, binary, gatewayURL, companionHome, uid string) 
 		path := filepath.Join(userHome, "Library", "LaunchAgents", ServiceLabel+".plist")
 		return servicePlan{
 			path:    path,
-			content: LaunchdPlist(binary, gatewayURL, companionHome),
+			content: LaunchdPlist(binary, gatewayURL, companionHome, logs),
 			commands: [][]string{
 				// bootout first so a re-run replaces the running agent rather than
 				// failing on "already loaded"; its failure on a first install is fine.

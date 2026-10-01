@@ -1,0 +1,123 @@
+[
+  {
+    "name": "private-key-block",
+    "regex": "-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----[\\s\\S]*?-----END [A-Z ]{0,40}PRIVATE KEY-----",
+    "replacement": "[redacted:private-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "jwt",
+    "regex": "eyJ[A-Za-z0-9_-]{5,512}\\.eyJ[A-Za-z0-9_-]{5,}\\.[A-Za-z0-9_-]{10,}",
+    "replacement": "[redacted:jwt]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "telegram-bot-path",
+    "regex": "/bot[0-9]{5,12}:[A-Za-z0-9_-]{30,}",
+    "replacement": "/bot[redacted]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "telegram-token",
+    "regex": "\\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\\b",
+    "replacement": "[redacted:bot-token]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "authorization-header",
+    "regex": "\\b((?:proxy-)?authorization)([\\\"']?[ \\t]{0,8}[:=][ \\t]{0,8}[\\\"']?)[^\\r\\n\\\"',;]+",
+    "replacement": "$1$2[redacted]",
+    "caseInsensitive": true
+  },
+  {
+    "name": "bearer",
+    "regex": "\\b(bearer|basic)[ \\t]{1,8}[A-Za-z0-9._~+/=-]{8,}",
+    "replacement": "$1 [redacted]",
+    "caseInsensitive": true
+  },
+  {
+    "name": "url-userinfo",
+    "regex": "\\b([a-zA-Z][a-zA-Z0-9+.-]{0,30}://)[^/\\s:@]{1,256}:[^/\\s@]{1,256}@",
+    "replacement": "$1[redacted]@",
+    "caseInsensitive": false
+  },
+  {
+    "name": "url-query-secret",
+    "regex": "([?&][A-Za-z0-9_.-]{0,40}(?:key|token|secret|password|passwd|code|signature|sig)[A-Za-z0-9_.-]{0,40}=)[^&\\s#\\\"'<>]+",
+    "replacement": "$1[redacted]",
+    "caseInsensitive": true
+  },
+  {
+    "name": "sk-key",
+    "regex": "\\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{20,}",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "slack-token",
+    "regex": "\\bxox[abprs]-[A-Za-z0-9-]{10,}",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "github-token",
+    "regex": "\\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "aws-access-key",
+    "regex": "\\b(?:AKIA|ASIA)[0-9A-Z]{16}\\b",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "google-api-key",
+    "regex": "\\bAIza[0-9A-Za-z_-]{35}",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "webhook-secret",
+    "regex": "\\bwhsec_[A-Za-z0-9+/=_-]{16,}",
+    "replacement": "[redacted:api-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "agent-key",
+    "regex": "\\bik_[0-9A-Fa-f]{24,}",
+    "replacement": "[redacted:agent-key]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "secret-assignment",
+    "regex": "\\b([A-Z][A-Z0-9_]{0,64}(?:_KEY|_TOKEN|_SECRET|PASSWORD|_PASS|_PAT|_DSN))=[^\\s\\\"'&]+",
+    "replacement": "$1=[redacted]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "secret-field",
+    "regex": "([\\\"']?[A-Za-z0-9_-]{0,40}(?:api[_-]?key|secret|token|password|passwd|credential)[\\\"']?[ \\t]{0,8}[:=][ \\t]{0,8}[\\\"'])[^\\\"'\\s]{4,}",
+    "replacement": "$1[redacted]",
+    "caseInsensitive": true
+  },
+  {
+    "name": "pairing-code",
+    "regex": "\\b[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}-[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{4}\\b",
+    "replacement": "[redacted:pairing-code]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "long-path-segment",
+    "regex": "/(?:[A-Za-z0-9_]{32,}|[A-Za-z0-9_-]{40,})",
+    "replacement": "/[redacted]",
+    "caseInsensitive": false
+  },
+  {
+    "name": "secret-attr-key",
+    "regex": "^[a-z0-9_.-]*(?:password|passwd|passphrase|secret|token|apikey|api[_-]key|access[_-]?key|private[_-]?key|credentials?|authorization|cookie)$",
+    "replacement": "[redacted]",
+    "caseInsensitive": true,
+    "scope": "attrKey"
+  }
+]

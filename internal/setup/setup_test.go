@@ -394,7 +394,7 @@ func TestMergeEnvFileReplacesAndAppends(t *testing.T) {
 }
 
 func TestPlanServicePerOS(t *testing.T) {
-	linux, err := planService("linux", "/home/u", "/home/u/.local/bin/uffici", "https://agents.example", "/home/u/.uffici", "1000")
+	linux, err := planService("linux", "/home/u", "/home/u/.local/bin/uffici", "https://agents.example", "/home/u/.uffici", "1000", LogSettings{})
 	if err != nil || !strings.HasSuffix(linux.path, ".config/systemd/user/"+ServiceLabel+".service") || !strings.Contains(linux.content, `ExecStart="/home/u/.local/bin/uffici" run`) || !strings.Contains(linux.content, `Environment="UFFICI_GATEWAY_URL=https://agents.example"`) {
 		t.Fatalf("linux plan: %+v %v", linux, err)
 	}
@@ -413,16 +413,32 @@ func TestPlanServicePerOS(t *testing.T) {
 	}; strings.Join(linuxCommands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("linux commands = %q, want %q", linuxCommands, want)
 	}
-	mac, err := planService("darwin", "/Users/u", "/usr/local/bin/uffici", "https://a&b", "/Users/u/.uffici", "501")
+	mac, err := planService("darwin", "/Users/u", "/usr/local/bin/uffici", "https://a&b", "/Users/u/.uffici", "501", LogSettings{})
 	if err != nil || !strings.HasSuffix(mac.path, "Library/LaunchAgents/"+ServiceLabel+".plist") || !strings.Contains(mac.content, "https://a&amp;b") || mac.commands[1][2] != "gui/501" {
 		t.Fatalf("darwin plan: %+v %v", mac, err)
 	}
-	odd, _ := planService("linux", "/home/o d", "/home/o d/bin/uffici", "https://a", "/home/o d/.uffici%", "7")
+	odd, _ := planService("linux", "/home/o d", "/home/o d/bin/uffici", "https://a", "/home/o d/.uffici%", "7", LogSettings{})
 	if !strings.Contains(odd.content, `ExecStart="/home/o d/bin/uffici" run`) || !strings.Contains(odd.content, `UFFICI_HOME=/home/o d/.uffici%%"`) {
 		t.Fatalf("a home with a space or %% is not quoted for systemd:\n%s", odd.content)
 	}
-	if _, err := planService("plan9", "/h", "/b", "u", "/h/.uffici", "1"); err == nil {
+	if _, err := planService("plan9", "/h", "/b", "u", "/h/.uffici", "1", LogSettings{}); err == nil {
 		t.Fatal("an unknown OS got a service plan")
+	}
+	// 🔴 The machine's log switches ride the service (#2264): on and warn unless
+	// setup was told otherwise, and exactly what it was told otherwise.
+	if !strings.Contains(linux.content, `Environment="UFFICI_LOG_SHIPPING=on"`) ||
+		!strings.Contains(linux.content, `Environment="UFFICI_LOG_LEVEL_HARNESS=warn"`) {
+		t.Fatalf("the default unit carries no log settings:\n%s", linux.content)
+	}
+	off, _ := planService("linux", "/home/u", "/b", "https://a", "/home/u/.uffici", "1000", LogSettings{Shipping: "off", HarnessLevel: "error"})
+	if !strings.Contains(off.content, `Environment="UFFICI_LOG_SHIPPING=off"`) ||
+		!strings.Contains(off.content, `Environment="UFFICI_LOG_LEVEL_HARNESS=error"`) {
+		t.Fatalf("the unit lost the machine's log settings:\n%s", off.content)
+	}
+	macOff, _ := planService("darwin", "/Users/u", "/b", "https://a", "/Users/u/.uffici", "501", LogSettings{Shipping: "off", HarnessLevel: "info"})
+	if !strings.Contains(macOff.content, `<key>UFFICI_LOG_SHIPPING</key><string>off</string>`) ||
+		!strings.Contains(macOff.content, `<key>UFFICI_LOG_LEVEL_HARNESS</key><string>info</string>`) {
+		t.Fatalf("the plist lost the machine's log settings:\n%s", macOff.content)
 	}
 }
 

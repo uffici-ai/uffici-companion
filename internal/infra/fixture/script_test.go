@@ -187,6 +187,11 @@ func TestASchemaRefusesTheTyposADecoderWouldSwallow(t *testing.T) {
 			"at / (required)",
 		},
 		{
+			"a harness level the platform does not have",
+			strings.Replace(validScript, `"v": 1,`, `"v": 1, "logs": {"harnessLevel": "verbose"},`, 1),
+			"/logs/harnessLevel",
+		},
+		{
 			"an entry with no author",
 			strings.Replace(validScript, `"author":{"type":"member","id":"m1","label":"Ana","self":false}`, `"author":{}`, 1),
 			"/conversations/c/entries/0/author",

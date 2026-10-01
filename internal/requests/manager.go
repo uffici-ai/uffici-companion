@@ -200,6 +200,12 @@ func (m *Manager) BindProcess(processID string) int {
 				// The new process answers from the start; the old one's posts do not
 				// count against the new answer's cap.
 				request.Posts = 0
+				// 🔴 And its ack clock starts now. Kept at the dead process's delivery,
+				// the ack sweep judged the request overdue in the moment before the
+				// attach's RedeliverOpen restamped it and redelivered it as well: two
+				// briefs to the new harness, two redeliveries spent per restart (seen
+				// on a real Hermes machine). Still non-zero, so the redelivery counts as one.
+				request.DeliveredAt = m.now()
 				reopened++
 			}
 		}

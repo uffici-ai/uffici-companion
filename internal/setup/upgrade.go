@@ -200,6 +200,9 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 	setupOpts := Options{
 		Harness: record.Harness, HarnessHome: record.HarnessHome, GatewayURL: record.GatewayURL,
 		PluginVersion: plugin.target, DryRun: opts.DryRun,
+		// 🔴 The machine's log settings as the last setup wrote them: an upgrade
+		// rewrites the unit, and must not quietly turn shipping back on.
+		Logs: LogSettings{Shipping: record.LogShipping, HarnessLevel: record.HarnessLogLevel},
 		GOOS: opts.GOOS, UserHome: opts.UserHome, CompanionHome: opts.CompanionHome, Binary: opts.Binary, UID: opts.UID,
 		Env: opts.Env, LookPath: opts.LookPath, Runner: opts.Runner,
 		Release: func(repo string) Release { return opts.Release(repo, plugin.target) },

@@ -28,6 +28,10 @@ type Record struct {
 	GatewayURL string `json:"gatewayUrl,omitempty"`
 	// Service reports whether setup installed the companion as a service.
 	Service bool `json:"service"`
+	// LogShipping and HarnessLogLevel are the machine's log settings as the
+	// service was written with them — what a re-run without the flags keeps.
+	LogShipping     string `json:"logShipping,omitempty"`
+	HarnessLogLevel string `json:"harnessLogLevel,omitempty"`
 }
 
 // HarnessName is what a harness may be called: it becomes a repository name.

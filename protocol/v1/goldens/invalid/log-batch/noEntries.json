@@ -1,0 +1,13 @@
+{
+	"reason": "an empty push is not sent",
+	"value": {
+		"client": {
+			"name": "uffici-companion",
+			"version": "0.5.0",
+			"harnessKind": "hermes",
+			"harnessVersion": "0.21.5",
+			"pluginVersion": "0.5.0"
+		},
+		"entries": []
+	}
+}

@@ -38,6 +38,15 @@ type Script struct {
 	Conversations map[string]*Conversation `json:"conversations"`
 	Steps         []Step                   `json:"steps"`
 	Assert        Assertions               `json:"assert"`
+	// Logs is what the host answers a logs ticket with; nil is the platform's
+	// default (on, harness at warn).
+	Logs *ScriptLogs `json:"logs,omitempty"`
+}
+
+// ScriptLogs scripts the logs ticket's answer (#2267).
+type ScriptLogs struct {
+	// HarnessLevel is the portal's harness floor the host reports.
+	HarnessLevel string `json:"harnessLevel"`
 }
 
 // Conversation is one named conversation's store.

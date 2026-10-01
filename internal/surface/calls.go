@@ -156,8 +156,18 @@ func (s *Surface) answerCall(ctx context.Context, connID string, sink *frameSink
 		s.log.Warn("sending a call result", append(attrs, slog.String("error", classify(sendErr)))...)
 		return
 	}
-	s.log.Info("call answered", attrs...)
+	// 🔴 A `logs.push` answer is logged at DEBUG (#2264): the plugin pushes every
+	// ten seconds, and an INFO line per push would be the loudest thing this
+	// program says — about shipping its own lines.
+	level := slog.LevelInfo
+	if quietOps[call.Op] {
+		level = slog.LevelDebug
+	}
+	s.log.Log(ctx, level, "call answered", attrs...)
 }
+
+// quietOps are the ops whose answers are logged at DEBUG.
+var quietOps = map[string]bool{wire.OpLogsPush: true}
 
 // resultFor builds the result frame: the payload on success, the class and its
 // sentence on failure.

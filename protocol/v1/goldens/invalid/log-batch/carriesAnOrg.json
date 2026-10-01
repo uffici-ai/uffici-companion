@@ -1,0 +1,38 @@
+{
+	"reason": "identity is the ticket's and the resolver's — never the body's",
+	"value": {
+		"client": {
+			"name": "uffici-companion",
+			"version": "0.5.0",
+			"harnessKind": "hermes",
+			"harnessVersion": "0.21.5",
+			"pluginVersion": "0.5.0"
+		},
+		"entries": [
+			{
+				"ts": "2026-09-29T12:00:00.000Z",
+				"source": "companion",
+				"level": "warn",
+				"logger": "gateway",
+				"message": "reconnecting",
+				"attrs": "{\"attempt\":2}"
+			},
+			{
+				"ts": "2026-09-29T12:00:01.250Z",
+				"source": "plugin",
+				"level": "info",
+				"logger": "uffici_for_hermes.adapter",
+				"message": "brief delivered"
+			},
+			{
+				"ts": "2026-09-29T12:00:02.000Z",
+				"source": "harness",
+				"level": "error",
+				"logger": "run_agent",
+				"message": "tool call failed: Authorization: [redacted]",
+				"redactions": 1
+			}
+		],
+		"orgId": "44ba097b-4e0a-4165-9dc3-aba24790df65"
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"regexp"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -134,13 +135,7 @@ func pair(args []string, stdout, stderr io.Writer) int {
 		}
 		code = parsed
 	}
-	environment := func(key string) string {
-		if key == "UFFICI_AGENTS_HOST" {
-			return "gateway"
-		}
-		return os.Getenv(key)
-	}
-	resolved, err := app.LoadConfig(environment, app.Config{Home: *home, Version: build.Version()})
+	resolved, err := app.LoadConfig(gatewayEnvironment(*home, os.Getenv), app.Config{Home: *home, Version: build.Version()})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "uffici pair: %v\n", err)
 		return app.ExitConfig
@@ -169,6 +164,41 @@ func terminalConfirm(out io.Writer) func(string) (bool, bool) {
 	}
 }
 
+// gatewayEnvironment is the environment `uffici doctor` and `uffici pair` read
+// (#2294): the gateway kind, and the agents host from UFFICI_GATEWAY_URL or —
+// when that is unset, as it is in a person's shell — from the record `uffici
+// setup` wrote in the same home, which is how `uffici upgrade` finds it too. The
+// home resolves as LoadConfig resolves it (--home, $UFFICI_HOME, ~/.uffici).
+func gatewayEnvironment(home string, getenv func(string) string) app.Env {
+	recorded := ""
+	if strings.TrimSpace(getenv("UFFICI_GATEWAY_URL")) == "" {
+		// A kind that needs no agents host, only to resolve the home.
+		resolved, err := app.LoadConfig(func(key string) string {
+			if key == "UFFICI_AGENTS_HOST" {
+				return "fixture"
+			}
+			return getenv(key)
+		}, app.Config{Home: home})
+		if err == nil {
+			if record, err := setup.ReadRecord(resolved.Home); err == nil {
+				recorded = record.GatewayURL
+			}
+		}
+	}
+	return func(key string) string {
+		switch key {
+		case "UFFICI_AGENTS_HOST":
+			return "gateway"
+		case "UFFICI_GATEWAY_URL":
+			if value := getenv(key); strings.TrimSpace(value) != "" {
+				return value
+			}
+			return recorded
+		}
+		return getenv(key)
+	}
+}
+
 // pairingNeedsTerminal decides whether `uffici setup` must read pairing's
 // confirmation from the terminal: only when it will pair, ask (no --yes, no
 // portal-issued code — the admin who issued it chose the agent), actually act
@@ -187,13 +217,7 @@ func doctor(args []string, stdout, stderr io.Writer) int {
 	if err := flags.Parse(args); err != nil {
 		return app.ExitConfig
 	}
-	environment := func(key string) string {
-		if key == "UFFICI_AGENTS_HOST" {
-			return "gateway"
-		}
-		return os.Getenv(key)
-	}
-	resolved, err := app.LoadConfig(environment, app.Config{Home: *home, Version: build.Version()})
+	resolved, err := app.LoadConfig(gatewayEnvironment(*home, os.Getenv), app.Config{Home: *home, Version: build.Version()})
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "uffici doctor: %v\n", err)
 		return app.ExitConfig
@@ -220,9 +244,19 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
 	dryRun := flags.Bool("dry-run", false, "print every action and perform none")
 	codeFlag := flags.String("pairing-code", "", "the pairing code in the command the portal gave (XXXX-XXXX); pairs with no question, and again over a key already in place")
+	logShipping := flags.String("log-shipping", "", "send this machine's companion, plugin and harness log lines to Uffici: on or off (default: as the last setup left it, else on)")
+	harnessLogLevel := flags.String("harness-log-level", "", "the lowest level of the harness's own lines that may leave this machine: debug, info, warn or error (default: as the last setup left it, else warn)")
 	restart := flags.Bool("restart-harness", false, "restart the harness once its plugin is installed, without asking (only where it runs as its own service)")
 	noRestart := flags.Bool("no-restart-harness", false, "never restart the harness; say how to instead")
 	if err := flags.Parse(args); err != nil {
+		return setup.ExitConfig
+	}
+	if !oneOf(*logShipping, "", "on", "off") {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: --log-shipping is %q; use on or off\n", *logShipping)
+		return setup.ExitConfig
+	}
+	if !oneOf(*harnessLogLevel, "", "debug", "info", "warn", "error") {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: --harness-log-level is %q; use debug, info, warn or error\n", *harnessLogLevel)
 		return setup.ExitConfig
 	}
 	restartChoice, err := setup.ParseRestartChoice(*restart, *noRestart)
@@ -304,7 +338,14 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	// A re-run without the flags keeps what the last setup wrote into the service.
+	logs := setup.LogSettings{Shipping: *logShipping, HarnessLevel: *harnessLogLevel}
+	if previous, err := setup.ReadRecord(resolved.Home); err == nil {
+		logs.Shipping = setup.NonEmpty(logs.Shipping, previous.LogShipping)
+		logs.HarnessLevel = setup.NonEmpty(logs.HarnessLevel, previous.HarnessLogLevel)
+	}
 	return setup.Run(ctx, setup.Options{
+		Logs:           logs,
 		Harness:        *harness,
 		HarnessVersion: *harnessVersion,
 		HarnessHome:    *harnessHome,
@@ -482,3 +523,13 @@ const setupAwaitCompanion = 10 * time.Second
 
 // harnessName is what --harness may be: it becomes a repository name.
 var harnessName = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
+
+// oneOf reports whether value is one of the allowed spellings.
+func oneOf(value string, allowed ...string) bool {
+	for _, a := range allowed {
+		if value == a {
+			return true
+		}
+	}
+	return false
+}

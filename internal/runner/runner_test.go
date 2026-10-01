@@ -49,9 +49,16 @@ type autoPlugin struct {
 	silent   bool
 	// noClose posts and then stops, leaving the request open for a cancel.
 	noClose bool
+	// noAck never acknowledges: a plugin that drops before it could (#2290).
+	// An ack moves the request past `delivered`, which is all a reconnect
+	// redelivers, so a scenario about redelivery must not race one.
+	noAck bool
 }
 
 func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error {
+	if a.noAck {
+		return nil
+	}
 	go func() {
 		_ = a.manager.OnAck(ctx, "conn-1", brief.RequestID, requests.AckAccepted, a.session)
 		if a.silent {
@@ -401,7 +408,10 @@ func TestDisconnectAndRedelivery(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	manager := requests.New(host, requests.Options{Observer: runner.Observer()})
-	sink := &autoPlugin{manager: manager, session: requests.SessionFresh, silent: true}
+	// 🔴 A plugin that drops BEFORE acknowledging (#2290): the fake's ack runs on
+	// a goroutine, and one that won the race to the disconnect left nothing to
+	// redeliver — the release gate failed on exactly that.
+	sink := &autoPlugin{manager: manager, session: requests.SessionFresh, silent: true, noAck: true}
 	manager.Attach("conn-1", sink, 48000)
 	// Disconnecting detaches and then redelivers, which is what the daemon does
 	// when a plugin reconnects.

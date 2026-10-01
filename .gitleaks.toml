@@ -1,0 +1,18 @@
+# The secret scan's configuration for this repository.
+#
+# Every release is scanned with gitleaks before it is published, and so is
+# every change to it. This file only ADDS to gitleaks' default rules
+# (`useDefault`), never replaces them.
+#
+# The one exception is the log redactor's test vectors: each is a
+# credential-SHAPED fake (AWS's documented example key, a hand-built JWT, …)
+# that exists so the redactor can be shown to remove it. The file is JSON, so
+# it cannot carry an inline `gitleaks:allow` the way the Go tests do. Only
+# test data belongs here — never a path real configuration could live in.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "The log redactor's test vectors: fake credentials the redactor must remove"
+paths = ['''(^|/)internal/redact/testdata/vectors\.json$''']

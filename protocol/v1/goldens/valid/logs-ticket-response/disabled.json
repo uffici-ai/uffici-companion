@@ -1,0 +1,7 @@
+{
+	"shipping": {
+		"enabled": false,
+		"harnessLevel": "warn",
+		"recheckSeconds": 900
+	}
+}

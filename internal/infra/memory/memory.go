@@ -20,10 +20,14 @@ import (
 	"sync"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
+	"github.com/uffici-ai/uffici-companion/internal/infra/logsim"
 )
 
 // Host is an in-memory AgentsHost.
 type Host struct {
+	// Recorder is the log side (#2264), shared with the fixture.
+	*logsim.Recorder
+
 	mu       sync.Mutex
 	handlers contracts.Handlers
 	open     bool
@@ -50,6 +54,7 @@ type openRequest struct {
 // New returns an empty host.
 func New() *Host {
 	return &Host{
+		Recorder:      logsim.NewRecorder(),
 		conversations: map[string]*conversation{},
 		requests:      map[string]openRequest{},
 	}

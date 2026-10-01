@@ -12,6 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/uffici-ai/uffici-companion/internal/app"
+	"github.com/uffici-ai/uffici-companion/internal/setup"
 )
 
 // The CLI's contract is its exit codes and its refusals. Both are what a CI job
@@ -122,6 +125,17 @@ func TestSetupRefusesBadFlagsAndNothingToDo(t *testing.T) {
 	}
 	if code := run([]string{"setup", "--harness", "../x"}, &out, &errOut); code != 2 {
 		t.Fatalf("a harness name that is not a repository name must be refused: exit %d", code)
+	}
+	// The machine's log switches (#2264): a value outside the vocabulary is a
+	// configuration error, before anything is done.
+	for _, args := range [][]string{
+		{"setup", "--log-shipping", "maybe", "--no-pair", "--no-service", "--harness", "hermes"},
+		{"setup", "--harness-log-level", "trace", "--no-pair", "--no-service", "--harness", "hermes"},
+	} {
+		errOut.Reset()
+		if code := run(args, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), args[1]) {
+			t.Fatalf("%v: exit %d\n%s", args, code, errOut.String())
+		}
 	}
 }
 
@@ -290,5 +304,57 @@ func TestTheRestartFlagsContradictEachOther(t *testing.T) {
 		if code != 2 || !strings.Contains(errOut.String(), "contradict each other") {
 			t.Fatalf("%s: exit %d, stderr %q", command, code, errOut.String())
 		}
+	}
+}
+
+// 🔴 #2294: a person's shell has no UFFICI_GATEWAY_URL, and the doctor and pair
+// used to refuse to run by hand although `uffici setup` recorded the agents host.
+// The variable still wins; without it the record of the same home answers.
+func TestDoctorAndPairReadTheRecordedAgentsHost(t *testing.T) {
+	home := t.TempDir()
+	if err := setup.WriteRecord(home, setup.Record{Harness: "hermes", GatewayURL: "https://agents.recorded.example", Service: true}); err != nil {
+		t.Fatal(err)
+	}
+	unset := func(string) string { return "" }
+	env := gatewayEnvironment(home, unset)
+	if got := env("UFFICI_GATEWAY_URL"); got != "https://agents.recorded.example" {
+		t.Fatalf("with no variable the agents host is %q, want the recorded one", got)
+	}
+	if got := env("UFFICI_AGENTS_HOST"); got != "gateway" {
+		t.Fatalf("UFFICI_AGENTS_HOST = %q, want gateway", got)
+	}
+	resolved, err := app.LoadConfig(env, app.Config{Home: home})
+	if err != nil || resolved.GatewayURL != "https://agents.recorded.example" {
+		t.Fatalf("the config did not carry the recorded host: %q, %v", resolved.GatewayURL, err)
+	}
+
+	set := func(key string) string {
+		if key == "UFFICI_GATEWAY_URL" {
+			return "https://agents.variable.example"
+		}
+		return ""
+	}
+	if got := gatewayEnvironment(home, set)("UFFICI_GATEWAY_URL"); got != "https://agents.variable.example" {
+		t.Fatalf("the variable did not win over the record: %q", got)
+	}
+
+	// $UFFICI_HOME names the home when --home does not.
+	byVariable := func(key string) string {
+		if key == "UFFICI_HOME" {
+			return home
+		}
+		return ""
+	}
+	if got := gatewayEnvironment("", byVariable)("UFFICI_GATEWAY_URL"); got != "https://agents.recorded.example" {
+		t.Fatalf("the record under $UFFICI_HOME was not read: %q", got)
+	}
+}
+
+// With neither the variable nor a record, the refusal says how to get one (#2294).
+func TestDoctorWithNeitherNamesSetup(t *testing.T) {
+	t.Setenv("UFFICI_GATEWAY_URL", "")
+	var out, errOut bytes.Buffer
+	if code := run([]string{"doctor", "--home", t.TempDir()}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), "uffici setup") {
+		t.Fatalf("exit %d, stderr %q — want 2 naming uffici setup", code, errOut.String())
 	}
 }

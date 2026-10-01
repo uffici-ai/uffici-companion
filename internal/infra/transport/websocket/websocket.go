@@ -65,6 +65,22 @@ type Health struct {
 	// an upgrade that the process answering is the binary on disk, and not the
 	// one it replaced (#2250).
 	Version string `json:"version,omitempty"`
+	// Logs is the log shipper's state, for `uffici doctor` (#2264): counts and
+	// words only — never a line, never the ticket.
+	Logs *HealthLogs `json:"logs,omitempty"`
+}
+
+// HealthLogs is what the running companion says about shipping its log lines.
+type HealthLogs struct {
+	// Machine is this machine's switch: `on` or `off`.
+	Machine string `json:"machine"`
+	// Uffici is the agent's policy as last answered: `on`, `off` or `unknown`.
+	Uffici string `json:"uffici"`
+	// HarnessFloor is the effective floor for the harness's own lines.
+	HarnessFloor string `json:"harnessFloor"`
+	// Dropped counts lines dropped on this machine: the ring's and whole
+	// batches given up on.
+	Dropped int `json:"dropped"`
 }
 
 // Doorbell states a Health reports.

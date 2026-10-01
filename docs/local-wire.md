@@ -176,6 +176,17 @@ One platform control-plane operation, through the companion. Fields: `callId`, `
 - **At most 32 are in flight per connection.** Each served call is a request the companion makes to the platform with the agent's key. A call past the bound is answered at once with `upstream_failed` and a sentence saying too many requests are in progress. The error vocabulary is closed, so there is no separate "busy" class.
 - 🔴 **There is no companion → plugin call.** Everything the companion starts has its own frame (`brief`, `opener`, `cancel`).
 - 🔴 **`post` and `done` stay explicit frames**, permanently. The messaging path keeps its own schemas and goldens; the tunnel is for everything else.
+- An op the companion serves carries its payload schemas under `ops/` (`<op>.request.schema.json`, `<op>.result.schema.json`) and goldens under `golden/ops/`, counted per op in the manifest's `ops` section. They are payloads, not frames: adding an op changes no frame and bumps no version.
+
+#### `logs.push`
+
+The plugin hands the companion its own log lines and its harness's. The payload is `entries`: 1 to 500 lines, each `{ts, source, level, logger?, message, attrs?}`, where `source` is `plugin` or `harness` and `level` is `debug`, `info`, `warn` or `error`.
+
+- The companion redacts every line (the message, the logger name and every string inside `attrs`), drops harness lines below the effective harness floor and plugin lines below the plugin floor, and keeps the rest for shipping. The plugin never ships anything itself.
+- The result is `{accepted, dropped, disabled, busy, harnessLevel, pluginLevel, retryAfterSeconds?}`. `harnessLevel` and `pluginLevel` are the **effective** floors — the stricter of the machine's setting and the agent's in Uffici — and the plugin applies them from then on.
+- 🔴 **At most one in flight per plugin.** A second `logs.push` while one is being handled is answered **success** with `busy: true` and keeps nothing; the plugin sends it again later. `busy` is not an error class, and the class vocabulary stays closed.
+- `disabled: true` means shipping is off, on this machine or for the agent: the plugin drops what it queued and asks again after `retryAfterSeconds`.
+- The payload never reaches a log line, and the companion logs its answer at `debug`, not `info`.
 
 ### `result` — companion → plugin
 

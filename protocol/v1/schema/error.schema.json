@@ -28,7 +28,9 @@
 						"invalid_budget",
 						"invalid_error_class",
 						"platform_unavailable",
-						"platform_error"
+						"platform_error",
+						"logs_disabled",
+						"shed"
 					]
 				},
 				"instruction": {

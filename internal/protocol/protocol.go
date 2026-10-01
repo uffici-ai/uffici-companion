@@ -330,3 +330,63 @@ type ErrorBody struct {
 	Retryable   bool              `json:"retryable"`
 	Details     map[string]string `json:"details,omitempty"`
 }
+
+// ── A machine's log lines ───────────────────────────────────────────────────
+
+// LogsTicketRequest is `POST /v1/tickets/logs`'s body.
+type LogsTicketRequest struct {
+	InstanceID string `json:"instanceId"`
+}
+
+// LogsShipping is the agent's log policy, answered on every logs-ticket mint.
+type LogsShipping struct {
+	// Enabled is false when an administrator switched shipping off for the
+	// agent; no ticket comes with it.
+	Enabled bool `json:"enabled"`
+	// HarnessLevel is the effective floor for the harness's own lines.
+	HarnessLevel string `json:"harnessLevel"`
+	// RecheckSeconds is when to ask again.
+	RecheckSeconds int `json:"recheckSeconds"`
+}
+
+// LogsTicketResponse answers a logs-ticket mint: the policy, and a ticket when
+// shipping is on.
+type LogsTicketResponse struct {
+	Shipping  LogsShipping `json:"shipping"`
+	Ticket    string       `json:"ticket,omitempty"`
+	ExpiresAt *time.Time   `json:"expiresAt,omitempty"`
+}
+
+// LogBatchClient describes who is shipping: the companion, and the harness and
+// plugin it speaks for when one is attached.
+type LogBatchClient struct {
+	Name           string `json:"name"`
+	Version        string `json:"version"`
+	HarnessKind    string `json:"harnessKind,omitempty"`
+	HarnessVersion string `json:"harnessVersion,omitempty"`
+	PluginVersion  string `json:"pluginVersion,omitempty"`
+}
+
+// LogEntry is one line on the wire, already redacted and clipped.
+type LogEntry struct {
+	TS         string `json:"ts"`
+	Source     string `json:"source"`
+	Level      string `json:"level"`
+	Logger     string `json:"logger,omitempty"`
+	Message    string `json:"message"`
+	Attrs      string `json:"attrs,omitempty"`
+	Redactions int    `json:"redactions,omitempty"`
+}
+
+// LogBatch is `POST /v1/logs`'s body. It names no agent and no organization:
+// the ticket does.
+type LogBatch struct {
+	Client  LogBatchClient `json:"client"`
+	Entries []LogEntry     `json:"entries"`
+}
+
+// LogBatchResponse is what the platform took.
+type LogBatchResponse struct {
+	Accepted int `json:"accepted"`
+	Filtered int `json:"filtered"`
+}

@@ -133,6 +133,7 @@ func TestLoadConfigRefusesNonsense(t *testing.T) {
 		"a port that is not a port": {"UFFICI_HOME": home, "UFFICI_COMPANION_PORT": "seventy"},
 		"an out-of-range port":      {"UFFICI_HOME": home, "UFFICI_COMPANION_PORT": "99999"},
 		"an unknown log level":      {"UFFICI_HOME": home, "UFFICI_LOG_LEVEL": "chatty"},
+		"an unknown shipping level": {"UFFICI_HOME": home, "UFFICI_LOG_SHIPPING_LEVEL": "loud"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := LoadConfig(env(environment), Config{}); err == nil {
@@ -153,6 +154,11 @@ func TestLoadConfigReadsTheLogLevel(t *testing.T) {
 		}
 		if config.LogLevel != want {
 			t.Errorf("log level %q parsed to %v, want %v", value, config.LogLevel, want)
+		}
+		// The shipping threshold is its own setting, defaulting to info.
+		shipping, err := LoadConfig(env(map[string]string{"UFFICI_HOME": home, "UFFICI_LOG_SHIPPING_LEVEL": value}), Config{})
+		if err != nil || shipping.ShipLevel != want || shipping.LogLevel != slog.LevelInfo {
+			t.Errorf("shipping level %q parsed to %v (%v)", value, shipping.ShipLevel, err)
 		}
 	}
 }
@@ -365,6 +371,8 @@ func TestTheFixtureScriptPassesAgainstAPlugin(t *testing.T) {
 			Home: home, FixturePath: fixturePath(t), Once: true,
 			Transport: contracts.TransportSocket, SocketPath: socket,
 			AgentsHost: registry.KindFixture, Version: "test",
+			// Shipping on, as a machine ships by default: the report below counts it.
+			LogShipping: true, HarnessLogLevel: "warn",
 		}, logSink)
 		done <- outcome{code, err}
 	}()
@@ -385,6 +393,81 @@ func TestTheFixtureScriptPassesAgainstAPlugin(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("the run never finished")
+	}
+
+	// 🔴 #2267: the verdict names what the run shipped, after the last flush — the
+	// e2e's three-source assertion reads exactly this line.
+	report := logsShippedLine(t, logSink.String())
+	if report["companion"].(float64) < 1 {
+		t.Errorf("the run shipped no companion lines: %v", report)
+	}
+	if report["tokenLeaks"].(float64) != 0 {
+		t.Errorf("a shipped line carries the wire token: %v", report)
+	}
+	// 🔴 Non-vacuity: the canaries carried the token through all three capture
+	// paths, so zero leaks is a claim about redaction, not about a run that never
+	// logged the token. The scripted plugin here pushes nothing of its own.
+	if report["plugin"].(float64) < 1 || report["harness"].(float64) < 1 ||
+		report["canaries"].(float64) != 3 {
+		t.Errorf("the canaries did not reach every source redacted: %v", report)
+	}
+}
+
+// logsShippedLine finds the one "logs shipped" line an --once run writes.
+func logsShippedLine(t *testing.T, log string) map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, line := range strings.Split(log, "\n") {
+		var decoded map[string]any
+		if json.Unmarshal([]byte(line), &decoded) == nil && decoded["msg"] == "logs shipped" {
+			found = append(found, decoded)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one \"logs shipped\" line, got %d", len(found))
+	}
+	return found[0]
+}
+
+func TestTheLogReportCountsBySourceAndFindsTheToken(t *testing.T) {
+	const token = "wire-token-0123456789"
+	batches := []contracts.LogBatch{
+		{Entries: []contracts.LogEntry{
+			{Source: "companion", Message: "ring received", Redactions: 1},
+			{Source: "plugin", Message: "hello sent", Attrs: `{"token":"` + token + `"}`},
+		}},
+		{Entries: []contracts.LogEntry{
+			{Source: "harness", Message: "turn done", Redactions: 2},
+			{Source: "harness", Logger: token, Message: "x"},
+			{Source: "harness", Message: "carries " + token},
+			{Source: "other", Message: "ignored source"},
+		}},
+	}
+	got := logReportOf(batches, token)
+	want := LogReport{Companion: 1, Plugin: 1, Harness: 3, Redactions: 3, TokenLeaks: 3}
+	if got != want {
+		t.Fatalf("logReportOf = %+v, want %+v", got, want)
+	}
+	// No token (a run that never minted one) finds nothing, rather than everything.
+	if leaks := logReportOf(batches, "").TokenLeaks; leaks != 0 {
+		t.Fatalf("an empty token matched %d lines", leaks)
+	}
+}
+
+// 🔴 #2259 review: a canary counts only as ITS source's line, shipped and
+// redacted — ordinary traffic's redactions never stand in for a broken canary
+// path, and one source's two canaries are still one.
+func TestTheLogReportCountsTheCanariesBySource(t *testing.T) {
+	const token = "wire-token-0123456789"
+	batches := []contracts.LogBatch{{Entries: []contracts.LogEntry{
+		{Source: "companion", Message: canaryMessage + "[redacted]", Redactions: 2},
+		{Source: "companion", Message: canaryMessage + "[redacted]", Redactions: 2},
+		{Source: "plugin", Message: canaryMessage + token},
+		{Source: "plugin", Message: "an ordinary line", Redactions: 9},
+		{Source: "harness", Message: canaryMessage + "[redacted] " + token, Redactions: 1},
+	}}}
+	if got := logReportOf(batches, token).Canaries; got != 1 {
+		t.Fatalf("canaries = %d, want 1: only the companion's shipped redacted", got)
 	}
 }
 

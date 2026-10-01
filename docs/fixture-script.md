@@ -29,9 +29,15 @@ exists, that cursors increase, that the tally expects at least one ring.
   "v": 1,
   "conversations": { "<name>": { "id": "...", "offset": "...", "entries": [] } },
   "steps": [ { "step": "ring", "...": "..." } ],
-  "assert": { "ringsDelivered": 1 }
+  "assert": { "ringsDelivered": 1 },
+  "logs": { "harnessLevel": "info" }
 }
 ```
+
+`logs` is optional: what the scripted host answers a logs ticket with. Absent,
+shipping is on with the harness at `warn`, the platform's default. `ci/wave1.json` raises
+it to `info` so a turn's Hermes lines are shipped — and its runs raise the machine's own
+floor (`UFFICI_LOG_LEVEL_HARNESS=info`) to match, because the stricter of the two wins.
 
 ### `conversations`
 
@@ -102,6 +108,14 @@ One line per frame, at `info`, carrying `direction`, `frame`, `request`,
 `deltaChars`, `openerEntryCount`, `openerChars`, `budgetDeclared`,
 `budgetUsedChars`, `outcome`, `session`. These are the measurements a later release
 needs.
+
+After the verdict, one `logs shipped` line counts what the run shipped to the scripted
+host, after the shipper's last flush: `companion`, `plugin`, `harness`, `redactions`,
+`tokenLeaks` — shipped lines still carrying the run's wire token, which is zero on a
+pass — and `canaries`. Before counting, the run hands each capture path — the companion's own,
+and a plugin's and a harness's through `logs.push` — a canary line carrying that token;
+`canaries` counts the sources whose own canary shipped redacted, which is three on a pass.
+Both first-conversation runs require all three sources and all three canaries.
 
 🔴 **Never any text.** The log is assembled from what the request state machine
 reports, and that interface carries ids and counts only — so putting transcript

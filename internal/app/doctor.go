@@ -157,6 +157,9 @@ func reportRunning(ctx context.Context, config Config, health wstransport.Health
 		plugin = "attached"
 	}
 	say("plugin", plugin)
+	if logs := health.Logs; logs != nil {
+		say("log lines", describeLogs(*logs))
+	}
 	switch health.Doorbell {
 	case wstransport.DoorbellConnected:
 		say("doorbell", fmt.Sprintf("connected (connection %s)", health.ConnectionID))
@@ -192,4 +195,17 @@ func NonEmptyVersion(version string) string {
 // wireOptions is where this home's companion serves the wire.
 func wireOptions(config Config) wstransport.Options {
 	return wstransport.Options{Kind: config.Transport, SocketPath: config.SocketPath, TCPAddr: config.TCPAddr}
+}
+
+// describeLogs is the doctor's one line about log shipping.
+func describeLogs(logs wstransport.HealthLogs) string {
+	switch {
+	case logs.Machine == "off":
+		return "not sent — switched off on this machine (uffici setup --log-shipping=on to send them)"
+	case logs.Uffici == "off":
+		return "not sent — switched off for this agent in Uffici"
+	default:
+		return fmt.Sprintf("sent to Uffici, redacted; harness lines at %s and above; %d dropped on this machine",
+			logs.HarnessFloor, logs.Dropped)
+	}
 }

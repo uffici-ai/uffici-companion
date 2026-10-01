@@ -919,6 +919,37 @@ func TestARestartedHarnessIsHandedWhatTheOldProcessAcknowledged(t *testing.T) {
 	}
 }
 
+// 🔴 Found on a real Hermes machine (#2235's live checks): the restarted harness was handed the
+// brief TWICE — two `redelivery` frames 5ms apart, two briefs, two acks. BindProcess moved
+// the request back to delivered with the OLD process's DeliveredAt, so the ack sweep,
+// ticking before RedeliverOpen's delivery restamped it, judged it overdue and redelivered
+// it too: two briefs to the new harness and two of its redeliveries spent per restart.
+func TestARestartIsHandedTheRequestOnceEvenWhenTheSweepTicksBetween(t *testing.T) {
+	clock := time.Date(2026, 9, 30, 21, 54, 52, 0, time.UTC)
+	manager := New(seededHost(), Options{Now: func() time.Time { return clock }})
+	ackedThenDetached(t, manager, "proc-before")
+
+	// The drained harness takes a minute to come back — past the ack timeout.
+	clock = clock.Add(73 * time.Second)
+	sink := newRecorder()
+	manager.Attach("conn-2", sink, 48000)
+	manager.BindProcess("proc-after")
+	// The sweep's tick lands between the rebind and the attach's own redelivery.
+	if err := manager.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+	if err := manager.RedeliverOpen(context.Background()); err != nil {
+		t.Fatalf("RedeliverOpen: %v", err)
+	}
+
+	if len(sink.briefs) != 1 {
+		t.Fatalf("the restarted harness got %d brief(s) for one request, want 1", len(sink.briefs))
+	}
+	if got := manager.byID["req_1"].Redeliveries; got != 1 {
+		t.Fatalf("one restart spent %d redeliveries, want 1", got)
+	}
+}
+
 // The other half: a reconnect of the SAME process is still working on its turn.
 // Handing it the brief again would admit the same delta twice.
 func TestAReconnectFromTheSameProcessIsNotHandedItAgain(t *testing.T) {

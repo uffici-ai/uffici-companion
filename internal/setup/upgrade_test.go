@@ -659,6 +659,34 @@ func TestARecordThatBreaksSetupsRulesIsRefused(t *testing.T) {
 	}
 }
 
+// 🔴 An upgrade rewrites the unit with the log settings the last setup recorded
+// (#2264): a machine switched off stays off across an upgrade, and the record
+// keeps saying so.
+func TestUpgradeKeepsTheMachinesLogSettings(t *testing.T) {
+	r := newUpgradeRig(t, "0.5.0", "0.4.0")
+	r.publishBoth(t, "0.5.0", true)
+	record, err := ReadRecord(r.opts.CompanionHome)
+	must(t, err)
+	record.LogShipping, record.HarnessLogLevel = "off", "error"
+	must(t, WriteRecord(r.opts.CompanionHome, record))
+	r.opts.FromVersion, r.opts.Version, r.opts.PluginVersion = "0.4.0", "0.5.0", "0.5.0"
+
+	if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	unit, err := os.ReadFile(filepath.Join(r.opts.UserHome, ".config", "systemd", "user", ServiceLabel+".service"))
+	must(t, err)
+	if !strings.Contains(string(unit), `Environment="UFFICI_LOG_SHIPPING=off"`) ||
+		!strings.Contains(string(unit), `Environment="UFFICI_LOG_LEVEL_HARNESS=error"`) {
+		t.Fatalf("the upgrade reset the machine's log settings:\n%s", unit)
+	}
+	after, err := ReadRecord(r.opts.CompanionHome)
+	must(t, err)
+	if after.LogShipping != "off" || after.HarnessLogLevel != "error" {
+		t.Fatalf("the record lost the log settings: %+v", after)
+	}
+}
+
 // withHarnessService installs and runs the harness's own user service, so a
 // restart is SAFE and only the person's say decides it.
 func (r *upgradeRig) withHarnessService(t *testing.T) {

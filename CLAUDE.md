@@ -46,6 +46,9 @@ in the job, so the check above stays Go only.
 - `internal/schemas/` — the one JSON-Schema seam: registering an embedded document under its `$id`, and reducing a validation failure to safe locations.
 - `internal/requests/` — the request state machine; `internal/surface/` the local wire server; `internal/observe/` the one-line-per-frame log; `internal/runner/` the script timeline; `internal/pairing/` the sealed key exchange.
 - `internal/setup/` — `uffici setup`: the service, the pairing, the plugin fetched from its own release and installed by its manifest (`manifest.schema.json`, refusing unknown fields), the doctor; every side effect injected, a `--dry-run` that only tells.
+- `internal/redact/` — removes credential-shaped text from a log line: `patterns.json` (valid in RE2 and ECMAScript, because Uffici applies the same file a second time) and `testdata/vectors.json`, which both implementations must pass.
+- `internal/logship/` — log lines on their way to Uffici: a tee beside stdout, a bounded ring that drops the oldest line rather than block, the plugin's `logs.push` op, and the shipper — its own connection, only while the control plane is idle, one push at a time.
+- `internal/infra/logsim/` — the stand-in hosts' log side: a scriptable policy and every pushed batch recorded, which a `--once` run reports.
 - `internal/build/` — the identity a release stamps into the binary.
 - `internal/docs/` — the Markdown link guard.
 

@@ -1,0 +1,14 @@
+{
+	"client": {
+		"name": "uffici-companion",
+		"version": "0.5.0"
+	},
+	"entries": [
+		{
+			"ts": "2026-09-29T12:00:00.000Z",
+			"source": "companion",
+			"level": "info",
+			"message": "listening"
+		}
+	]
+}

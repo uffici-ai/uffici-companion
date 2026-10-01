@@ -38,6 +38,14 @@ func newFor(t *testing.T, schema string) any {
 		return &ErrorEnvelope{}
 	case "hello":
 		return &Hello{}
+	case "log-batch":
+		return &LogBatch{}
+	case "log-batch-response":
+		return &LogBatchResponse{}
+	case "logs-ticket-request":
+		return &LogsTicketRequest{}
+	case "logs-ticket-response":
+		return &LogsTicketResponse{}
 	case "identity":
 		return &Identity{}
 	case "pairing-poll-response":
@@ -69,6 +77,7 @@ func newFor(t *testing.T, schema string) any {
 var clientBodies = map[string]bool{
 	"ack": true, "close-request": true, "connect-ticket-request": true,
 	"conversation-ticket-request": true, "pairing-request": true, "post-request": true, "tool-call-request": true,
+	"log-batch": true, "logs-ticket-request": true,
 }
 
 type golden struct{ schema, name string }

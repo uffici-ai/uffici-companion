@@ -1,0 +1,22 @@
+{
+	"reason": "the source is companion, plugin or harness",
+	"value": {
+		"client": {
+			"name": "uffici-companion",
+			"version": "0.5.0",
+			"harnessKind": "hermes",
+			"harnessVersion": "0.21.5",
+			"pluginVersion": "0.5.0"
+		},
+		"entries": [
+			{
+				"ts": "2026-09-29T12:00:00.000Z",
+				"source": "kernel",
+				"level": "warn",
+				"logger": "gateway",
+				"message": "reconnecting",
+				"attrs": "{\"attempt\":2}"
+			}
+		]
+	}
+}

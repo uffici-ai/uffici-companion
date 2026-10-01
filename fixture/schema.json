@@ -8,6 +8,14 @@
   "additionalProperties": false,
   "properties": {
     "v": { "const": 1 },
+    "logs": {
+      "description": "What the scripted host answers a logs ticket with (#2267). Absent: shipping on, the harness at warn — the platform's default. The CI script raises the harness to info so a turn's Hermes lines are shipped and the e2e can assert all three sources.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "harnessLevel": { "enum": ["debug", "info", "warn", "error"] }
+      }
+    },
     "conversations": {
       "type": "object",
       "minProperties": 1,
