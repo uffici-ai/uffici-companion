@@ -103,6 +103,11 @@ type Request struct {
 
 	// DeliveredAt is when the brief last went out, for the ack timeout.
 	DeliveredAt time.Time
+
+	// ContextTokens is what the brief's context cost, as the PLATFORM counted it
+	// (#2331) — the fresh session's opener gets the declared budget minus this.
+	// Zero when the brief carried no context.
+	ContextTokens int
 }
 
 // Limits bound one request. Zero values mean the defaults.

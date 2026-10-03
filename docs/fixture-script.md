@@ -27,12 +27,19 @@ exists, that cursors increase, that the tally expects at least one ring.
 ```json
 {
   "v": 1,
-  "conversations": { "<name>": { "id": "...", "offset": "...", "entries": [] } },
+  "conversations": { "<name>": { "id": "...", "offset": "...", "entries": [], "context": {} } },
   "steps": [ { "step": "ring", "...": "..." } ],
   "assert": { "ringsDelivered": 1 },
+  "tools": [],
+  "results": {},
   "logs": { "harnessLevel": "info" }
 }
 ```
+
+`tools` and `results` are optional: the agent's Uffici tools.
+
+- **`tools`** is the **agent's** tool catalog, in the `tools.list` result's shape (`name`, `description`, `parameters`, `permission`), served as written for **every** conversation the script declares. On the platform the catalog is the agent's, the same in each conversation it works in, so a plugin that keeps one catalog for its whole harness finds the same tools whichever conversation it listed first. Leave it out for an agent with no tools.
+- **`results`** is each tool's scripted answer, keyed by tool name: `{result, callUrn?}`, given verbatim to every call of it, in any conversation. The `callUrn` is the script's own data, relayed as written — the host never makes one up — and absent it answers `null`, a call that did not run. A listed tool with no answer answers `{"ok": true}` and a null `callUrn`; a call naming a tool the catalog does not list is the platform's `not_found`; a call naming a request no ring delivered is refused before anything is recorded.
 
 `logs` is optional: what the scripted host answers a logs ticket with. Absent,
 shipping is on with the harness at `warn`, the platform's default. `ci/wave1.json` raises
@@ -46,6 +53,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 - **`offset`** is the companion's agent's **committed** position: the exclusive lower bound of the next delta. It advances only when a request closes as `answered` or `empty`. Cancelled, superseded, expired and errored leave it, so the next brief covers the union — entries nobody answered stay in range.
 - **`entries`** are in cursor order, strictly increasing. They are already bounded: the platform bounds, the fixture serves.
 - An entry's `author.self` marks the answering agent's own. A **delta omits** them; an **opener includes** them.
+- **`context`** (optional) is what that conversation's delta read carries, written in the brief's context shape (`blocks`, `tokens`, `bounded`, optional `missing`). It is served as written and never sized to the budget — the platform composes and sizes it, the fixture only serves it. Leave it out to play a platform that sends none; the plugin then keeps its static hint.
 
 ### `steps`
 
@@ -63,6 +71,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `disconnectPlugin` / `expectRedelivery` | Drops the plugin and asserts the brief comes again |
 | `secondConnection` | Asserts a second plugin is refused with `already_attached` |
 | `refuseNextQuestion` | The platform fails the next post that carries a question (`platform_unavailable`), so the companion withdraws the request that asked — the one real way a turn waiting on a question is cancelled |
+| `expectToolCall` | Waits for a tool call on the current request: `name`, optional `argumentsContain` (a substring of the call's arguments as JSON), `withinMs` |
 | `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
 | `wait` | `ms` |
 
@@ -74,7 +83,9 @@ would pass instantly while asserting nothing.
 ### `assert`
 
 The terminal tally: `ringsDelivered`, `acks`, `sessions`, `openersSent`,
-`posts`, `closes`, `cancels`. It is a **second, independent** check — a run can
+`posts`, `closes`, `cancels`, `toolCalls`. `toolCalls`, when present, is exactly
+how many tool calls reached the scripted host — zero included, so a script can
+assert that none did. It is a **second, independent** check — a run can
 pass every step and still have done more than the script intended.
 
 ## The verdict
@@ -115,7 +126,16 @@ host, after the shipper's last flush: `companion`, `plugin`, `harness`, `redacti
 pass — and `canaries`. Before counting, the run hands each capture path — the companion's own,
 and a plugin's and a harness's through `logs.push` — a canary line carrying that token;
 `canaries` counts the sources whose own canary shipped redacted, which is three on a pass.
-Both first-conversation runs require all three sources and all three canaries.
+`restarts` counts the run's `restartHarness` steps, and `restartsWithLastWords` those
+whose window held a shipped harness line at `warn` or above. The window runs from the
+step's `restart the harness` line until the old plugin connection is seen gone, and the
+line's own timestamp decides. That is the dying process's shutdown warning, which a
+per-source count cannot see: the new process's startup lines come after the close.
+The window opens at the ask, not at the driver's signal, which the companion cannot
+see. A warning the old process logs in the driver's poll gap (about a second) before
+it signals therefore counts as well.
+Both first-conversation runs require all three sources, all three canaries, and both
+restart counts equal to the restarts the driver made.
 
 🔴 **Never any text.** The log is assembled from what the request state machine
 reports, and that interface carries ids and counts only — so putting transcript
@@ -133,5 +153,7 @@ asserting less than its author believed:
 - a ring naming a conversation the script does not declare;
 - a cause entry that is neither declared nor appended by an earlier step;
 - a `contains` matcher with no value, which matches every post;
+- an `expectToolCall` with no `name`, which matches every call;
+- a scripted result for a tool the script's `tools` do not list, or a tool listed twice;
 - cursors that do not strictly increase, which makes a delta range ambiguous;
 - **a script with no `ring` at all**, which could only ever prove the daemon starts.

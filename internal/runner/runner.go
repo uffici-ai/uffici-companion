@@ -75,6 +75,18 @@ type Result struct {
 	RingsDelivered int
 	Unmet          []string
 	Counts         Counts
+	// Restarts is every `restartHarness` step's window, in order (#2313).
+	Restarts []Window
+}
+
+// Window is one restart of the harness: From the moment the runner asked the
+// driver for it, To the moment the OLD plugin connection was first seen gone.
+// A line the harness logged inside it is the dying process's last words — the
+// shutdown's own warnings, which the plugin's final push exists to ship. The
+// new process logs its startup lines after the old connection closed, so they
+// fall outside it. To is zero when the close was never seen.
+type Window struct {
+	From, To time.Time
 }
 
 // OK reports whether the run passed.
@@ -92,19 +104,22 @@ type Counts struct {
 	Closes       map[string]int
 	Cancels      map[string]int
 	Redeliveries int
+	// ToolCalls is how many tool calls reached the host (#2349).
+	ToolCalls int
 }
 
 // events is everything the runner saw, in order.
 type events struct {
 	mu sync.Mutex
 
-	briefs  []string
-	openers []string
-	posts   []post
-	closes  []closed
-	cancels []cancelled
-	acks    []acked
-	redeliv []string
+	briefs   []string
+	openers  []string
+	posts    []post
+	closes   []closed
+	cancels  []cancelled
+	acks     []acked
+	redeliv  []string
+	restarts []Window
 
 	changed chan struct{}
 }
@@ -372,6 +387,8 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return ""
 	case "restartHarness":
 		return r.restartHarness(ctx, step)
+	case "expectToolCall":
+		return r.expectToolCall(ctx, step)
 	default:
 		// Unreachable: Validate refuses unknown steps at load. Stated rather than
 		// ignored, because a silently skipped step is a removed assertion.
@@ -470,6 +487,25 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 	}
 	return r.waitFor(ctx, step.WithinMs, matched,
 		fmt.Sprintf("no post satisfying %s %q", matcher, step.Value))
+}
+
+// expectToolCall waits for a tool call on the CURRENT request naming the tool,
+// and — when the step says so — whose arguments contain a string (#2349).
+func (r *Runner) expectToolCall(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, call := range r.host.ToolCalls() {
+			if call.RequestID != current || call.Name != step.Name {
+				continue
+			}
+			if step.ArgumentsContain == "" || strings.Contains(string(call.Arguments), step.ArgumentsContain) {
+				return true
+			}
+		}
+		return false
+	}
+	return r.waitFor(ctx, step.WithinMs, matched,
+		fmt.Sprintf("no call of tool %q with arguments containing %q", step.Name, step.ArgumentsContain))
 }
 
 // expectClose waits for a request to close, optionally for a NAMED conversation
@@ -576,9 +612,18 @@ func (r *Runner) restartHarness(ctx context.Context, step fixture.Step) string {
 		return "the script restarts the harness, but this run has no driver to do it"
 	}
 	before := r.countRedeliveries()
+	window := Window{From: r.clock()}
 	r.announce(RestartHarnessLine)
-	return r.waitFor(ctx, step.WithinMs, func() bool { return r.countRedeliveries() > before },
-		"no request was redelivered to a restarted harness")
+	miss := r.waitFor(ctx, step.WithinMs, func() bool {
+		if window.To.IsZero() && r.plugin != nil && !r.plugin.Attached() {
+			window.To = r.clock()
+		}
+		return r.countRedeliveries() > before
+	}, "no request was redelivered to a restarted harness")
+	r.events.mu.Lock()
+	r.events.restarts = append(r.events.restarts, window)
+	r.events.mu.Unlock()
+	return miss
 }
 
 // waitFor polls a condition until it holds or the window closes.
@@ -684,6 +729,7 @@ func (r *Runner) result(unmet []string) Result {
 		Posts: len(r.events.posts), Redeliveries: len(r.events.redeliv),
 		Acks: map[string]int{}, Sessions: map[string]int{},
 		Closes: map[string]int{}, Cancels: map[string]int{},
+		ToolCalls: len(r.host.ToolCalls()),
 	}
 	for _, ack := range r.events.acks {
 		counts.Acks[string(ack.outcome)]++
@@ -695,7 +741,10 @@ func (r *Runner) result(unmet []string) Result {
 	for _, c := range r.events.cancels {
 		counts.Cancels[wire.CancelReasonOnWire(c.reason)]++
 	}
-	return Result{RingsDelivered: r.host.RingsDelivered(), Unmet: unmet, Counts: counts}
+	return Result{
+		RingsDelivered: r.host.RingsDelivered(), Unmet: unmet, Counts: counts,
+		Restarts: append([]Window(nil), r.events.restarts...),
+	}
 }
 
 // checkTally compares the terminal assert block with what happened.
@@ -709,6 +758,9 @@ func (r *Runner) checkTally(result *Result, note func(string, ...any)) {
 	}
 	if want.Posts > 0 && result.Counts.Posts != want.Posts {
 		note("assert: %d post(s), want %d", result.Counts.Posts, want.Posts)
+	}
+	if want.ToolCalls != nil && result.Counts.ToolCalls != *want.ToolCalls {
+		note("assert: %d tool call(s), want %d", result.Counts.ToolCalls, *want.ToolCalls)
 	}
 	compare("ack", want.Acks, result.Counts.Acks, note)
 	compare("session", want.Sessions, result.Counts.Sessions, note)

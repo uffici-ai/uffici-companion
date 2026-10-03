@@ -2,6 +2,8 @@ package fixture
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -51,7 +53,8 @@ func TestItSatisfiesTheAgentsHostContract(_ *testing.T) {
 // what its colleagues said, or a multi-agent conversation reads as a monologue.
 func TestTheDeltaSpansTheOffsetAndOmitsOnlyItsOwn(t *testing.T) {
 	host := newTestHost(t)
-	entries, bounded, err := host.ReadSince(context.Background(), "conv_1", "c0001", "c0004")
+	read, err := host.ReadSince(context.Background(), "conv_1", "c0001", "c0004", 0)
+	entries, bounded := read.Entries, read.Bounded
 	if err != nil {
 		t.Fatalf("ReadSince: %v", err)
 	}
@@ -138,7 +141,7 @@ func TestOnlyAnsweredAndEmptyMoveTheOffset(t *testing.T) {
 func TestTheHostCountsItsReads(t *testing.T) {
 	host := newTestHost(t)
 	ctx := context.Background()
-	if _, _, err := host.ReadSince(ctx, "conv_1", "c0001", "c0004"); err != nil {
+	if _, err := host.ReadSince(ctx, "conv_1", "c0001", "c0004", 0); err != nil {
 		t.Fatalf("ReadSince: %v", err)
 	}
 	since, opener := host.ReadCounts()
@@ -200,7 +203,8 @@ func TestAppendedEntriesJoinTheDeltaAndKeepCursorsOrdered(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("appendEntries: %v", err)
 	}
-	entries, _, err := host.ReadSince(context.Background(), "conv_1", "c0004", "c0005")
+	read, err := host.ReadSince(context.Background(), "conv_1", "c0004", "c0005", 0)
+	entries := read.Entries
 	if err != nil {
 		t.Fatalf("ReadSince: %v", err)
 	}
@@ -287,5 +291,172 @@ func TestTheScriptSetsTheLogsTicketsHarnessLevel(t *testing.T) {
 	answer, err = host.MintLogsTicket(context.Background())
 	if err != nil || !answer.Enabled || answer.HarnessLevel != "info" || answer.Ticket == "" {
 		t.Fatalf("a scripted host answers %+v (%v), want on at info with a ticket", answer, err)
+	}
+}
+
+// The scripted context (#2331): served with the delta as the script wrote it,
+// one per conversation, and nil where the script gave none — with every budget
+// the companion passed through recorded for the run's expectations.
+func TestTheDeltaReadServesTheScriptedContext(t *testing.T) {
+	script := testScript()
+	depth := 0
+	script.Conversations["invoices"].Context = &ScriptContext{
+		Blocks: []ScriptContextBlock{
+			{Name: "Identity", Scope: "identity", Tokens: 3, Text: "You are an AI agent."},
+			{Name: "Organization", Scope: "organization", Depth: &depth, Tokens: 2, Text: "[context-canary]"},
+		},
+		Tokens:  5,
+		Missing: []ScriptContextMissing{{Part: "context", Class: "context_trimmed", Instruction: "Some was left out."}},
+	}
+	script.Conversations["plain"] = &Conversation{ID: "conv_2", Entries: []ScriptEntry{}}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	read, err := host.ReadSince(context.Background(), "conv_1", "c0001", "c0004", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	c := read.Context
+	if c == nil || c.Tokens != 5 || len(c.Blocks) != 2 || c.Blocks[1].Text != "[context-canary]" ||
+		c.Blocks[1].Depth == nil || *c.Blocks[1].Depth != 0 || c.Blocks[0].Depth != nil ||
+		len(c.Missing) != 1 || c.Missing[0].Class != "context_trimmed" {
+		t.Fatalf("the scripted context arrived as %+v", c)
+	}
+	// A fresh copy per read: editing one cannot reach the script or the next read.
+	c.Blocks[1].Text = "edited"
+	*c.Blocks[1].Depth = 9
+	again, _ := host.ReadSince(context.Background(), "conv_1", "c0001", "c0004", 0)
+	if again.Context.Blocks[1].Text != "[context-canary]" || *again.Context.Blocks[1].Depth != 0 {
+		t.Fatal("a read's context shares memory with the script")
+	}
+	plain, err := host.ReadSince(context.Background(), "conv_2", "", "", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if plain.Context != nil {
+		t.Fatalf("a conversation with no scripted context read %+v", plain.Context)
+	}
+	if got := host.ContextBudgets(); len(got) != 3 || got[0] != 48000 || got[1] != 0 || got[2] != 48000 {
+		t.Fatalf("recorded budgets %v, want [48000 0 48000]", got)
+	}
+}
+
+// 🔴 #2349: the scripted catalog and results, a call recorded with its
+// arguments, the script's own URN relayed (none when it scripted none), and a request no ring delivered refused before
+// anything is recorded — never forgotten at close, as the gateway host's
+// memory is not.
+func TestTheHostServesScriptedToolsAndRecordsCalls(t *testing.T) {
+	script := testScript()
+	script.Tools = []ScriptTool{
+		{Name: "list_boards", Description: "List the boards.", Parameters: json.RawMessage(`{"type":"object"}`), Permission: "allow"},
+		{Name: "delete_board", Description: "Delete a board.", Permission: "ask"},
+	}
+	script.Results = map[string]ScriptResult{
+		"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[{"id":"b-1","name":"Support"}]}`)},
+	}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	tools, err := host.ListTools(ctx, "conv_1")
+	if err != nil || len(tools) != 2 || tools[0].Name != "list_boards" ||
+		string(tools[1].Parameters) != `{"type":"object","properties":{}}` {
+		t.Fatalf("ListTools = %+v, %v", tools, err)
+	}
+	if _, err := host.ListTools(ctx, "conv_absent"); err == nil {
+		t.Fatal("an unknown conversation listed tools")
+	}
+
+	if _, err := host.CallTool(ctx, "req_1", "list_boards", json.RawMessage(`{}`)); !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("a call before any ring = %v, want ErrUnknownRequest", err)
+	}
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Close() }()
+	if err := host.DeliverRing(contracts.Ring{RingID: "ring_1", RequestID: "req_1", ConversationID: "conv_1"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.CallTool(ctx, "req_1", "list_boards", json.RawMessage(`{"q":"x"}`))
+	if err != nil || result.CallURN != "urn:uffici:tool_call:1" || !strings.Contains(string(result.Result), "Support") {
+		t.Fatalf("CallTool = %+v, %v", result, err)
+	}
+	// Closed requests are still known: the platform answers a late call, not the host.
+	if err := host.CloseRequest(ctx, "req_1", contracts.OutcomeAnswered, ""); err != nil {
+		t.Fatal(err)
+	}
+	unscripted, err := host.CallTool(ctx, "req_1", "delete_board", json.RawMessage(`{}`))
+	if err != nil || string(unscripted.Result) != `{"ok":true}` || unscripted.CallURN != "" {
+		t.Fatalf("an unscripted listed tool answered %+v, %v", unscripted, err)
+	}
+	_, err = host.CallTool(ctx, "req_1", "rename_board", json.RawMessage(`{}`))
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "not_found" || classified.ErrorInstruction() == "" ||
+		err.Error() == "" {
+		t.Fatalf("an unlisted tool answered %v", err)
+	}
+	calls := host.ToolCalls()
+	if len(calls) != 2 || calls[0].Name != "list_boards" || string(calls[0].Arguments) != `{"q":"x"}` ||
+		calls[0].ConversationID != "conv_1" {
+		t.Fatalf("ToolCalls = %+v", calls)
+	}
+}
+
+func TestAPostsCitationsAndActivityAreRecorded(t *testing.T) {
+	host := newTestHost(t)
+	extras := &contracts.PostExtras{Citations: []string{"urn:uffici:tool_call:1"},
+		Activity: []contracts.Activity{{Tool: "web_extract", Summary: "Read it."}}}
+	if _, err := host.Post(context.Background(), "req_1", "conv_1", "cited", extras); err != nil {
+		t.Fatal(err)
+	}
+	posts := host.Posts()
+	if len(posts) != 1 || len(posts[0].Citations) != 1 || len(posts[0].Activity) != 1 {
+		t.Fatalf("Posts = %+v", posts)
+	}
+}
+
+// 🔴 The catalog is the AGENT's, not a conversation's: a plugin that registers
+// one catalog per harness process lists it in whichever conversation it sees
+// first, and a fixture that served tools in one conversation only would hand it
+// an empty catalog there — the turn that needed the tool then calls nothing.
+func TestTheAgentsCatalogIsServedInEveryConversation(t *testing.T) {
+	script := testScript()
+	script.Conversations["desk"] = &Conversation{ID: "conv_2", Entries: []ScriptEntry{
+		{ID: "d1", Cursor: "c0001", Kind: "message", Text: "hi", Author: ScriptAuthor{Type: "member", ID: "m2", Label: "Rui"}},
+	}}
+	script.Tools = []ScriptTool{{Name: "list_boards", Permission: "allow"}}
+	script.Results = map[string]ScriptResult{"list_boards": {CallURN: "urn:uffici:tool_call:5", Result: json.RawMessage(`{"boards":[]}`)}}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	for _, conversation := range []string{"conv_1", "conv_2"} {
+		tools, err := host.ListTools(ctx, conversation)
+		if err != nil || len(tools) != 1 || tools[0].Name != "list_boards" {
+			t.Fatalf("ListTools(%s) = %+v, %v — the agent's catalog must be the same in every conversation", conversation, tools, err)
+		}
+	}
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Close() }()
+	if err := host.DeliverRing(contracts.Ring{RingID: "r2", RequestID: "req_2", ConversationID: "conv_2"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := host.CallTool(ctx, "req_2", "list_boards", json.RawMessage(`{}`))
+	if err != nil || result.CallURN != "urn:uffici:tool_call:5" {
+		t.Fatalf("a call in the second conversation = %+v, %v", result, err)
+	}
+	if calls := host.ToolCalls(); len(calls) != 1 || calls[0].ConversationID != "conv_2" {
+		t.Fatalf("ToolCalls = %+v", calls)
 	}
 }

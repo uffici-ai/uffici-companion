@@ -31,8 +31,8 @@ type Surface struct {
 	token    string
 	log      *slog.Logger
 	version  string
-	// calls serves the `call` frame's ops (#2028). Empty in production today:
-	// the tunnel ships before its first op, so every call is `unknown_op`.
+	// calls serves the `call` frame's ops (#2028): `logs.push`, `tools.list` and
+	// `tools.call` in production; any other op is `unknown_op`.
 	calls map[string]CallHandler
 
 	// handlers tracks the live connection handlers, so Shutdown can wait for a
@@ -174,7 +174,7 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
 	)
 
-	if err := sink.sendCompanionHello(ctx, s.version); err != nil {
+	if err := sink.sendCompanionHello(ctx, s.version, s.features()); err != nil {
 		s.closeWith(conn, string(wire.ReasonShuttingDown), connID, "could not answer hello")
 		return
 	}
@@ -366,7 +366,7 @@ func (s *Surface) dispatch(ctx context.Context, connID string, raw []byte) (wire
 		return s.toCloseReason(s.manager.OnAck(ctx, connID, frame.RequestID,
 			requests.AckOutcome(frame.Outcome), requests.Session(frame.Session)))
 	case *wire.Post:
-		return s.toCloseReason(s.manager.OnPost(ctx, connID, frame.RequestID, frame.Text, questionOf(frame.Question)))
+		return s.toCloseReason(s.manager.OnPost(ctx, connID, frame.RequestID, frame.Text, postExtrasOf(frame)))
 	case *wire.Done:
 		return s.toCloseReason(s.manager.OnDone(ctx, connID, frame.RequestID,
 			contracts.Outcome(frame.Outcome), frame.ErrorClass))
@@ -555,20 +555,32 @@ func (f *frameSink) sendRaw(ctx context.Context, raw []byte) error {
 	return f.conn.Send(bounded, raw)
 }
 
-func (f *frameSink) sendCompanionHello(ctx context.Context, version string) error {
+func (f *frameSink) sendCompanionHello(ctx context.Context, version string, features []string) error {
 	return f.send(ctx, map[string]any{
 		"v": wire.Version, "type": "hello", "companionVersion": version,
 		// 🔴 What this companion carries beyond every v1 companion: a plugin sends a
 		// question only to a companion that says it can relay one (#2232), and leaves
 		// a restarted harness's interrupted turns to a companion that redelivers them
-		// (#2273).
-		"features": []string{wire.FeatureQuestion, wire.FeatureRedelivery},
+		// (#2273), and calls the agent's tools only through a companion that serves
+		// them (#2349).
+		"features": features,
 	})
+}
+
+// features is what this companion's hello advertises. 🔴 `tools` only when both
+// tool ops are served: a plugin that is told so offers the tools to its model,
+// and a call answered `unknown_op` would then fail a turn that need not have.
+func (s *Surface) features() []string {
+	features := []string{wire.FeatureQuestion, wire.FeatureRedelivery}
+	if s.calls[wire.OpToolsList] != nil && s.calls[wire.OpToolsCall] != nil {
+		features = append(features, wire.FeatureTools)
+	}
+	return features
 }
 
 // SendBrief writes one brief.
 func (f *frameSink) SendBrief(ctx context.Context, brief requests.Brief) error {
-	return f.send(ctx, map[string]any{
+	frame := map[string]any{
 		"v": wire.Version, "type": "brief",
 		"requestId": brief.RequestID, "conversationId": brief.ConversationID,
 		"reason":        brief.Reason,
@@ -578,7 +590,29 @@ func (f *frameSink) SendBrief(ctx context.Context, brief requests.Brief) error {
 		"throughCursor": brief.ThroughCursor,
 		"resetSession":  brief.ResetSession,
 		"delta":         wireEntries(brief.Delta),
-	})
+	}
+	// Absent, never empty, when the platform sent none: the plugin then keeps
+	// its static hint (#2331).
+	if brief.Context != nil {
+		frame["context"] = wireContext(brief.Context)
+	}
+	return f.send(ctx, frame)
+}
+
+// wireContext maps the platform's context one to one onto the wire's shape.
+func wireContext(in *contracts.Context) wire.Context {
+	out := wire.Context{Blocks: []wire.ContextBlock{}, Tokens: in.Tokens, Bounded: in.Bounded}
+	for _, b := range in.Blocks {
+		out.Blocks = append(out.Blocks, wire.ContextBlock{
+			Name: b.Name, Scope: b.Scope, Depth: b.Depth, Tokens: b.Tokens, Text: b.Text,
+		})
+	}
+	for _, m := range in.Missing {
+		out.Missing = append(out.Missing, wire.ContextMissing{
+			Part: m.Part, Class: m.Class, Instruction: m.Instruction,
+		})
+	}
+	return out
 }
 
 // SendOpener writes one opener.
@@ -654,4 +688,18 @@ func questionOf(question *wire.Question) *contracts.Question {
 		return nil
 	}
 	return &contracts.Question{ID: question.ID, Choices: question.Choices, MultiSelect: question.MultiSelect}
+}
+
+// postExtrasOf carries what a post adds beside its text from the wire to the
+// host: the question (#2232), the citations and the activity (#2349). Nil when
+// the post carries none of them.
+func postExtrasOf(post *wire.Post) *contracts.PostExtras {
+	if post.Question == nil && len(post.Citations) == 0 && len(post.Activity) == 0 {
+		return nil
+	}
+	extras := &contracts.PostExtras{Question: questionOf(post.Question), Citations: post.Citations}
+	for _, a := range post.Activity {
+		extras.Activity = append(extras.Activity, contracts.Activity{Tool: a.Tool, Summary: a.Summary})
+	}
+	return extras
 }

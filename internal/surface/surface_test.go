@@ -634,7 +634,7 @@ func TestAQuestionIsAdvertisedAndRelayed(t *testing.T) {
 	hello := receive(t, conn)
 	features, _ := hello["features"].([]any)
 	if len(features) != 2 || features[0] != "question" || features[1] != "redelivery" {
-		t.Fatalf("the companion's hello lists %v, want [question redelivery]", hello["features"])
+		t.Fatalf("the companion's hello lists %v, want [question redelivery] — this rig serves no tool ops", hello["features"])
 	}
 	raw, _ := json.Marshal(hello)
 	if err := wire.Validate(raw); err != nil {
@@ -663,5 +663,71 @@ func TestAQuestionIsAdvertisedAndRelayed(t *testing.T) {
 	got := r.host.Questions()[0]
 	if got.ID != "clarify_1" || len(got.Choices) != 2 || got.Choices[1] != "South" || got.MultiSelect {
 		t.Fatalf("the host was handed %+v", got)
+	}
+}
+
+// 🔴 #2349: `tools` is advertised exactly when BOTH tool ops are served — a
+// plugin told so offers the tools to its model, and a call answered unknown_op
+// would fail a turn that need not have.
+func TestToolsAreAdvertisedOnlyWhenBothOpsAreServed(t *testing.T) {
+	serve := func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage("{}"), nil }
+	for name, tc := range map[string]struct {
+		calls map[string]CallHandler
+		want  bool
+	}{
+		"both":      {map[string]CallHandler{wire.OpToolsList: serve, wire.OpToolsCall: serve}, true},
+		"list only": {map[string]CallHandler{wire.OpToolsList: serve}, false},
+		"call only": {map[string]CallHandler{wire.OpToolsCall: serve}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, Options{Calls: tc.calls})
+			conn := r.dial(t, testToken, true)
+			hello := receive(t, conn)
+			features, _ := hello["features"].([]any)
+			got := false
+			for _, feature := range features {
+				got = got || feature == "tools"
+			}
+			if got != tc.want {
+				t.Fatalf("features %v: tools advertised = %v, want %v", features, got, tc.want)
+			}
+			raw, _ := json.Marshal(hello)
+			if err := wire.Validate(raw); err != nil {
+				t.Fatalf("the hello fails its own schema: %v", err)
+			}
+		})
+	}
+}
+
+// 🔴 #2349: a post's citations and activity reach the host with it.
+func TestAPostsCitationsAndActivityReachTheHost(t *testing.T) {
+	r := newRig(t)
+	conn := r.dial(t, testToken, true)
+	receive(t, conn) // hello
+	send(t, conn, map[string]any{"v": 1, "type": "ready"})
+	if err := r.manager.OnRing(context.Background(), contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	receive(t, conn) // the brief
+	send(t, conn, map[string]any{"v": 1, "type": "ack", "requestId": "req_1", "outcome": "accepted", "session": "resumed"})
+	send(t, conn, map[string]any{
+		"v": 1, "type": "post", "requestId": "req_1", "text": "There is one board, Support.",
+		"citations": []string{"urn:uffici:tool_call:42"},
+		"activity":  []map[string]string{{"tool": "web_extract", "summary": "Read the status page."}},
+	})
+	deadline := time.Now().Add(2 * time.Second)
+	for len(r.host.PostExtras()) == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the post's citations and activity never reached the host")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	extras := r.host.PostExtras()[0]
+	if len(extras.Citations) != 1 || extras.Citations[0] != "urn:uffici:tool_call:42" ||
+		len(extras.Activity) != 1 || extras.Activity[0] != (contracts.Activity{Tool: "web_extract", Summary: "Read the status page."}) {
+		t.Fatalf("the host received %+v", extras)
 	}
 }

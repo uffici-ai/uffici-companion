@@ -1,0 +1,17 @@
+{
+	"reason": "a block never carries a folder id — the chain never reaches a harness (#2331)",
+	"value": {
+		"blocks": [
+			{
+				"name": "Clients",
+				"scope": "folder",
+				"depth": 1,
+				"tokens": 6,
+				"text": "Acme's printers are under contract.",
+				"folderId": "a1b2c3d4-e5f6-4789-8abc-def012345678"
+			}
+		],
+		"tokens": 46,
+		"bounded": false
+	}
+}

@@ -215,6 +215,51 @@ func (c *client) ticketed(ctx context.Context, conversationID, method, path stri
 	return last
 }
 
+// ticketedOnce sends one NON-IDEMPOTENT call under the conversation's ticket
+// (#2349): the body leaves at most once per ticket the gateway accepted.
+//
+// What may be repeated is only what happened before the platform could act:
+// the ticket mint (retried like any call, up to `attempts`), and a call the
+// gateway refused for its ticket — it checks the ticket before it runs
+// anything — which is re-minted ONCE and sent again. 🔴 Every other failure,
+// a retryable one included, is returned as it came: a 503 or a lost connection
+// after the body left may be a tool that ran.
+func (c *client) ticketedOnce(ctx context.Context, conversationID, method, path string, body, out any, attempts int, sleep sleeper) error {
+	remint := true
+	for {
+		ticket, err := c.mintWithRetries(ctx, conversationID, attempts, sleep)
+		if err != nil {
+			return err
+		}
+		err = c.call(ctx, method, path, nil, ticket, body, out)
+		if err != nil && ticketRefusals[classOf(err)] && remint {
+			remint = false
+			c.forget(conversationID)
+			continue
+		}
+		return err
+	}
+}
+
+// mintWithRetries returns a live conversation ticket, retrying a retryable
+// mint failure — a mint carries no tool and is safe to repeat.
+func (c *client) mintWithRetries(ctx context.Context, conversationID string, attempts int, sleep sleeper) (string, error) {
+	for attempt := 0; ; attempt++ {
+		ticket, err := c.conversationTicket(ctx, conversationID)
+		if err == nil || !retryable(err) || attempt >= attempts-1 {
+			return ticket, err
+		}
+		delay := retryDelay(attempt)
+		var classified *Error
+		if errors.As(err, &classified) && classified.RetryAfter > delay {
+			delay = classified.RetryAfter
+		}
+		if sleepErr := sleep(ctx, delay); sleepErr != nil {
+			return "", sleepErr
+		}
+	}
+}
+
 // retryDelay is the pause before a control-plane retry: short, because a turn
 // is waiting on it and the request has its own deadline behind that.
 func retryDelay(attempt int) time.Duration {

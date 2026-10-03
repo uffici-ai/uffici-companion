@@ -16,7 +16,10 @@
 // doorbell a `protocol_error` and a disconnect.
 package protocol
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // ── The doorbell ────────────────────────────────────────────────────────────
 
@@ -253,12 +256,45 @@ type ReadResponse struct {
 	Bounded bool    `json:"bounded"`
 	// Identity is REQUIRED (#2072): a read without it is refused.
 	Identity *Identity `json:"identity"`
+	// Context is the composed context (#2331) — on the entries read only, and
+	// optional, so an older gateway's read still decodes.
+	Context *Context `json:"context,omitempty"`
+}
+
+// Context is what the agent is told before the conversation, composed by the
+// platform: the identity block first, then the pinned levels. A part it could
+// not get is NAMED in Missing — never a silent gap (#2331).
+type Context struct {
+	Blocks  []ContextBlock   `json:"blocks"`
+	Tokens  int              `json:"tokens"`
+	Bounded bool             `json:"bounded"`
+	Missing []ContextMissing `json:"missing,omitempty"`
+}
+
+// ContextBlock is one composed level; Depth is absent on the identity block.
+type ContextBlock struct {
+	Name   string `json:"name"`
+	Scope  string `json:"scope"`
+	Depth  *int   `json:"depth,omitempty"`
+	Tokens int    `json:"tokens"`
+	Text   string `json:"text"`
+}
+
+// ContextMissing is a part the brief should have had, with the sentence the
+// agent relays.
+type ContextMissing struct {
+	Part        string `json:"part"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
 }
 
 // Identity is the AI-identity floor a brief carries (Art. 50(1)).
 type Identity struct {
 	Lines      []string   `json:"lines"`
 	Disclosure Disclosure `json:"disclosure"`
+	// Workspace is the platform's sentences on what the agent's Uffici tools are
+	// for — optional, so an older gateway's read still decodes.
+	Workspace []string `json:"workspace,omitempty"`
 }
 
 // Disclosure is the conversation's disclosure state.
@@ -280,6 +316,19 @@ type PostRequest struct {
 	Attachments []Attachment `json:"attachments,omitempty"`
 	// Question is present when the post is the agent ASKING (#2232).
 	Question *PostQuestion `json:"question,omitempty"`
+	// Citations are the `callUrn`s of the agent's own tool calls this answer
+	// rests on (#2348); the platform refuses a citation of anyone else's call.
+	Citations []string `json:"citations,omitempty"`
+	// Activity is what the agent did with its harness's OWN tools, by name —
+	// shown marked, never treated as a platform tool call.
+	Activity []PostActivity `json:"activity,omitempty"`
+}
+
+// PostActivity is one harness-tool use a post reports: the tool's name and a
+// one-line summary, never its arguments or result.
+type PostActivity struct {
+	Tool    string `json:"tool"`
+	Summary string `json:"summary"`
 }
 
 // PostQuestion is what an agent's question offers (#2232): the harness's own
@@ -307,12 +356,36 @@ type CloseResponse struct {
 	Committed bool   `json:"committed"`
 }
 
-// ToolCallRequest is RESERVED until stage 3: the schema ships, the route does
-// not. Carried so the parity test covers every schema the manifest names.
+// ToolCatalogResponse is `GET /v1/conversations/:id/tools`' answer: every tool
+// the agent may call in that conversation. A denied tool is never listed.
+type ToolCatalogResponse struct {
+	Tools []ToolDescriptor `json:"tools"`
+}
+
+// ToolDescriptor is one tool as the platform lists it. Parameters is the tool's
+// JSON Schema, carried verbatim.
+type ToolDescriptor struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+	// Permission is `allow` or `ask`.
+	Permission string `json:"permission"`
+}
+
+// ToolCallRequest is `POST /v1/tool-calls`' body: one tool call on the request
+// the agent is answering. 🔴 Arguments are tenant content: never logged.
 type ToolCallRequest struct {
-	RequestID string         `json:"requestId"`
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
+	RequestID string          `json:"requestId"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
+}
+
+// ToolCallResponse answers a tool call: the tool's result as the platform
+// returned it (an actionable refusal included), and the call's ledger URN when
+// it ran — null when it did not (an approval asked for). 🔴 Never logged.
+type ToolCallResponse struct {
+	CallURN *string         `json:"callUrn"`
+	Result  json.RawMessage `json:"result"`
 }
 
 // ── Errors ──────────────────────────────────────────────────────────────────

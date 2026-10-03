@@ -276,7 +276,8 @@ func TestTheWholeTurnAgainstTheDouble(t *testing.T) {
 		t.Fatalf("acked %q, want %q", got, ringID)
 	}
 
-	delta, bounded, err := r.host.ReadSince(ctx, conversationID, ring.SinceCursor, ring.ThroughCursor)
+	read, err := r.host.ReadSince(ctx, conversationID, ring.SinceCursor, ring.ThroughCursor, 0)
+	delta, bounded := read.Entries, read.Bounded
 	if err != nil || bounded {
 		t.Fatalf("ReadSince: %v bounded=%v", err, bounded)
 	}
@@ -333,7 +334,7 @@ func TestAQuestionRidesThePostInTheProtocolsShape(t *testing.T) {
 	r.open(t)
 	r.ring(t)
 	question := &contracts.Question{ID: "clarify_1", Choices: nil, MultiSelect: false}
-	if _, err := r.host.Post(context.Background(), requestID, conversationID, "Anything else?", question); err != nil {
+	if _, err := r.host.Post(context.Background(), requestID, conversationID, "Anything else?", &contracts.PostExtras{Question: question}); err != nil {
 		t.Fatalf("Post: %v", err)
 	}
 	if refusals := r.double.Refusals(); len(refusals) != 0 {
@@ -481,7 +482,7 @@ func TestAnEdgeChallengeIsClassifiedAndItsBodyNeverLogged(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			r := newRig(t)
 			r.double.Inject("entries", injected)
-			_, _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042")
+			_, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0)
 			if classOf(err) != gateway.ClassEdgeChallenge {
 				t.Fatalf("answered %v, want edge_challenge", err)
 			}
@@ -499,7 +500,7 @@ func TestAnEdgeChallengeIsClassifiedAndItsBodyNeverLogged(t *testing.T) {
 func TestThePlatformsClassAndInstructionAreRelayedVerbatim(t *testing.T) {
 	r := newRig(t)
 	r.double.Inject("entries", gatewaytest.Injected{Status: http.StatusBadGateway, Body: gatewaytest.Envelope("platform_error", false, nil)})
-	_, _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042")
+	_, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0)
 	var classified contracts.ClassifiedError
 	if !errors.As(err, &classified) {
 		t.Fatalf("answered %v, want a classified error", err)
@@ -517,7 +518,7 @@ func TestAnUnreachableHostIsClassified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = host.ReadSince(context.Background(), conversationID, "1", "2")
+	_, err = host.ReadSince(context.Background(), conversationID, "1", "2", 0)
 	if classOf(err) != gateway.ClassUnreachable {
 		t.Fatalf("answered %v, want unreachable", err)
 	}
@@ -532,7 +533,7 @@ func TestARateLimitIsWaitedOutForTheDelayItNames(t *testing.T) {
 		Status: http.StatusTooManyRequests,
 		Body:   gatewaytest.Envelope("rate_limited", true, map[string]string{"retryAfterSeconds": "12"}),
 	})
-	if _, _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042"); err != nil {
+	if _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0); err != nil {
 		t.Fatalf("ReadSince after a rate limit: %v", err)
 	}
 	r.mu.Lock()
@@ -545,12 +546,12 @@ func TestARateLimitIsWaitedOutForTheDelayItNames(t *testing.T) {
 func TestAnExpiredTicketIsReMintedOnce(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
-	if _, _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042"); err != nil {
+	if _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042", 0); err != nil {
 		t.Fatal(err)
 	}
 	r.double.Inject("entries",
 		gatewaytest.Injected{Status: http.StatusUnauthorized, Body: gatewaytest.Envelope("ticket_expired", true, nil)})
-	if _, _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042"); err != nil {
+	if _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042", 0); err != nil {
 		t.Fatalf("ReadSince after an expired ticket: %v", err)
 	}
 	if got := r.double.Mints("conversation"); got != 2 {
@@ -560,7 +561,7 @@ func TestAnExpiredTicketIsReMintedOnce(t *testing.T) {
 	r.double.Inject("entries",
 		gatewaytest.Injected{Status: http.StatusUnauthorized, Body: gatewaytest.Envelope("ticket_invalid", false, nil)},
 		gatewaytest.Injected{Status: http.StatusUnauthorized, Body: gatewaytest.Envelope("ticket_invalid", false, nil)})
-	if _, _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042"); classOf(err) != "ticket_invalid" {
+	if _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042", 0); classOf(err) != "ticket_invalid" {
 		t.Fatalf("a second refusal answered %v, want ticket_invalid", err)
 	}
 }
@@ -569,7 +570,7 @@ func TestATicketCloseToExpiryIsReMintedBeforeUse(t *testing.T) {
 	r := newRig(t, func(d *gatewaytest.Double) { d.ConversationTTL = 30 * time.Second })
 	ctx := context.Background()
 	for range 2 {
-		if _, _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042"); err != nil {
+		if _, err := r.host.ReadSince(ctx, conversationID, "1040", "1042", 0); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -582,7 +583,7 @@ func TestATicketCloseToExpiryIsReMintedBeforeUse(t *testing.T) {
 func TestAReadWithoutItsIdentityBlockIsRefused(t *testing.T) {
 	r := newRig(t)
 	r.double.Inject("entries", gatewaytest.Injected{Status: http.StatusOK, Body: `{"entries":[],"bounded":false}`})
-	if _, _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042"); classOf(err) != gateway.ClassPlatformError {
+	if _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0); classOf(err) != gateway.ClassPlatformError {
 		t.Fatalf("a brief without its identity floor answered %v, want platform_error", err)
 	}
 }

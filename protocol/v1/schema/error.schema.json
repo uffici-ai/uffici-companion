@@ -30,7 +30,10 @@
 						"platform_unavailable",
 						"platform_error",
 						"logs_disabled",
-						"shed"
+						"shed",
+						"knowledge_unavailable",
+						"context_trimmed",
+						"invalid_citation"
 					]
 				},
 				"instruction": {

@@ -78,6 +78,38 @@
 				"multiSelect"
 			],
 			"additionalProperties": false
+		},
+		"citations": {
+			"maxItems": 20,
+			"type": "array",
+			"items": {
+				"type": "string",
+				"pattern": "^urn:uffici:tool_call:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+			}
+		},
+		"activity": {
+			"maxItems": 20,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"tool": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 64
+					},
+					"summary": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 280
+					}
+				},
+				"required": [
+					"tool",
+					"summary"
+				],
+				"additionalProperties": false
+			}
 		}
 	},
 	"required": [

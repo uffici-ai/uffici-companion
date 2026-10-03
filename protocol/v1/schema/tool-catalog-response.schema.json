@@ -1,0 +1,48 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/tool-catalog-response.schema.json",
+	"title": "tool-catalog-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"tools": {
+			"maxItems": 512,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"pattern": "^[a-zA-Z0-9_-]{1,128}$"
+					},
+					"description": {
+						"type": "string",
+						"maxLength": 16000
+					},
+					"parameters": {
+						"type": "object",
+						"propertyNames": {
+							"type": "string"
+						},
+						"additionalProperties": {}
+					},
+					"permission": {
+						"type": "string",
+						"enum": [
+							"allow",
+							"ask"
+						]
+					}
+				},
+				"required": [
+					"name",
+					"description",
+					"parameters",
+					"permission"
+				]
+			}
+		}
+	},
+	"required": [
+		"tools"
+	]
+}

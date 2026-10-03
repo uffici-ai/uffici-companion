@@ -2,7 +2,9 @@ package runner
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +55,8 @@ type autoPlugin struct {
 	// An ack moves the request past `delivered`, which is all a reconnect
 	// redelivers, so a scenario about redelivery must not race one.
 	noAck bool
+	// beforePost runs between the ack and the post — a turn calling a tool (#2349).
+	beforePost func(ctx context.Context, requestID string)
 }
 
 func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error {
@@ -64,7 +68,10 @@ func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error 
 		if a.silent {
 			return
 		}
-		_ = a.manager.OnPost(ctx, "conn-1", brief.RequestID, a.answer, a.question)
+		if a.beforePost != nil {
+			a.beforePost(ctx, brief.RequestID)
+		}
+		_ = a.manager.OnPost(ctx, "conn-1", brief.RequestID, a.answer, extrasFor(a.question))
 		if a.noClose {
 			return
 		}
@@ -636,6 +643,63 @@ func TestRestartHarnessNeedsARedeliveryToANewProcess(t *testing.T) {
 	}
 }
 
+// attachedPlugin is a Plugin whose Attached answers what the test says.
+type attachedPlugin struct {
+	mu       sync.Mutex
+	attached bool
+}
+
+func (p *attachedPlugin) Disconnect() error                          { return nil }
+func (p *attachedPlugin) DialSecond(context.Context) (string, error) { return "", nil }
+func (p *attachedPlugin) Attached() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.attached
+}
+func (p *attachedPlugin) set(attached bool) {
+	p.mu.Lock()
+	p.attached = attached
+	p.mu.Unlock()
+}
+
+// 🔴 #2313: a restart's window runs from the ask to the moment the OLD plugin
+// connection was seen gone — the span in which the dying harness's own warnings
+// were logged — and stays open (To zero) when nobody saw it close, so the report
+// counts that restart as silent rather than inventing an end.
+func TestRestartHarnessRecordsItsWindowUntilTheOldConnectionCloses(t *testing.T) {
+	runner := restartRig(t, "process-2")
+	plugin := &attachedPlugin{attached: true}
+	runner.plugin = plugin
+	inner := runner.announce
+	var asked time.Time
+	runner.SetAnnounce(func(line string) {
+		asked = time.Now()
+		plugin.set(false)
+		inner(line)
+	})
+	result, err := runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("Run: %v %v", err, result.Unmet)
+	}
+	if len(result.Restarts) != 1 {
+		t.Fatalf("%d restart window(s), want 1", len(result.Restarts))
+	}
+	window := result.Restarts[0]
+	if window.From.After(asked) || window.To.IsZero() || window.To.Before(asked) {
+		t.Fatalf("window %+v, want it to open by the ask (%v) and close after it", window, asked)
+	}
+
+	runner = restartRig(t, "process-2")
+	runner.plugin = &attachedPlugin{attached: true}
+	result, err = runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Restarts) != 1 || !result.Restarts[0].To.IsZero() {
+		t.Fatalf("a close nobody saw ended the window: %+v", result.Restarts)
+	}
+}
+
 func TestRestartHarnessAnnouncesThePublishedLine(t *testing.T) {
 	runner := restartRig(t, "process-2")
 	var got []string
@@ -661,5 +725,92 @@ func TestRestartHarnessWithNoDriverIsAMiss(t *testing.T) {
 	}
 	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
 		t.Fatalf("a restart with nobody to perform it passed: %v", result.Unmet)
+	}
+}
+
+// extrasFor wraps a scripted question as a post's extras.
+func extrasFor(question *contracts.Question) *contracts.PostExtras {
+	if question == nil {
+		return nil
+	}
+	return &contracts.PostExtras{Question: question}
+}
+
+// 🔴 #2349: `expectToolCall` is met by a call of the named tool on the CURRENT
+// request, and `argumentsContain` narrows it; the `toolCalls` tally counts every
+// call that reached the host.
+func TestExpectToolCallAndTheToolCallsTally(t *testing.T) {
+	withTools := func(steps []fixture.Step, assertions fixture.Assertions) *fixture.Script {
+		s := script(steps, assertions)
+		s.Tools = []fixture.ScriptTool{{
+			Name: "list_boards", Description: "List the boards.", Parameters: json.RawMessage(`{"type":"object"}`),
+			Permission: "allow",
+		}}
+		s.Results = map[string]fixture.ScriptResult{
+			"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[{"id":"b-1","name":"Support"}]}`)},
+		}
+		return s
+	}
+	ring := fixture.Step{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"}
+	one, two := 1, 2
+	for name, tc := range map[string]struct {
+		expect fixture.Step
+		tally  *int
+		pass   bool
+	}{
+		"the named tool":               {fixture.Step{Step: "expectToolCall", Name: "list_boards", WithinMs: 1000}, &one, true},
+		"its arguments contain":        {fixture.Step{Step: "expectToolCall", Name: "list_boards", ArgumentsContain: `"lane":"todo"`, WithinMs: 1000}, nil, true},
+		"another tool is a miss":       {fixture.Step{Step: "expectToolCall", Name: "delete_board", WithinMs: 200}, nil, false},
+		"other arguments are a miss":   {fixture.Step{Step: "expectToolCall", Name: "list_boards", ArgumentsContain: "done", WithinMs: 200}, nil, false},
+		"a tally that disagrees fails": {fixture.Step{Step: "expectToolCall", Name: "list_boards", WithinMs: 1000}, &two, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := withTools([]fixture.Step{ring, tc.expect,
+				{Step: "expectPost", Matcher: "contains", Value: "Support", WithinMs: 1000},
+			}, fixture.Assertions{RingsDelivered: 1, ToolCalls: tc.tally})
+			plugin := &autoPlugin{session: requests.SessionFresh, answer: "There is one board, Support."}
+			r := newRig(t, s, plugin)
+			plugin.beforePost = func(ctx context.Context, requestID string) {
+				result, err := r.host.CallTool(ctx, requestID, "list_boards", json.RawMessage(`{"lane":"todo"}`))
+				if err != nil || !strings.Contains(string(result.Result), "Support") {
+					t.Errorf("CallTool = %+v, %v", result, err)
+				}
+			}
+			result, err := r.runner.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.OK() != tc.pass {
+				t.Fatalf("OK() = %v, want %v: %v", result.OK(), tc.pass, result.Unmet)
+			}
+			if result.Counts.ToolCalls != 1 {
+				t.Fatalf("%d tool calls counted, want 1", result.Counts.ToolCalls)
+			}
+		})
+	}
+}
+
+// A tool call on an EARLIER request does not meet the current request's step.
+func TestExpectToolCallIsScopedToTheCurrentRequest(t *testing.T) {
+	s := script([]fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Outcome: "answered", WithinMs: 1000},
+		{Step: "expectToolCall", Name: "list_boards", WithinMs: 200},
+	}, fixture.Assertions{RingsDelivered: 2})
+	s.Tools = []fixture.ScriptTool{{Name: "list_boards", Permission: "allow"}}
+	plugin := &autoPlugin{session: requests.SessionFresh, answer: "ok"}
+	r := newRig(t, s, plugin)
+	var once sync.Once
+	plugin.beforePost = func(ctx context.Context, requestID string) {
+		once.Do(func() { _, _ = r.host.CallTool(ctx, requestID, "list_boards", json.RawMessage(`{}`)) })
+	}
+	result, err := r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() {
+		t.Fatal("turn one's tool call met turn two's expectation")
 	}
 }

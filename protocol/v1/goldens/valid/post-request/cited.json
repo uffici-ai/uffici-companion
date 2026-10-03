@@ -1,0 +1,15 @@
+{
+	"postId": "5e4d3c2b-1a09-4f8e-9d7c-6b5a4f3e2d1c",
+	"requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21",
+	"text": "There is one board, Support.",
+	"audience": "external",
+	"citations": [
+		"urn:uffici:tool_call:42"
+	],
+	"activity": [
+		{
+			"tool": "web_extract",
+			"summary": "Read the vendor's status page."
+		}
+	]
+}

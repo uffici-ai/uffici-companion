@@ -16,6 +16,13 @@ import (
 // over (#2264): the first op the companion serves in production.
 const OpLogsPush = "logs.push"
 
+// OpToolsList and OpToolsCall are the agent's Uffici tools (#2349): the catalog
+// for one conversation, and one call on the request being answered.
+const (
+	OpToolsList = "tools.list"
+	OpToolsCall = "tools.call"
+)
+
 // Op payload directions.
 const (
 	OpRequest = "request"

@@ -63,8 +63,9 @@ func Doctor(ctx context.Context, config Config, out io.Writer) int {
 // `/healthz` instead; only with no companion answering does the doctor open
 // one of its own.
 //
-// The MCP list and a tool call join this probe in stage 3; the drift checks the
-// README names arrive with the plugins that can report them.
+// A running companion also reports the agent's tools as it last listed them;
+// the catalog is read per conversation, so a probe with no conversation has
+// none to read.
 func DoctorWith(ctx context.Context, config Config, out io.Writer, options DoctorOptions) int {
 	say := func(label, value string) { _, _ = fmt.Fprintf(out, "  %-12s %s\n", label, value) }
 	_, _ = fmt.Fprintln(out, "uffici doctor")
@@ -163,6 +164,7 @@ func reportRunning(ctx context.Context, config Config, health wstransport.Health
 	switch health.Doorbell {
 	case wstransport.DoorbellConnected:
 		say("doorbell", fmt.Sprintf("connected (connection %s)", health.ConnectionID))
+		say("tools", describeTools(health.Tools))
 		return ExitOK
 	case wstransport.DoorbellReconnecting:
 		say("doorbell", "not connected — the running companion is still trying; its log says why")
@@ -208,4 +210,16 @@ func describeLogs(logs wstransport.HealthLogs) string {
 		return fmt.Sprintf("sent to Uffici, redacted; harness lines at %s and above; %d dropped on this machine",
 			logs.HarnessFloor, logs.Dropped)
 	}
+}
+
+// describeTools is the doctor's one line about the agent's Uffici tools.
+func describeTools(tools *wstransport.HealthTools) string {
+	if tools == nil {
+		return "not listed yet — the harness reads the agent's tools in a conversation, on its first turn"
+	}
+	noun := "tools"
+	if tools.Listed == 1 {
+		noun = "tool"
+	}
+	return fmt.Sprintf("%d %s in the most recent conversation's catalog", tools.Listed, noun)
 }

@@ -16,6 +16,7 @@ package memory
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -39,11 +40,28 @@ type Host struct {
 	questions     []contracts.Question
 	openerReads   int
 	deltaReads    int
+	// The budgets every read was given, in order (#2331).
+	deltaBudgets  []int
+	openerBudgets []int
+	// rung is every request a ring delivered, never forgotten at close (#2349).
+	rung      map[string]string
+	tools     map[string][]contracts.Tool
+	answers   map[string]contracts.ToolResult
+	toolCalls []ToolCall
+	extras    []contracts.PostExtras
+}
+
+// ToolCall is one recorded tool call (#2349).
+type ToolCall struct {
+	RequestID string
+	Name      string
+	Arguments json.RawMessage
 }
 
 type conversation struct {
 	offset  string
 	entries []contracts.Entry
+	context *contracts.Context
 }
 
 type openRequest struct {
@@ -57,6 +75,9 @@ func New() *Host {
 		Recorder:      logsim.NewRecorder(),
 		conversations: map[string]*conversation{},
 		requests:      map[string]openRequest{},
+		rung:          map[string]string{},
+		tools:         map[string][]contracts.Tool{},
+		answers:       map[string]contracts.ToolResult{},
 	}
 }
 
@@ -65,6 +86,16 @@ func (h *Host) Seed(conversationID, offset string, entries []contracts.Entry) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.conversations[conversationID] = &conversation{offset: offset, entries: entries}
+}
+
+// SetContext gives a seeded conversation the context its delta read carries
+// (#2331); nil reads as a gateway that sends none.
+func (h *Host) SetContext(conversationID string, context *contracts.Context) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if state, ok := h.conversations[conversationID]; ok {
+		state.context = context
+	}
 }
 
 // OpenDoorbell registers the handlers.
@@ -102,15 +133,17 @@ func (h *Host) Ack(_ context.Context, ringID string) error {
 	return nil
 }
 
-// ReadSince returns (since, through], omitting the agent's own entries.
-func (h *Host) ReadSince(_ context.Context, conversationID, since, through string) ([]contracts.Entry, bool, error) {
+// ReadSince returns (since, through], omitting the agent's own entries, and the
+// conversation's context.
+func (h *Host) ReadSince(_ context.Context, conversationID, since, through string, contextBudgetTokens int) (contracts.Read, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	state, ok := h.conversations[conversationID]
 	if !ok {
-		return nil, false, fmt.Errorf("memory: no conversation %q", conversationID)
+		return contracts.Read{}, fmt.Errorf("memory: no conversation %q", conversationID)
 	}
 	h.deltaReads++
+	h.deltaBudgets = append(h.deltaBudgets, contextBudgetTokens)
 	out := make([]contracts.Entry, 0, len(state.entries))
 	for _, entry := range state.entries {
 		if since != "" && entry.Cursor <= since {
@@ -124,11 +157,11 @@ func (h *Host) ReadSince(_ context.Context, conversationID, since, through strin
 		}
 		out = append(out, entry)
 	}
-	return out, false, nil
+	return contracts.Read{Entries: out, Context: state.context}, nil
 }
 
 // ReadOpener returns the tail through `through`, including the agent's own.
-func (h *Host) ReadOpener(_ context.Context, conversationID, through string, _ int) ([]contracts.Entry, error) {
+func (h *Host) ReadOpener(_ context.Context, conversationID, through string, budgetTokens int) ([]contracts.Entry, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	state, ok := h.conversations[conversationID]
@@ -136,6 +169,7 @@ func (h *Host) ReadOpener(_ context.Context, conversationID, through string, _ i
 		return nil, fmt.Errorf("memory: no conversation %q", conversationID)
 	}
 	h.openerReads++
+	h.openerBudgets = append(h.openerBudgets, budgetTokens)
 	out := make([]contracts.Entry, 0, len(state.entries))
 	for _, entry := range state.entries {
 		if through != "" && entry.Cursor > through {
@@ -147,17 +181,75 @@ func (h *Host) ReadOpener(_ context.Context, conversationID, through string, _ i
 }
 
 // Post records one outbound message.
-func (h *Host) Post(_ context.Context, requestID, conversationID, _ string, question *contracts.Question) (string, error) {
+func (h *Host) Post(_ context.Context, requestID, conversationID, _ string, extras *contracts.PostExtras) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("memory: Post needs a request and a conversation")
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.posts++
-	if question != nil {
-		h.questions = append(h.questions, *question)
+	if extras != nil {
+		h.extras = append(h.extras, *extras)
+		if extras.Question != nil {
+			h.questions = append(h.questions, *extras.Question)
+		}
 	}
 	return fmt.Sprintf("msg_%03d", h.posts), nil
+}
+
+// SetTools gives a conversation its tool catalog (#2349).
+func (h *Host) SetTools(conversationID string, tools []contracts.Tool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.tools[conversationID] = tools
+}
+
+// SetToolResult is what a call of one tool answers. 🔴 The URN is the
+// caller's, never built here: a call URN is opaque to the companion.
+func (h *Host) SetToolResult(name string, result contracts.ToolResult) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.answers[name] = result
+}
+
+// ListTools returns a conversation's catalog; an unseeded one lists none.
+func (h *Host) ListTools(_ context.Context, conversationID string) ([]contracts.Tool, error) {
+	if conversationID == "" {
+		return nil, fmt.Errorf("memory: ListTools needs a conversation")
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]contracts.Tool{}, h.tools[conversationID]...), nil
+}
+
+// CallTool records a call on a rung request and answers the tool's configured
+// result — `{"ok":true}` and no URN when none was set; a request no ring
+// delivered is refused before anything is recorded.
+func (h *Host) CallTool(_ context.Context, requestID, name string, arguments json.RawMessage) (contracts.ToolResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, known := h.rung[requestID]; !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	h.toolCalls = append(h.toolCalls, ToolCall{RequestID: requestID, Name: name, Arguments: arguments})
+	if answer, ok := h.answers[name]; ok {
+		return answer, nil
+	}
+	return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+// PostExtras returns every post's extras that carried any, in order.
+func (h *Host) PostExtras() []contracts.PostExtras {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]contracts.PostExtras(nil), h.extras...)
+}
+
+// ToolCalls returns the recorded tool calls.
+func (h *Host) ToolCalls() []ToolCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]ToolCall(nil), h.toolCalls...)
 }
 
 // CloseRequest closes a request, committing the offset only when the outcome
@@ -203,6 +295,7 @@ func (h *Host) DeliverRing(ring contracts.Ring) error {
 	h.requests[ring.RequestID] = openRequest{
 		conversationID: ring.ConversationID, throughCursor: ring.ThroughCursor,
 	}
+	h.rung[ring.RequestID] = ring.ConversationID
 	h.mu.Unlock()
 	handler(ring)
 	return nil
@@ -249,4 +342,12 @@ func (h *Host) Questions() []contracts.Question {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]contracts.Question(nil), h.questions...)
+}
+
+// Budgets reports the context budget every delta read and the budget every
+// opener read was given, in order.
+func (h *Host) Budgets() (delta, opener []int) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]int(nil), h.deltaBudgets...), append([]int(nil), h.openerBudgets...)
 }

@@ -1,0 +1,111 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/context.schema.json",
+	"title": "context",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"blocks": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 128
+					},
+					"scope": {
+						"type": "string",
+						"pattern": "^[a-z][a-z_]{0,31}$"
+					},
+					"depth": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 64
+					},
+					"tokens": {
+						"type": "integer",
+						"minimum": 0,
+						"maximum": 9007199254740991
+					},
+					"text": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"required": [
+					"name",
+					"scope",
+					"tokens",
+					"text"
+				],
+				"additionalProperties": false
+			}
+		},
+		"tokens": {
+			"type": "integer",
+			"minimum": 0,
+			"maximum": 9007199254740991
+		},
+		"bounded": {
+			"type": "boolean"
+		},
+		"missing": {
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"part": {
+						"type": "string",
+						"pattern": "^[a-z][a-z_]{0,31}$"
+					},
+					"class": {
+						"type": "string",
+						"enum": [
+							"unauthorized",
+							"ticket_invalid",
+							"ticket_expired",
+							"ticket_audience",
+							"ticket_revoked",
+							"ticket_spent",
+							"rate_limited",
+							"invalid_request",
+							"conversation_required",
+							"conversation_mismatch",
+							"not_found",
+							"request_closed",
+							"not_rung",
+							"post_too_large",
+							"stale_cursor",
+							"invalid_budget",
+							"invalid_error_class",
+							"platform_unavailable",
+							"platform_error",
+							"logs_disabled",
+							"shed",
+							"knowledge_unavailable",
+							"context_trimmed",
+							"invalid_citation"
+						]
+					},
+					"instruction": {
+						"type": "string",
+						"minLength": 1
+					}
+				},
+				"required": [
+					"part",
+					"class",
+					"instruction"
+				],
+				"additionalProperties": false
+			}
+		}
+	},
+	"required": [
+		"blocks",
+		"tokens",
+		"bounded"
+	],
+	"additionalProperties": false
+}

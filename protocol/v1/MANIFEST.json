@@ -7,6 +7,7 @@
 		"close-request",
 		"close-response",
 		"connect-ticket-request",
+		"context",
 		"conversation-ticket-request",
 		"conversation-ticket-response",
 		"disconnect",
@@ -26,11 +27,11 @@
 		"read-response",
 		"ring",
 		"ticket-response",
-		"tool-call-request"
+		"tool-call-request",
+		"tool-call-response",
+		"tool-catalog-response"
 	],
-	"reserved": [
-		"tool-call-request"
-	],
+	"reserved": [],
 	"errorClasses": [
 		"unauthorized",
 		"ticket_invalid",
@@ -52,7 +53,10 @@
 		"platform_unavailable",
 		"platform_error",
 		"logs_disabled",
-		"shed"
+		"shed",
+		"knowledge_unavailable",
+		"context_trimmed",
+		"invalid_citation"
 	],
 	"cancelReasons": [
 		"stop",
@@ -73,13 +77,14 @@
 		"close-request": 2,
 		"close-response": 1,
 		"connect-ticket-request": 2,
+		"context": 2,
 		"conversation-ticket-request": 1,
 		"conversation-ticket-response": 1,
 		"disconnect": 1,
 		"entry": 4,
 		"error": 2,
 		"hello": 1,
-		"identity": 2,
+		"identity": 3,
 		"log-batch": 2,
 		"log-batch-response": 1,
 		"logs-ticket-request": 1,
@@ -87,24 +92,29 @@
 		"pairing-poll-response": 2,
 		"pairing-request": 2,
 		"pairing-response": 1,
-		"post-request": 2,
+		"post-request": 3,
 		"post-response": 1,
-		"read-response": 2,
+		"read-response": 3,
 		"ring": 1,
 		"ticket-response": 1,
-		"tool-call-request": 1
+		"tool-call-request": 2,
+		"tool-call-response": 2,
+		"tool-catalog-response": 2
 	},
 	"invalidGoldens": {
 		"ack": 2,
 		"connect-ticket-request": 1,
+		"context": 2,
 		"conversation-ticket-request": 1,
 		"error": 2,
 		"log-batch": 5,
 		"logs-ticket-request": 1,
 		"pairing-poll-response": 2,
 		"pairing-request": 4,
-		"post-request": 5,
+		"post-request": 6,
 		"read-response": 1,
-		"ring": 2
+		"ring": 2,
+		"tool-call-response": 1,
+		"tool-catalog-response": 1
 	}
 }

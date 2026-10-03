@@ -21,6 +21,9 @@ type Brief struct {
 	ThroughCursor  string
 	ResetSession   bool
 	Delta          []contracts.Entry
+	// Context is what the agent is told before the conversation (#2331), as the
+	// platform composed it; nil when it sent none.
+	Context *contracts.Context
 }
 
 // PluginSink is the attached plugin, as the manager sees it.
@@ -325,9 +328,12 @@ func (m *Manager) OnRing(ctx context.Context, ring contracts.Ring) error {
 	return m.deliver(ctx, request)
 }
 
-// deliver reads the delta and sends the brief.
+// deliver reads the delta and the context, and sends the brief.
 func (m *Manager) deliver(ctx context.Context, request *Request) error {
-	delta, _, err := m.host.ReadSince(ctx, request.ConversationID, request.SinceCursor, request.ThroughCursor)
+	m.mu.Lock()
+	budget := contextBudget(m.budget)
+	m.mu.Unlock()
+	read, err := m.host.ReadSince(ctx, request.ConversationID, request.SinceCursor, request.ThroughCursor, budget)
 	if err != nil {
 		// 🔴 Closed as an error, never left to expire: an expiry closes as
 		// `cancelled`, which tells the person nothing, and the host has already
@@ -354,7 +360,8 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		SinceCursor:    request.SinceCursor,
 		ThroughCursor:  request.ThroughCursor,
 		ResetSession:   request.ResetSession,
-		Delta:          delta,
+		Delta:          read.Entries,
+		Context:        read.Context,
 	}
 	if err := sink.SendBrief(ctx, brief); err != nil {
 		return fmt.Errorf("sending the brief for %s: %w", request.RequestID, err)
@@ -367,10 +374,11 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		return nil
 	}
 	request.DeliveredAt = m.now()
+	request.ContextTokens = contextTokens(read.Context)
 	m.connOf[request.RequestID] = connID
 	m.mu.Unlock()
 
-	m.observer.BriefSent(request.RequestID, request.ConversationID, len(delta), charsOf(delta))
+	m.observer.BriefSent(request.RequestID, request.ConversationID, len(read.Entries), charsOf(read.Entries))
 	return nil
 }
 
@@ -483,7 +491,10 @@ func (m *Manager) OnAck(ctx context.Context, connID, requestID string, outcome A
 		m.mu.Unlock()
 		return ErrClosedRequest
 	}
-	sink, budget := m.sink, m.budget
+	// 🔴 The context arrived with the brief, before this ack, and sits in the
+	// same system-side budget the plugin declared — so the opener gets what is
+	// left. The number is the platform's; the companion estimates nothing.
+	sink, budget := m.sink, openerBudget(m.budget, request.ContextTokens)
 	m.mu.Unlock()
 
 	entries, err := m.host.ReadOpener(ctx, request.ConversationID, request.ThroughCursor, budget)
@@ -542,9 +553,10 @@ func (m *Manager) redeliver(ctx context.Context, request *Request) error {
 	return m.deliver(ctx, request)
 }
 
-// OnPost forwards one post upstream, immediately. A non-nil question makes it
-// the harness ASKING the person (#2232); it counts as a post like any other.
-func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string, question *contracts.Question) error {
+// OnPost forwards one post upstream, immediately. Extras carry a question —
+// the harness ASKING the person (#2232), which counts as a post like any other —
+// and the citations and activity a post may report (#2349).
+func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string, extras *contracts.PostExtras) error {
 	request, err := m.requestOn(connID, requestID)
 	if err != nil {
 		return err
@@ -568,7 +580,7 @@ func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string, qu
 		return m.closeUpstream(ctx, request, contracts.OutcomeError, "post_cap_exceeded", byCompanion)
 	}
 
-	if _, err := m.host.Post(ctx, requestID, request.ConversationID, text, question); err != nil {
+	if _, err := m.host.Post(ctx, requestID, request.ConversationID, text, extras); err != nil {
 		// 🔴 Handled HERE and answered nil: the plugin sent a valid frame, and a
 		// platform failure is not a protocol error on the local wire. Returning
 		// it would close the plugin's connection and take every other open
@@ -873,4 +885,41 @@ func charsOf(entries []contracts.Entry) int {
 		total += len(entry.Text)
 	}
 	return total
+}
+
+// contextTokens is what a brief's context cost, as the platform counted it.
+func contextTokens(c *contracts.Context) int {
+	if c == nil {
+		return 0
+	}
+	return c.Tokens
+}
+
+// The platform's bounds on an opener's budget (`OPENER_MIN_BUDGET` /
+// `OPENER_MAX_BUDGET` in the conversations API's runtime plane) — a budget outside
+// them is refused as invalid_budget and fails the whole request. Pinned against the
+// platform's source by scripts/__tests__/uffici-opener-budget-parity.test.mjs.
+const (
+	OpenerMinBudget = 1000
+	OpenerMaxBudget = 200000
+	// ContextMaxBudget is the largest context budget the agents-gateway's entries read
+	// accepts. 🔴 Over it the gateway refuses the WHOLE read, and every brief on the
+	// machine would close as an error; the wire admits a declaration far larger.
+	ContextMaxBudget = 1000000
+)
+
+// contextBudget is the share of the declared budget the brief's context may take:
+// half, never over the platform's ceiling. 🔴 The context must never crowd out the
+// transcript, and the identity block the platform puts first sits outside it anyway.
+func contextBudget(declared int) int {
+	return min(declared/2, ContextMaxBudget)
+}
+
+// openerBudget is the declared budget minus what the brief's context already took,
+// clamped to the platform's bounds (#2331). Under the floor it still asks for the
+// floor: a fresh session with no transcript at all is worse than a brief slightly
+// over the declaration. The numbers are the platform's; the companion estimates
+// nothing.
+func openerBudget(declared, contextTokens int) int {
+	return min(max(declared-contextTokens, OpenerMinBudget), OpenerMaxBudget)
 }

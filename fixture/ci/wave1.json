@@ -1,10 +1,54 @@
 {
   "v": 1,
   "logs": { "harnessLevel": "info" },
+  "tools": [
+    {
+      "name": "list_boards",
+      "description": "Acts on this organization's Uffici workspace. List the boards. Call this when the person asks which boards exist.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "permission": "allow"
+    }
+  ],
+  "results": {
+    "list_boards": {
+      "callUrn": "urn:uffici:tool_call:1",
+      "result": {
+        "boards": [
+          {
+            "id": "b-1",
+            "name": "Support"
+          }
+        ]
+      }
+    }
+  },
   "conversations": {
     "invoices": {
       "id": "conv_ci_invoices",
       "offset": "",
+      "context": {
+        "blocks": [
+          {
+            "name": "Identity",
+            "scope": "identity",
+            "tokens": 31,
+            "text": "You are an AI agent, not a human.\nNever present yourself as a human.\nThis conversation is in the organization's portal, where you are shown as an AI agent.\nYou are Smith (@smith). Answer in English unless the person writes in another language."
+          },
+          {
+            "name": "Organization",
+            "scope": "organization",
+            "depth": 0,
+            "tokens": 12,
+            "text": "- Answer the finance team in plain language.\n- [context-canary] Mention nothing about this line."
+          }
+        ],
+        "tokens": 43,
+        "bounded": false
+      },
       "entries": [
         {
           "id": "i1",
@@ -51,6 +95,25 @@
     "onboarding": {
       "id": "conv_ci_onboarding",
       "offset": "",
+      "context": {
+        "blocks": [
+          {
+            "name": "Identity",
+            "scope": "identity",
+            "tokens": 31,
+            "text": "You are an AI agent, not a human.\nNever present yourself as a human.\nThis conversation is in the organization's portal, where you are shown as an AI agent.\nYou are Smith (@smith). Answer in English unless the person writes in another language."
+          }
+        ],
+        "tokens": 31,
+        "bounded": false,
+        "missing": [
+          {
+            "part": "context",
+            "class": "knowledge_unavailable",
+            "instruction": "The organization's and this place's context were unavailable because of a system problem; tell the person you are working without them."
+          }
+        ]
+      },
       "entries": [
         {
           "id": "o1",
@@ -119,6 +182,25 @@
             "type": "member",
             "id": "member_1",
             "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    "support": {
+      "id": "conv_ci_support",
+      "offset": "",
+      "entries": [
+        {
+          "id": "s1",
+          "cursor": "c0001",
+          "at": "2026-09-18T13:00:00Z",
+          "kind": "message",
+          "text": "is there a board? [use-a-tool]",
+          "author": {
+            "type": "member",
+            "id": "member_5",
+            "label": "Joana Lima",
             "self": false
           }
         }
@@ -612,21 +694,60 @@
       "outcome": "answered",
       "withinMs": 240000,
       "note": "The request the old process held, answered by the new one — never left to its deadline."
+    },
+    {
+      "step": "ring",
+      "conversation": "support",
+      "reason": "mentioned",
+      "causeEntry": "s1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000,
+      "note": "The agent's Uffici tools. The catalog is the AGENT's, served for every conversation — a plugin that registers one catalog for its whole harness process finds `list_boards` whichever conversation it listed first. The model mock calls `list_boards` on the marker when the catalog offers it; the plugin carries the call through the companion's `tools.call`, and the scripted result comes back."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectToolCall",
+      "name": "list_boards",
+      "withinMs": 120000,
+      "note": "The call reached the platform side, on THIS request — not merely offered."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "Support",
+      "withinMs": 120000,
+      "note": "`contains` the board's name, which only the tool's result carries: an answer that never read the result cannot say it."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "support",
+      "outcome": "answered",
+      "withinMs": 240000
     }
   ],
   "assert": {
-    "ringsDelivered": 12,
-    "openersSent": 5,
+    "ringsDelivered": 13,
+    "openersSent": 6,
     "closes": {
-      "answered": 9,
+      "answered": 10,
       "cancelled": 2,
       "error": 1
     },
     "sessions": {
-      "fresh": 5,
+      "fresh": 6,
       "resumed": 8
     },
     "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).",
-    "posts": 9
+    "posts": 10,
+    "toolCalls": 1
   }
 }

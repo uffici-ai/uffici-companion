@@ -117,10 +117,11 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		{"hello", "pluginHello", &PluginHello{}},
 		{"hello", "companionHello", &CompanionHello{}},
 		{"entry", "entry", &Entry{}},
+		{"context", "context", &Context{}},
 	}
-	// Non-vacuity: every frame type plus the entry and both hello shapes.
-	if len(cases) != len(FrameTypes())+2 {
-		t.Fatalf("%d case(s) for %d frame types plus entry and the second hello shape — a frame is unchecked", len(cases), len(FrameTypes()))
+	// Non-vacuity: every frame type plus the entry, the context and both hello shapes.
+	if len(cases) != len(FrameTypes())+3 {
+		t.Fatalf("%d case(s) for %d frame types plus entry, context and the second hello shape — a frame is unchecked", len(cases), len(FrameTypes()))
 	}
 
 	for _, testCase := range cases {
@@ -267,5 +268,49 @@ func TestResultErrorMatchesTheResultSchema(t *testing.T) {
 	}
 	if got := jsonFieldNames(t, &ResultError{}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ResultError and the result schema disagree.\n  struct: %v\n  schema: %v", got, want)
+	}
+}
+
+// The context's block and missing shapes live inline in its `items`.
+func TestContextItemsMatchTheContextSchema(t *testing.T) {
+	raw, err := fs.ReadFile(contract.FS(), "schema/context.schema.json")
+	if err != nil {
+		t.Fatalf("reading the context schema: %v", err)
+	}
+	type items struct {
+		Items struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"items"`
+	}
+	var doc struct {
+		Properties struct {
+			Blocks  items `json:"blocks"`
+			Missing items `json:"missing"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing the context schema: %v", err)
+	}
+	for _, testCase := range []struct {
+		name       string
+		properties map[string]json.RawMessage
+		value      any
+	}{
+		{"blocks", doc.Properties.Blocks.Items.Properties, &ContextBlock{}},
+		{"missing", doc.Properties.Missing.Items.Properties, &ContextMissing{}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			want := make([]string, 0, len(testCase.properties))
+			for property := range testCase.properties {
+				want = append(want, property)
+			}
+			sort.Strings(want)
+			if len(want) == 0 {
+				t.Fatalf("context/%s declares no item properties", testCase.name)
+			}
+			if got := jsonFieldNames(t, testCase.value); !reflect.DeepEqual(got, want) {
+				t.Fatalf("struct and schema disagree.\n  struct: %v\n  schema: %v", got, want)
+			}
+		})
 	}
 }

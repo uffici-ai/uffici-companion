@@ -34,6 +34,7 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/requests"
 	"github.com/uffici-ai/uffici-companion/internal/runner"
 	"github.com/uffici-ai/uffici-companion/internal/surface"
+	"github.com/uffici-ai/uffici-companion/internal/tools"
 	wirepkg "github.com/uffici-ai/uffici-companion/internal/wire"
 )
 
@@ -316,6 +317,10 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	// logging.shipper, which is atomic, never through this variable.
 	var shipper *logship.Shipper
 
+	// The agent's Uffici tools (#2349), over whichever host is running. Built
+	// before the listener: /healthz reports the last catalog's size.
+	toolCalls := &tools.Handler{Host: host, Logger: logger}
+
 	listener, err := wstransport.Listen(wstransport.Options{
 		Kind: config.Transport, SocketPath: config.SocketPath, TCPAddr: config.TCPAddr,
 		Health: func() wstransport.Health {
@@ -331,6 +336,9 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 			}
 			// Through the atomic pointer: this closure serves before the shipper exists.
 			health.Logs = logsHealth(config, logging.shipper.Load(), logging.ring)
+			if listed, ok := toolCalls.CatalogSize(); ok {
+				health.Tools = &wstransport.HealthTools{Listed: listed}
+			}
 			return health
 		},
 	})
@@ -351,10 +359,13 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		return client
 	})
 	pushes := &logship.PushHandler{Shipper: shipper, Ring: logging.ring, Redactor: logging.redactor}
-
 	wire, err = surface.New(listener, manager, surface.Options{
 		Token: token, Logger: logger, Version: config.Version,
-		Calls: map[string]surface.CallHandler{wireOpLogsPush: pushes.Handle},
+		Calls: map[string]surface.CallHandler{
+			wireOpLogsPush:      pushes.Handle,
+			wirepkg.OpToolsList: toolCalls.List,
+			wirepkg.OpToolsCall: toolCalls.Call,
+		},
 	})
 	if err != nil {
 		return ExitConfig, err
@@ -446,7 +457,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	injectRedactionCanaries(serveCtx, logging, pushes, token)
 	stopShipping()
 	<-shipperDone
-	reportLogs(logger, logReportOf(fixtureHost.Batches(), token))
+	reportLogs(logger, logReportOf(fixtureHost.Batches(), token, result.Restarts))
 	if !result.OK() {
 		return ExitMiss, nil
 	}
@@ -617,6 +628,7 @@ func report(logger *slog.Logger, result runner.Result) {
 		slog.Int("briefs", result.Counts.Briefs),
 		slog.Int("openers", result.Counts.Openers),
 		slog.Int("posts", result.Counts.Posts),
+		slog.Int("toolCalls", result.Counts.ToolCalls),
 		slog.Int("redeliveries", result.Counts.Redeliveries),
 		slog.Int("unmet", len(result.Unmet)),
 	)
@@ -635,8 +647,17 @@ func report(logger *slog.Logger, result runner.Result) {
 // Canaries counts the SOURCES whose own canary line shipped redacted — a total
 // of redactions could be met by ordinary traffic while a canary path was broken,
 // and zero leaks would then be a claim about nothing (#2259 review).
+// Restarts counts the run's harness restarts, and RestartsWithLastWords those
+// whose window holds a shipped harness line at warn or above — the dying
+// process's own shutdown warning. A per-source count cannot see it: any harness
+// line passes that, while the lines lost at a restart's edges are exactly the
+// ones an operator reads the Logs tab for (#2313). The window opens at the ask,
+// not at the driver's signal (the companion cannot see that), so a warning the
+// old process logs in the driver's poll gap before it signals counts too — a
+// bounded blind spot of about a second, not a substitute for the shutdown line.
 type LogReport struct {
 	Companion, Plugin, Harness, Redactions, TokenLeaks, Canaries int
+	Restarts, RestartsWithLastWords                              int
 }
 
 // canaryMessage starts every canary line; the token follows it, and redaction
@@ -644,11 +665,15 @@ type LogReport struct {
 const canaryMessage = "redaction canary "
 
 // logReportOf counts the fixture host's recorded pushes.
-func logReportOf(batches []contracts.LogBatch, token string) LogReport {
-	var out LogReport
+func logReportOf(batches []contracts.LogBatch, token string, restarts []runner.Window) LogReport {
+	out := LogReport{Restarts: len(restarts)}
 	canaries := map[string]bool{}
+	spoke := make([]bool, len(restarts))
 	for _, batch := range batches {
 		for _, entry := range batch.Entries {
+			if i := lastWordsOf(entry, restarts); i >= 0 {
+				spoke[i] = true
+			}
 			switch entry.Source {
 			case "companion":
 				out.Companion++
@@ -673,7 +698,37 @@ func logReportOf(batches []contracts.LogBatch, token string) LogReport {
 			out.Canaries++
 		}
 	}
+	for _, said := range spoke {
+		if said {
+			out.RestartsWithLastWords++
+		}
+	}
 	return out
+}
+
+// lastWordsOf is the index of the restart window a harness warning was logged
+// in, or -1. The line's own timestamp decides, never when it was pushed: the
+// plugin's final push ships the shutdown's lines after they were logged. TS is
+// millisecond-precise (floored), so a window opens ON its first millisecond and
+// closes BEFORE its last: a line stamped with the close's own millisecond may
+// have been logged just after it, and is never credited to the window.
+func lastWordsOf(entry contracts.LogEntry, restarts []runner.Window) int {
+	if entry.Source != "harness" || (entry.Level != "warn" && entry.Level != "error") {
+		return -1
+	}
+	at, err := time.Parse(time.RFC3339Nano, entry.TS)
+	if err != nil {
+		return -1
+	}
+	for i, window := range restarts {
+		if window.To.IsZero() {
+			continue
+		}
+		if !at.Before(window.From.Truncate(time.Millisecond)) && at.Before(window.To.Truncate(time.Millisecond)) {
+			return i
+		}
+	}
+	return -1
 }
 
 // injectRedactionCanaries hands the capture paths one line per source that
@@ -704,6 +759,8 @@ func reportLogs(logger *slog.Logger, r LogReport) {
 		slog.Int("redactions", r.Redactions),
 		slog.Int("tokenLeaks", r.TokenLeaks),
 		slog.Int("canaries", r.Canaries),
+		slog.Int("restarts", r.Restarts),
+		slog.Int("restartsWithLastWords", r.RestartsWithLastWords),
 	)
 }
 

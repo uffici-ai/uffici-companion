@@ -26,6 +26,8 @@ func newFor(t *testing.T, schema string) any {
 		return &CloseResponse{}
 	case "connect-ticket-request":
 		return &ConnectTicketRequest{}
+	case "context":
+		return &Context{}
 	case "conversation-ticket-request":
 		return &ConversationTicketRequest{}
 	case "conversation-ticket-response":
@@ -66,6 +68,10 @@ func newFor(t *testing.T, schema string) any {
 		return &TicketResponse{}
 	case "tool-call-request":
 		return &ToolCallRequest{}
+	case "tool-call-response":
+		return &ToolCallResponse{}
+	case "tool-catalog-response":
+		return &ToolCatalogResponse{}
 	}
 	t.Fatalf("no struct for schema %q", schema)
 	return nil

@@ -1,0 +1,16 @@
+{
+	"reason": "a scope is a lowercase name",
+	"value": {
+		"blocks": [
+			{
+				"name": "Organization",
+				"scope": "Organization",
+				"depth": 0,
+				"tokens": 9,
+				"text": "- Answer in the customer's language.\n- Never quote prices."
+			}
+		],
+		"tokens": 46,
+		"bounded": false
+	}
+}

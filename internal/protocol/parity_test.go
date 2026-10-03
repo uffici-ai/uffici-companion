@@ -167,6 +167,7 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"close-request":                CloseRequest{},
 		"close-response":               CloseResponse{},
 		"connect-ticket-request":       ConnectTicketRequest{},
+		"context":                      Context{},
 		"conversation-ticket-request":  ConversationTicketRequest{},
 		"conversation-ticket-response": ConversationTicketResponse{},
 		"disconnect":                   Disconnect{},
@@ -187,6 +188,8 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"ring":                         Ring{},
 		"ticket-response":              TicketResponse{},
 		"tool-call-request":            ToolCallRequest{},
+		"tool-call-response":           ToolCallResponse{},
+		"tool-catalog-response":        ToolCatalogResponse{},
 	}
 	manifest, err := contract.LoadManifest()
 	if err != nil {

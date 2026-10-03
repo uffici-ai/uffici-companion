@@ -1,0 +1,7 @@
+{
+	"reason": "a call is named by its ledger URN, never a free-form id (#2344)",
+	"value": {
+		"callUrn": "t#42",
+		"result": {}
+	}
+}

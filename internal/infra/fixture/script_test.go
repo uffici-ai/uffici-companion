@@ -106,6 +106,26 @@ func TestValidateRefusesTheWaysAScriptCanAssertNothing(t *testing.T) {
 			"strictly increase",
 		},
 		{
+			// A nameless expectation would match any call.
+			"an expectToolCall with no name",
+			func(s *Script) { s.Steps = append(s.Steps, Step{Step: "expectToolCall"}) },
+			"would match any call",
+		},
+		{
+			"a result for a tool the catalog does not list",
+			func(s *Script) {
+				s.Results = map[string]ScriptResult{"list_boards": {Result: json.RawMessage(`{}`)}}
+			},
+			"its tools do not list",
+		},
+		{
+			"a tool listed twice",
+			func(s *Script) {
+				s.Tools = []ScriptTool{{Name: "list_boards"}, {Name: "list_boards"}}
+			},
+			"twice",
+		},
+		{
 			"an appendEntries with nothing to append",
 			func(s *Script) {
 				s.Steps = append(s.Steps, Step{Step: "appendEntries", Conversation: "invoices"})
@@ -190,6 +210,11 @@ func TestASchemaRefusesTheTyposADecoderWouldSwallow(t *testing.T) {
 			"a harness level the platform does not have",
 			strings.Replace(validScript, `"v": 1,`, `"v": 1, "logs": {"harnessLevel": "verbose"},`, 1),
 			"/logs/harnessLevel",
+		},
+		{
+			"a context block with no text (#2331)",
+			strings.Replace(validScript, `"offset": "", "entries"`, `"offset": "", "context": {"blocks": [{"name":"Org","scope":"organization","tokens":1}], "tokens": 1, "bounded": false}, "entries"`, 1),
+			"/conversations/c/context/blocks/0",
 		},
 		{
 			"an entry with no author",

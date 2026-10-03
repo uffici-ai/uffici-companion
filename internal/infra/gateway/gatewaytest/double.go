@@ -59,6 +59,30 @@ type Injected struct {
 type Conversation struct {
 	Offset  string
 	Entries []protocol.Entry
+	// Context is what the entries read carries (#2331); nil sends none, as an
+	// older gateway does. The opener never carries one.
+	Context *protocol.Context
+	// Tools is the conversation's tool catalog (#2349); nil lists none.
+	Tools []protocol.ToolDescriptor
+	// ToolResults is each tool's scripted answer, by name; a listed tool with
+	// none answers `{"ok":true}` and a null `callUrn`.
+	ToolResults map[string]ToolAnswer
+}
+
+// ToolAnswer is a scripted tool-call answer. 🔴 CallURN is configured by the
+// test, never built here: a call URN is an opaque string the companion relays,
+// and the one codec for it is the platform's. Empty answers a null URN.
+type ToolAnswer struct {
+	CallURN string
+	Result  json.RawMessage
+}
+
+// ToolCall is one recorded tool call (#2349): what reached the platform.
+type ToolCall struct {
+	RequestID      string
+	ConversationID string
+	Name           string
+	Arguments      json.RawMessage
 }
 
 // Post is one recorded message.
@@ -69,6 +93,9 @@ type Post struct {
 	Text      string
 	// Question is set when the post asked the person something (#2232).
 	Question *protocol.PostQuestion
+	// Citations and Activity are what the post reported (#2349).
+	Citations []string
+	Activity  []protocol.PostActivity
 }
 
 // Close is one recorded close.
@@ -98,32 +125,34 @@ type Double struct {
 	// entries with OfferPairing.
 	PairingOffers map[string]PairingOffer
 
-	mu            sync.Mutex
-	silent        bool
-	conflict      bool
-	connectTicket map[string]bool
-	convTickets   map[string]string
-	ticketSeq     int
-	mints         map[string]int
-	connectFacts  []protocol.ConnectTicketRequest
-	inject        map[string][]Injected
-	conversations map[string]*Conversation
-	requests      map[string]ringed
-	closedReqs    map[string]bool
-	posts         []Post
-	postsByID     map[string]string
-	closes        []Close
-	acks          []string
-	refusals      []string
-	sessions      []*session
-	upgrades      int
-	reads         map[string]int
-	pairings      map[string]*pendingPairing
-	pairingSeq    int
-	logsShipping  LogsShipping
-	logsTickets   map[string]bool
-	logsGate      chan struct{}
-	logBatches    []protocol.LogBatch
+	mu             sync.Mutex
+	silent         bool
+	conflict       bool
+	connectTicket  map[string]bool
+	convTickets    map[string]string
+	ticketSeq      int
+	mints          map[string]int
+	connectFacts   []protocol.ConnectTicketRequest
+	inject         map[string][]Injected
+	conversations  map[string]*Conversation
+	requests       map[string]ringed
+	closedReqs     map[string]bool
+	posts          []Post
+	postsByID      map[string]string
+	closes         []Close
+	acks           []string
+	refusals       []string
+	sessions       []*session
+	upgrades       int
+	reads          map[string]int
+	entriesBudgets []string
+	pairings       map[string]*pendingPairing
+	pairingSeq     int
+	logsShipping   LogsShipping
+	logsTickets    map[string]bool
+	logsGate       chan struct{}
+	logBatches     []protocol.LogBatch
+	toolCalls      []ToolCall
 }
 
 type ringed struct {
@@ -187,8 +216,17 @@ func (d *Double) Seed(conversationID string, conversation Conversation) {
 	d.conversations[conversationID] = &copied
 }
 
+// SetTools gives a seeded conversation its catalog and scripted results (#2349).
+func (d *Double) SetTools(conversationID string, tools []protocol.ToolDescriptor, results map[string]ToolAnswer) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if conversation, ok := d.conversations[conversationID]; ok {
+		conversation.Tools, conversation.ToolResults = tools, results
+	}
+}
+
 // Inject queues scripted answers for a route key: `connect`, `conversation`,
-// `entries`, `opener`, `posts`, `close`, `doorbell`.
+// `entries`, `opener`, `posts`, `close`, `doorbell`, `tools`, `tool-calls`.
 func (d *Double) Inject(route string, answers ...Injected) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -273,6 +311,8 @@ func (d *Double) serve(w http.ResponseWriter, r *http.Request) {
 		d.control(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/requests/") && strings.HasSuffix(path, "/close"):
 		d.closeRoute(w, r)
+	case r.Method == http.MethodPost && path == "/v1/tool-calls":
+		d.toolCall(w, r)
 	default:
 		fail(w, http.StatusNotFound, "not_found")
 	}
@@ -541,6 +581,8 @@ func (d *Double) control(w http.ResponseWriter, r *http.Request) {
 		d.read(w, r, conversationID, route)
 	case r.Method == http.MethodPost && route == "posts":
 		d.post(w, r, conversationID, injected, hasInjected)
+	case r.Method == http.MethodGet && route == "tools":
+		d.tools(w, conversationID)
 	default:
 		fail(w, http.StatusNotFound, "not_found")
 	}
@@ -557,6 +599,11 @@ func (d *Double) read(w http.ResponseWriter, r *http.Request, conversationID, ro
 	}
 	query := r.URL.Query()
 	through := query.Get("through")
+	if route == "entries" {
+		d.mu.Lock()
+		d.entriesBudgets = append(d.entriesBudgets, query.Get("budgetTokens"))
+		d.mu.Unlock()
+	}
 	var entries []protocol.Entry
 	for _, entry := range conversation.Entries {
 		if after(entry.Cursor, through) {
@@ -573,13 +620,17 @@ func (d *Double) read(w http.ResponseWriter, r *http.Request, conversationID, ro
 		entries = []protocol.Entry{}
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(protocol.ReadResponse{
+	answer := protocol.ReadResponse{
 		Entries: entries, Bounded: false,
 		Identity: &protocol.Identity{
 			Lines:      []string{"You are an AI agent, not a human.", "Never present yourself as a human."},
 			Disclosure: protocol.Disclosure{Mode: "labelled_ui"},
 		},
-	})
+	}
+	if route == "entries" {
+		answer.Context = conversation.Context
+	}
+	_ = json.NewEncoder(w).Encode(answer)
 }
 
 func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID string, injected Injected, hasInjected bool) {
@@ -600,7 +651,7 @@ func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID str
 		d.postsByID[body.PostID] = messageID
 		d.posts = append(d.posts, Post{
 			MessageID: messageID, PostID: body.PostID, RequestID: body.RequestID, Text: body.Text,
-			Question: body.Question,
+			Question: body.Question, Citations: body.Citations, Activity: body.Activity,
 		})
 	}
 	d.mu.Unlock()
@@ -614,6 +665,98 @@ func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID str
 	default:
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(protocol.PostResponse{MessageID: messageID})
+	}
+}
+
+// tools serves a conversation's catalog (#2349), validated against the protocol
+// before it leaves, so a test seeding an off-contract catalog finds out here.
+func (d *Double) tools(w http.ResponseWriter, conversationID string) {
+	d.mu.Lock()
+	conversation, known := d.conversations[conversationID]
+	d.reads["tools"]++
+	var tools []protocol.ToolDescriptor
+	if known {
+		tools = append(tools, conversation.Tools...)
+	}
+	d.mu.Unlock()
+	if !known {
+		fail(w, http.StatusNotFound, "not_found")
+		return
+	}
+	if tools == nil {
+		tools = []protocol.ToolDescriptor{}
+	}
+	raw := mustJSON(protocol.ToolCatalogResponse{Tools: tools})
+	if err := protocol.Validate("tool-catalog-response", raw); err != nil {
+		panic("gatewaytest: a seeded catalog is off-contract: " + err.Error())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
+}
+
+// toolCall serves `POST /v1/tool-calls` (#2349): the request must be one the
+// double rang, in the ticket's conversation, and still open — the gateway's
+// rules — and every call that passes them is RECORDED before it is answered,
+// so an injected AfterEffect answer is a call that ran and whose answer was lost.
+func (d *Double) toolCall(w http.ResponseWriter, r *http.Request) {
+	injected, hasInjected := d.next("tool-calls")
+	if hasInjected && !injected.AfterEffect {
+		writeInjected(w, injected)
+		return
+	}
+	conversationID, ok := d.convTicket(w, r, "")
+	if !ok {
+		return
+	}
+	raw := readBody(r)
+	if err := protocol.Validate("tool-call-request", raw); err != nil {
+		d.refuse("tool-call: " + err.Error())
+		fail(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var body protocol.ToolCallRequest
+	_ = json.Unmarshal(raw, &body)
+	d.mu.Lock()
+	request, rung := d.requests[body.RequestID]
+	closed := d.closedReqs[body.RequestID]
+	conversation := d.conversations[conversationID]
+	listed := false
+	var answer ToolAnswer
+	if conversation != nil {
+		for _, tool := range conversation.Tools {
+			listed = listed || tool.Name == body.Name
+		}
+		answer = conversation.ToolResults[body.Name]
+	}
+	admitted := rung && request.conversationID == conversationID && !closed && listed
+	if admitted {
+		d.toolCalls = append(d.toolCalls, ToolCall{
+			RequestID: body.RequestID, ConversationID: conversationID, Name: body.Name, Arguments: body.Arguments,
+		})
+	}
+	d.mu.Unlock()
+	switch {
+	case !rung || request.conversationID != conversationID || !listed:
+		fail(w, http.StatusNotFound, "not_found")
+	case closed:
+		fail(w, http.StatusConflict, "request_closed")
+	case hasInjected:
+		writeInjected(w, injected)
+	default:
+		response := protocol.ToolCallResponse{Result: answer.Result}
+		if response.Result == nil {
+			response.Result = json.RawMessage(`{"ok":true}`)
+		}
+		if answer.CallURN != "" {
+			urn := answer.CallURN
+			response.CallURN = &urn
+		}
+		raw := mustJSON(response)
+		if err := protocol.Validate("tool-call-response", raw); err != nil {
+			panic("gatewaytest: a scripted tool answer is off-contract: " + err.Error())
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(raw)
 	}
 }
 
@@ -694,6 +837,13 @@ func (d *Double) Posts() []Post {
 	return append([]Post(nil), d.posts...)
 }
 
+// ToolCalls returns every tool call that reached the platform (#2349).
+func (d *Double) ToolCalls() []ToolCall {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]ToolCall(nil), d.toolCalls...)
+}
+
 // Closes returns the recorded closes.
 func (d *Double) Closes() []Close {
 	d.mu.Lock()
@@ -720,6 +870,14 @@ func (d *Double) Mints(route string) int {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.mints[route]
+}
+
+// EntriesBudgets is the `budgetTokens` every entries read carried, in order —
+// "" when it carried none.
+func (d *Double) EntriesBudgets() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.entriesBudgets...)
 }
 
 // Reads counts reads by route (`entries`, `opener`).

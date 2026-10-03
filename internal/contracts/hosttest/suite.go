@@ -14,6 +14,8 @@ package hosttest
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -39,6 +41,12 @@ type Subject struct {
 	// Logs is the same host as a LogHost (#2264) — every implementation takes a
 	// machine's log lines, so the log cases run for each one.
 	Logs contracts.LogHost
+	// SeedTool lists one tool in the seeded conversation's catalog (#2349),
+	// whose every call answers ToolAnswer.
+	SeedTool func(contracts.Tool)
+	// ToolAnswer is what the seeded tool's call answers. 🔴 The subject's own
+	// configuration, never built here: a call URN is opaque to the companion.
+	ToolAnswer contracts.ToolResult
 }
 
 // Factory builds a Subject seeded with the standard transcript below.
@@ -77,7 +85,8 @@ func Run(t *testing.T, name string, factory Factory) {
 	t.Run(name, func(t *testing.T) {
 		t.Run("the delta spans the offset and omits only the agent's own", func(t *testing.T) {
 			subject := factory(t)
-			entries, bounded, err := subject.Host.ReadSince(context.Background(), subject.ConversationID, SeedOffset, SeedThrough)
+			read, err := subject.Host.ReadSince(context.Background(), subject.ConversationID, SeedOffset, SeedThrough, 0)
+			entries, bounded := read.Entries, read.Bounded
 			if err != nil {
 				t.Fatalf("ReadSince: %v", err)
 			}
@@ -217,11 +226,56 @@ func Run(t *testing.T, name string, factory Factory) {
 			subject := factory(t)
 			// 🔴 Empty would read as "nothing new", and the agent would answer a
 			// conversation it was never shown.
-			if _, _, err := subject.Host.ReadSince(context.Background(), "conv_absent", "", ""); err == nil {
+			if _, err := subject.Host.ReadSince(context.Background(), "conv_absent", "", "", 0); err == nil {
 				t.Fatal("ReadSince on an unknown conversation returned no error")
 			}
 			if _, err := subject.Host.ReadOpener(context.Background(), "conv_absent", "", 1); err == nil {
 				t.Fatal("ReadOpener on an unknown conversation returned no error")
+			}
+		})
+
+		// 🔴 #2349: a tool call names a request; one no ring delivered is refused
+		// with the contract's own error, so the companion answers `not_permitted`
+		// whichever host is behind it — and sends nothing.
+		t.Run("a tool call on a request never rung is refused", func(t *testing.T) {
+			subject := factory(t)
+			_, err := subject.Host.CallTool(context.Background(), "req_never_rung", "list_boards", json.RawMessage(`{}`))
+			if !errors.Is(err, contracts.ErrUnknownRequest) {
+				t.Fatalf("CallTool on an unrung request = %v, want ErrUnknownRequest", err)
+			}
+		})
+
+		t.Run("the catalog lists what was seeded, and a rung request's call runs", func(t *testing.T) {
+			subject := factory(t)
+			if subject.SeedTool == nil {
+				t.Fatal("the subject cannot seed a tool — every implementation serves the catalog")
+			}
+			subject.SeedTool(contracts.Tool{
+				Name: "list_boards", Description: "List the boards.",
+				Parameters: json.RawMessage(`{"type":"object","properties":{}}`), Permission: "allow",
+			})
+			ctx := context.Background()
+			tools, err := subject.Host.ListTools(ctx, subject.ConversationID)
+			if err != nil || len(tools) != 1 || tools[0].Name != "list_boards" || tools[0].Permission != "allow" {
+				t.Fatalf("ListTools = %+v, %v", tools, err)
+			}
+			claim := openDoorbell(t, subject)
+			t.Cleanup(func() { _ = claim.Close() })
+			// A uuid request id: the protocol's tool-call body requires one.
+			ring := standardRing(subject.ConversationID)
+			ring.RequestID = "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21"
+			if err := subject.DeliverRing(ring); err != nil {
+				t.Fatalf("DeliverRing: %v", err)
+			}
+			result, err := subject.Host.CallTool(ctx, ring.RequestID, "list_boards", json.RawMessage(`{}`))
+			if err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			if subject.ToolAnswer.CallURN == "" {
+				t.Fatal("the subject configured no call URN — the comparison below would be vacuous")
+			}
+			if result.CallURN != subject.ToolAnswer.CallURN || string(result.Result) != string(subject.ToolAnswer.Result) {
+				t.Fatalf("CallTool = %+v, want the configured %+v: a call's URN and result are relayed as given", result, subject.ToolAnswer)
 			}
 		})
 

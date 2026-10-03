@@ -41,6 +41,14 @@ type Script struct {
 	// Logs is what the host answers a logs ticket with; nil is the platform's
 	// default (on, harness at warn).
 	Logs *ScriptLogs `json:"logs,omitempty"`
+	// Tools is the AGENT's tool catalog (#2349), served as written for every
+	// conversation — on the platform the catalog is the agent's, the same in
+	// each conversation it works in. Nil lists none.
+	Tools []ScriptTool `json:"tools,omitempty"`
+	// Results is each tool's scripted answer, by tool name, served verbatim to
+	// every call in any conversation; a listed tool with none answers
+	// `{"ok":true}` and a null `callUrn`.
+	Results map[string]ScriptResult `json:"results,omitempty"`
 }
 
 // ScriptLogs scripts the logs ticket's answer (#2267).
@@ -63,6 +71,51 @@ type Conversation struct {
 	// Entries is the transcript, in cursor order. Already bounded: the platform
 	// bounds, the fixture serves.
 	Entries []ScriptEntry `json:"entries"`
+	// Context is what this conversation's delta read carries (#2331), served as
+	// written — the platform composes it, the fixture only serves it. Nil reads
+	// as an older gateway's answer, with no context at all.
+	Context *ScriptContext `json:"context,omitempty"`
+}
+
+// ScriptResult is one tool's scripted answer. 🔴 CallURN is the script's DATA,
+// never built by the host: a call URN is an opaque string the companion
+// relays. Absent answers null — a call that did not run.
+type ScriptResult struct {
+	CallURN string          `json:"callUrn,omitempty"`
+	Result  json.RawMessage `json:"result"`
+}
+
+// ScriptTool is one tool as the platform lists it.
+type ScriptTool struct {
+	Name        string          `json:"name"`
+	Description string          `json:"description"`
+	Parameters  json.RawMessage `json:"parameters"`
+	Permission  string          `json:"permission"`
+}
+
+// ScriptContext is the platform's composed context, as a script writes it.
+type ScriptContext struct {
+	Blocks  []ScriptContextBlock   `json:"blocks"`
+	Tokens  int                    `json:"tokens"`
+	Bounded bool                   `json:"bounded"`
+	Missing []ScriptContextMissing `json:"missing,omitempty"`
+}
+
+// ScriptContextBlock is one composed level; depth is absent on identity.
+type ScriptContextBlock struct {
+	Name   string `json:"name"`
+	Scope  string `json:"scope"`
+	Depth  *int   `json:"depth,omitempty"`
+	Tokens int    `json:"tokens"`
+	Text   string `json:"text"`
+}
+
+// ScriptContextMissing is a part the platform could not get, with the
+// sentence the agent relays.
+type ScriptContextMissing struct {
+	Part        string `json:"part"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
 }
 
 // ScriptEntry is one transcript entry as the script writes it.
@@ -119,6 +172,10 @@ type Step struct {
 	// expectOffset
 	Cursor string `json:"cursor,omitempty"`
 
+	// expectToolCall
+	Name             string `json:"name,omitempty"`
+	ArgumentsContain string `json:"argumentsContain,omitempty"`
+
 	// injectCancel
 	AfterFirstPost bool `json:"afterFirstPost,omitempty"`
 	AfterMs        int  `json:"afterMs,omitempty"`
@@ -146,6 +203,9 @@ type Assertions struct {
 	Posts          int            `json:"posts"`
 	Closes         map[string]int `json:"closes,omitempty"`
 	Cancels        map[string]int `json:"cancels,omitempty"`
+	// ToolCalls, when present, is exactly how many tool calls reached the host
+	// (#2349) — zero included, so a script can assert that none did.
+	ToolCalls *int `json:"toolCalls,omitempty"`
 	// 🔴 There is deliberately no `unmetExpectations`. It existed, pinned to 0
 	// by the schema and read by nothing — and wiring it into the tally produced
 	// a SECOND note for every miss, restating the list of misses that is already
@@ -167,6 +227,7 @@ var knownSteps = map[string]bool{
 	"disconnectPlugin": true, "expectRedelivery": true,
 	"secondConnection": true, "wait": true,
 	"refuseNextQuestion": true, "restartHarness": true,
+	"expectToolCall": true,
 }
 
 var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}
@@ -313,6 +374,10 @@ func (s *Script) Validate() error {
 			if (step.Matcher == "contains" || step.Matcher == "matches") && step.Value == "" {
 				return fmt.Errorf("fixture: step %d uses matcher %q with no value, which matches everything", i, step.Matcher)
 			}
+		case "expectToolCall":
+			if step.Name == "" {
+				return fmt.Errorf("fixture: step %d expects a tool call with no name, which would match any call", i)
+			}
 		case "expectOffset":
 			if _, ok := s.Conversations[step.Conversation]; !ok {
 				return fmt.Errorf("fixture: step %d asserts the offset of conversation %q, which the script does not declare", i, step.Conversation)
@@ -336,6 +401,25 @@ func (s *Script) Validate() error {
 		}
 		if err := conversation.validateCursors(name); err != nil {
 			return err
+		}
+	}
+	return s.validateTools()
+}
+
+// validateTools refuses a catalog a call could not be answered from truthfully:
+// a tool listed twice, or a scripted result for a tool the catalog does not list
+// — which no call could ever reach, so the script would assert less than it says.
+func (s *Script) validateTools() error {
+	listed := make(map[string]bool, len(s.Tools))
+	for _, tool := range s.Tools {
+		if listed[tool.Name] {
+			return fmt.Errorf("fixture: the script lists tool %q twice", tool.Name)
+		}
+		listed[tool.Name] = true
+	}
+	for tool := range s.Results {
+		if !listed[tool] {
+			return fmt.Errorf("fixture: the script scripts a result for %q, which its tools do not list", tool)
 		}
 	}
 	return nil

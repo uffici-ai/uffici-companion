@@ -195,7 +195,9 @@ func TestEverySchemaIsAFrameTypeOrTheEntry(t *testing.T) {
 	// A schema with no frame and no golden is a specification nothing checks.
 	// Call ops' PAYLOAD schemas are not frames and live apart, under `ops/`
 	// (#2264), pinned to the manifest by ops_test.go — so none may appear here.
-	known := map[string]bool{"entry": true}
+	// The entry and the context are shapes a frame REFERENCES (#2331), each
+	// exercised through the brief's goldens.
+	known := map[string]bool{"entry": true, "context": true}
 	for _, frame := range FrameTypes() {
 		known[frame] = true
 	}

@@ -22,6 +22,8 @@ package contracts
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -79,6 +81,43 @@ type Entry struct {
 	Kind        string
 	Text        string
 	Attachments []Attachment
+}
+
+// Context is what the agent is told before the conversation (#2331): the
+// identity block first, then the organization's and each place's pinned
+// context, composed by the PLATFORM. The companion forwards it one to one and
+// composes nothing; a part the platform could not get is named in Missing.
+type Context struct {
+	Blocks  []ContextBlock
+	Tokens  int
+	Bounded bool
+	Missing []ContextMissing
+}
+
+// ContextBlock is one composed level. Depth is absent on the identity block.
+type ContextBlock struct {
+	Name   string
+	Scope  string
+	Depth  *int
+	Tokens int
+	Text   string
+}
+
+// ContextMissing is a part the brief should have had, with the sentence the
+// agent relays to the person.
+type ContextMissing struct {
+	Part        string
+	Class       string
+	Instruction string
+}
+
+// Read is one delta read: the entries, whether the platform trimmed them, and
+// the context the brief carries — nil when the platform sent none (an older
+// gateway), never an empty stand-in.
+type Read struct {
+	Entries []Entry
+	Bounded bool
+	Context *Context
 }
 
 // Author is who wrote an entry.
@@ -170,9 +209,10 @@ type AgentsHost interface {
 	Ack(ctx context.Context, ringID string) error
 
 	// ReadSince returns the delta for a request: (sinceCursor, throughCursor],
-	// with the answering agent's own entries omitted. `bounded` reports whether
-	// the platform trimmed the range.
-	ReadSince(ctx context.Context, conversationID, sinceCursor, throughCursor string) (entries []Entry, bounded bool, err error)
+	// with the answering agent's own entries omitted, and the context the brief
+	// carries (#2331). `contextBudgetTokens` is the plugin's declared budget,
+	// passed through for the platform to size the context; 0 sends none.
+	ReadSince(ctx context.Context, conversationID, sinceCursor, throughCursor string, contextBudgetTokens int) (Read, error)
 
 	// ReadOpener returns the verbatim recent tail within the harness's declared
 	// budget, INCLUDING the agent's own entries.
@@ -184,9 +224,20 @@ type AgentsHost interface {
 	ReadOpener(ctx context.Context, conversationID, throughCursor string, budgetTokens int) ([]Entry, error)
 
 	// Post sends one outbound message. Every post means "more coming"; the
-	// request closes with CloseRequest. A non-nil question makes the post the
-	// harness ASKING the person (#2232): the text is the question.
-	Post(ctx context.Context, requestID, conversationID, text string, question *Question) (messageID string, err error)
+	// request closes with CloseRequest. Extras, optional, carry what a post may
+	// add: a question makes the post the harness ASKING the person (#2232), and
+	// citations and activity say what the answer rests on (#2349).
+	Post(ctx context.Context, requestID, conversationID, text string, extras *PostExtras) (messageID string, err error)
+
+	// ListTools returns the agent's Uffici tools for one conversation, as the
+	// platform lists them (#2349). A denied tool is never listed.
+	ListTools(ctx context.Context, conversationID string) ([]Tool, error)
+
+	// CallTool makes one tool call on a request this companion was rung for,
+	// under that request's conversation (#2349). 🔴 A tool is not idempotent: an
+	// implementation NEVER sends the call twice once it may have reached the
+	// platform. Arguments and the result are tenant content and never logged.
+	CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (ToolResult, error)
 
 	// CloseRequest closes a request with its outcome, and an error class when
 	// the outcome is an error.
@@ -218,3 +269,43 @@ type Question struct {
 	Choices     []string
 	MultiSelect bool
 }
+
+// PostExtras is what a post may carry beside its text.
+type PostExtras struct {
+	// Question makes the post the harness ASKING the person (#2232).
+	Question *Question
+	// Citations are the `callUrn`s of the agent's own tool calls the answer
+	// rests on (#2349).
+	Citations []string
+	// Activity is what the agent did with its harness's own tools, by name.
+	Activity []Activity
+}
+
+// Activity is one harness-tool use a post reports: a name and a summary, never
+// arguments or a result.
+type Activity struct {
+	Tool    string
+	Summary string
+}
+
+// Tool is one tool the agent may call in a conversation (#2349). Parameters is
+// the tool's JSON Schema as the platform wrote it; Permission is `allow` or
+// `ask`.
+type Tool struct {
+	Name        string
+	Description string
+	Parameters  json.RawMessage
+	Permission  string
+}
+
+// ToolResult is a tool call's answer: the result as the platform returned it
+// (an actionable refusal is a result, never an error), and the call's ledger
+// URN when it ran — empty when it did not.
+type ToolResult struct {
+	CallURN string
+	Result  json.RawMessage
+}
+
+// ErrUnknownRequest is a tool call naming a request this companion was never
+// rung for: refused before anything is sent (#2349).
+var ErrUnknownRequest = errors.New("no ring was received for this request")

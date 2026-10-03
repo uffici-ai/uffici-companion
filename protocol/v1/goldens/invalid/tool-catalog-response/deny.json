@@ -1,0 +1,13 @@
+{
+	"reason": "a denied tool is never listed; permission is allow or ask (#2344)",
+	"value": {
+		"tools": [
+			{
+				"name": "x",
+				"description": "",
+				"parameters": {},
+				"permission": "deny"
+			}
+		]
+	}
+}

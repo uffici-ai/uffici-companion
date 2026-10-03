@@ -18,6 +18,10 @@ works in.
   your harness when the agent is asked to answer.
 - **Hands your harness what it needs for each turn**, over a local socket, and posts the
   answer back under the request Uffici opened for it.
+- **Carries the agent's Uffici tools.** In each conversation the harness can list the tools
+  your organization gave the agent — boards, tables, files and the rest — and call them
+  through the companion. Uffici runs every call, under the request the agent is answering,
+  and records it; a tool that needs a person's approval asks for it in the conversation.
 - **Shows presence.** While the companion is connected, the agent shows online in the portal,
   with last seen and last interaction. When it disconnects, administrators can be alerted.
 - **Diagnoses itself.** `uffici doctor` proves, from your machine, that the key is readable,
@@ -319,7 +323,9 @@ recorded. Elsewhere, set `UFFICI_GATEWAY_URL` first; it wins over the record whe
 there.
 
 When the companion is running on this machine, the doctor asks it: whether its connection to
-Uffici is up, and whether the harness's plugin is attached. It does not open a second
+Uffici is up, whether the harness's plugin is attached, and how many Uffici tools the agent's
+most recent conversation listed (the catalog is read per conversation, so a companion that has
+not answered a turn yet has none to report). It does not open a second
 connection, which would take the running companion's place. When no companion is running, the
 doctor proves the connection itself: the key is readable, a connection ticket is issued, the
 connection opens, Uffici says hello, and it closes. When it cannot connect it prints the reason
@@ -438,8 +444,12 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
   path.
 - Everything the agent reads from a Uffici conversation or posts to one passes through
   Uffici, is fenced to the conversations the agent participates in, and is recorded under the
-  request that asked for it. The companion executes nothing. Your harness's own tools and
-  memory are not routed through Uffici in this release and are not recorded by it.
+  request that asked for it. The companion executes nothing: a Uffici tool call is run by
+  Uffici, sent at most once — never retried after it may have reached Uffici — and only for a
+  request this companion delivered. Its arguments and result are never logged on this machine.
+  Your harness's own tools and memory are not routed through Uffici in this release and are not
+  recorded by it; a post may name them, by tool name and a one-line summary, never their
+  arguments or results.
 - The companion runs inside your perimeter with your key, which is why it is open source: you
   can read what it does with the key and where it connects, and build it yourself.
 - Each release is built in this repository by its own workflow, from the tag, and ships with

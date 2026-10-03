@@ -212,7 +212,7 @@ type CompanionHello struct {
 	AgentSlug        string `json:"agentSlug,omitempty"`
 	OrgSlug          string `json:"orgSlug,omitempty"`
 	// Features is what this companion can carry beyond every v1 companion
-	// (#2232): `question` and `redelivery`. Optional, so an older plugin reads nothing new.
+	// (#2232): `question`, `redelivery` and `tools`. Optional, so an older plugin reads nothing new.
 	Features []string `json:"features,omitempty"`
 }
 
@@ -224,6 +224,10 @@ const FeatureQuestion = "question"
 // interrupted turn on its own declines that resume, or the person is answered twice
 // (#2273).
 const FeatureRedelivery = "redelivery"
+
+// FeatureTools says the plugin may call `tools.list` and `tools.call`, and a post
+// may carry `citations` and `activity` (#2349).
+const FeatureTools = "tools"
 
 // Cause is the recorded human cause a request answers.
 type Cause struct {
@@ -243,6 +247,36 @@ type Brief struct {
 	ThroughCursor  string  `json:"throughCursor"`
 	ResetSession   bool    `json:"resetSession"`
 	Delta          []Entry `json:"delta"`
+	// Context is what the agent is told before the conversation (#2331), as
+	// the platform composed it. Optional: an older companion sends none, and
+	// the plugin then keeps its static hint.
+	Context *Context `json:"context,omitempty"`
+}
+
+// Context is the platform's composed context: the identity block first, then
+// the pinned levels. The companion forwards it one to one.
+type Context struct {
+	Blocks  []ContextBlock   `json:"blocks"`
+	Tokens  int              `json:"tokens"`
+	Bounded bool             `json:"bounded"`
+	Missing []ContextMissing `json:"missing,omitempty"`
+}
+
+// ContextBlock is one level; Depth is absent on the identity block.
+type ContextBlock struct {
+	Name   string `json:"name"`
+	Scope  string `json:"scope"`
+	Depth  *int   `json:"depth,omitempty"`
+	Tokens int    `json:"tokens"`
+	Text   string `json:"text"`
+}
+
+// ContextMissing is a part the brief should have had, with the sentence the
+// agent relays — rendered by the plugin, never dropped.
+type ContextMissing struct {
+	Part        string `json:"part"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
 }
 
 // Ack names the outcome and the harness's session state.
@@ -285,6 +319,18 @@ type Post struct {
 	// Question is present when the harness is ASKING (#2232): the text is the
 	// question, and it reaches the person as the question card.
 	Question *Question `json:"question,omitempty"`
+	// Citations are the `callUrn`s of the agent's own tool calls this answer
+	// rests on; sent only to a companion whose hello lists `tools`.
+	Citations []string `json:"citations,omitempty"`
+	// Activity is what the agent did with its harness's own tools, by name and a
+	// summary — never arguments or results.
+	Activity []Activity `json:"activity,omitempty"`
+}
+
+// Activity is one harness-tool use a post reports.
+type Activity struct {
+	Tool    string `json:"tool"`
+	Summary string `json:"summary"`
 }
 
 // Question is what a harness's question offers.

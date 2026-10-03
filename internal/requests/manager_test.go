@@ -999,3 +999,60 @@ func TestAHarnessRestartingOnEveryBriefEndsInRedeliveryExhausted(t *testing.T) {
 	}
 	t.Fatalf("%d request(s) still open after three restarts — a crash loop would never end", manager.Open())
 }
+
+// 🔴 A declaration the wire admits but the gateway would refuse is clamped, never
+// passed through: an entries read over the gateway's ceiling is a 400 that fails
+// every brief on the machine (#2331).
+func TestAHugeDeclarationAsksForTheGatewaysContextCeiling(t *testing.T) {
+	r := newRig(t, Options{})
+	r.manager.Attach("conn-1", r.sink, 10000000)
+	r.ring(t, "req_1", "c0001", "c0003")
+	if err := r.manager.OnAck(context.Background(), "conn-1", "req_1", AckAccepted, SessionFresh); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	delta, _ := r.host.Budgets()
+	if len(delta) != 1 || delta[0] != ContextMaxBudget {
+		t.Fatalf("the delta read was given budgets %v, want [%d] — the gateway's ceiling", delta, ContextMaxBudget)
+	}
+	if len(r.sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) sent, want the one", len(r.sink.briefs))
+	}
+}
+
+// 🔴 The opener is what the declared budget has LEFT after the brief's context
+// (#2331): both ride the system side of the same turn, and the number is the
+// platform's — the companion estimates nothing.
+func TestTheFreshOpenerIsSizedToWhatTheContextLeft(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		context    *contracts.Context
+		declared   int
+		wantOpener int
+	}{
+		{"a context took 1500 of 4000", &contracts.Context{Tokens: 1500}, 4000, 2500},
+		{"what is left under the platform's floor asks for the floor", &contracts.Context{Tokens: 3500}, 4000, OpenerMinBudget},
+		{"a context over the budget still asks for the floor, never a negative", &contracts.Context{Tokens: 5000}, 4000, OpenerMinBudget},
+		{"no context leaves the whole budget", nil, 4000, 4000},
+		{"a declaration over the platform's ceiling asks for the ceiling", nil, 300000, OpenerMaxBudget},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			r := newRig(t, Options{})
+			r.manager.Attach("conn-1", r.sink, testCase.declared)
+			r.host.SetContext("conv_1", testCase.context)
+			r.ring(t, "req_1", "c0001", "c0003")
+			if err := r.manager.OnAck(context.Background(), "conn-1", "req_1", AckAccepted, SessionFresh); err != nil {
+				t.Fatalf("OnAck: %v", err)
+			}
+			delta, opener := r.host.Budgets()
+			if len(delta) != 1 || delta[0] != testCase.declared/2 {
+				t.Fatalf("the delta read was given budgets %v, want [%d] — HALF the declaration, so the context never crowds out the transcript", delta, testCase.declared/2)
+			}
+			if len(opener) != 1 || opener[0] != testCase.wantOpener {
+				t.Fatalf("the opener was sized %v, want [%d]", opener, testCase.wantOpener)
+			}
+			if got := r.sink.briefs[0].Context; got != testCase.context {
+				t.Fatalf("the brief carried context %+v, want %+v — the platform's, one to one", got, testCase.context)
+			}
+		})
+	}
+}

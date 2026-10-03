@@ -65,8 +65,11 @@ its deadline after a restart.
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
 `orgSlug`. `features`, optional, lists what this companion can carry beyond what
 every v1 companion does, so a newer plugin never sends an older companion a field
-it would drop: `question` means a `post` may carry a question. An absent list
-means none, and a plugin ignores a name it does not know.
+it would drop: `question` means a `post` may carry a question; `redelivery` means
+a restarted harness process is handed again every request its predecessor had
+accepted; `tools` means the plugin may call [`tools.list`](#toolslist) and
+[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. An
+absent list means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
 
@@ -113,12 +116,13 @@ Any frame before `hello` closes the connection with `hello_required`.
 Opens one request on one conversation: `requestId`, `conversationId`, `reason`
 (the platform's ring-reason vocabulary, carried verbatim), `cause` —
 `{entryId, authorId}`, the recorded human cause — `deadline`, `sinceCursor`,
-`throughCursor`, `resetSession` and `delta`.
+`throughCursor`, `resetSession`, `delta` and an optional `context`.
 
 - The `delta` is `(sinceCursor, throughCursor]`, with the answering agent's **own** entries omitted; `sinceCursor` is `null` for a conversation's first brief.
 - `throughCursor` is fixed when the request opens, so a redelivered brief recomputes the same range.
 - `resetSession` is the platform forcing a fresh harness session; the plugin must not resume.
 - The plugin renders the `cause`'s author as the inbound sender and the `reason` as one line.
+- `context` is what the agent is told before the conversation — see [the context](#the-context). A companion that predates it sends none, and the plugin keeps its static hint.
 
 ### `ack` — plugin → companion
 
@@ -146,6 +150,21 @@ offered (at most ten, possibly none for an open question) and `multiSelect`. The
 person's answer arrives as the NEXT brief's delta, like any message, and a typed
 reply answers too. Sent only to a companion whose `hello` lists the `question`
 feature; to any other, a harness falls back to asking in plain text.
+
+`citations`, optional, lists the `callUrn`s of the agent's **own** tool calls the
+answer rests on — at most twenty, each `urn:uffici:tool_call:<n>` as a
+[`tools.call`](#toolscall) result named it. Uffici refuses a citation of a call
+that is not this agent's in this conversation, and the post then fails like any
+refused post: the request is withdrawn with a `failed` cancel carrying Uffici's
+sentence.
+
+`activity`, optional, reports what the agent did with its harness's **own**
+tools — at most twenty `{tool, summary}` pairs, the tool's name (up to 64
+characters) and one line about what it did (up to 280). It is shown marked, as the
+harness's account of itself, and is never treated as a Uffici tool call. Never a
+tool's arguments or its result.
+
+Both are sent only to a companion whose `hello` lists the `tools` feature.
 
 ### `done` — plugin → companion
 
@@ -189,6 +208,31 @@ The plugin hands the companion its own log lines and its harness's. The payload 
 - `disabled: true` means shipping is off, on this machine or for the agent: the plugin drops what it queued and asks again after `retryAfterSeconds`.
 - The payload never reaches a log line, and the companion logs its answer at `debug`, not `info`.
 
+#### `tools.list`
+
+The agent's Uffici tools in one conversation, as Uffici lists them. The payload is
+`{conversationId}`; the result is `{tools}`, at most 512, each `{name, description,
+parameters, permission}`.
+
+- `name` is `^[A-Za-z0-9_-]{1,128}$`; `parameters` is the tool's JSON Schema, as Uffici wrote it, for the harness to offer its model.
+- `permission` is `allow` or `ask`. An `ask` tool needs a person's approval for each call: its first call answers `needs_approval` (below) and the agent ends its turn. A tool the agent may not use is never listed.
+- The companion keeps each conversation's catalog for a minute, so a plugin that lists on every turn does not read it from Uffici every turn. A change to the agent's tools reaches the next turn after that minute.
+- Sent only to a companion whose `hello` lists the `tools` feature.
+
+#### `tools.call`
+
+One tool call on the request the plugin is answering. The payload is `{requestId,
+name, arguments}` — `arguments` an object, `{}` for none; the result is `{callUrn,
+result}`.
+
+- `result` is the tool's answer as Uffici returned it. An **actionable refusal is a result, not an error**: `{"ok": false, "error": "needs_approval", "message": …}` and its kind are for the model to read and act on, and the call answers success.
+- `callUrn` names the call when it ran — `urn:uffici:tool_call:<n>`, which a later `post` may cite — and is `null` when it did not (an approval was asked for).
+- 🔴 **A `requestId` the companion did not deliver is refused** with `not_permitted` and a sentence, and nothing is sent to Uffici. A call answers the request it was made for, under that request's conversation; the companion never chooses one for it.
+- 🔴 **A call is sent at most once.** A tool is not idempotent — "add a card" sent twice adds two cards — so the companion repeats only what happened before Uffici could run anything: obtaining its authorization for the conversation. A failure after the call left is answered as it came, as `upstream_failed` carrying Uffici's own class in `upstream` and Uffici's sentence as the `instruction`. Whether to try again is the agent's decision, told by that sentence.
+- A result too large for the call bound is answered `upstream_failed` with a sentence telling the agent the tool ran and to ask for less — a narrower query, fewer results — and the call's `callUrn` in `upstream`, so the answer can still cite it. Never a truncation.
+- Neither the arguments nor the result reach a log line. The companion logs one line per call: the tool's name, the request and the class.
+- Sent only to a companion whose `hello` lists the `tools` feature.
+
 ### `result` — companion → plugin
 
 The one answer to a `call`. Fields: `callId`, then **exactly one** of `payload` (success) or `error`.
@@ -229,6 +273,20 @@ one**: it maps the platform's bounded read one to one.
 - `author`: `type` (`member`, `agent`, `correspondent`, `system`), `id`, `label`, optional `handle` — the agent's `@slug`, so the model can address it — and `self`, true for the answering agent's own entries.
 - `kind`: `message`, `tool_line`, `tombstone` — **and anything else**, see forward compatibility.
 - `attachments`: `id`, `name`, `ref`. By reference; bytes never ride this wire.
+
+## The context
+
+A brief's `context` is composed by the platform; the companion forwards it one to
+one and composes nothing.
+
+`blocks`, `tokens`, `bounded`, and an optional `missing`.
+
+- `blocks`, in order: the identity block first (`scope` `identity` — the agent is an AI, how the person was told so, and who the agent is), then the organization's context, each folder's from the outermost in, and the conversation's own. Each block has a `name`, a `scope`, an optional `depth`, its `tokens` and its `text` (Markdown, verbatim).
+- `scope` is an open name: a scope the plugin does not know is rendered as a labelled block, never dropped.
+- `tokens` is every block's cost as the platform counted it, the identity block included. The companion asks the platform for a context within HALF the plugin's `contextBudgetTokens`, so the context never crowds out the transcript. On a fresh session it then asks for an `opener` sized to `contextBudgetTokens` minus this number — never below the platform's smallest opener (1,000 tokens) nor above its largest (200,000): a fresh session with no transcript at all would be worse than a brief slightly over the declaration.
+- `bounded` is true when the budget left some of the context out.
+- `missing` names a part the brief should have had and does not — `part`, `class` and the `instruction` the agent relays to the person. The plugin renders each instruction inside the context; it never drops one, because a silent gap would let the agent answer as if it had been told everything. A context the companion receives but cannot read arrives the same way: no blocks, and the context named missing with the platform's own sentence.
+- The plugin places the context on the **system** side of every turn, fresh or resumed, so an edit reaches the next answer — never on the user side, and the opener never on the system side.
 
 ## The per-request state machine
 

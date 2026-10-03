@@ -2,6 +2,7 @@ package fixture
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -37,9 +38,24 @@ type Host struct {
 	refuseQuestion bool
 
 	// Recorded for the terminal tally and for the runner's expectations.
-	acked  []string
-	posts  []PostRecord
-	closes []CloseRecord
+	acked     []string
+	posts     []PostRecord
+	closes    []CloseRecord
+	toolCalls []ToolCallRecord
+	// rung is every request a ring delivered, by id, to its conversation — never
+	// forgotten at close, as the gateway host's memory is not (#2349).
+	rung map[string]string
+}
+
+// ToolCallRecord is one tool call that reached the host (#2349). The arguments
+// are kept for the runner's `argumentsContain`; this is a test double, and
+// they are never logged.
+type ToolCallRecord struct {
+	RequestID      string
+	ConversationID string
+	Name           string
+	Arguments      json.RawMessage
+	At             time.Time
 }
 
 // PostRecord is one forwarded post.
@@ -55,6 +71,9 @@ type PostRecord struct {
 	At             time.Time
 	// Question is set when the post asked the person something (#2232).
 	Question *contracts.Question
+	// Citations and Activity are what the post reported (#2349).
+	Citations []string
+	Activity  []contracts.Activity
 }
 
 // CloseRecord is one closed request.
@@ -92,7 +111,7 @@ func New(script *Script) (*Host, error) {
 	}
 	return &Host{
 		Recorder: recorder,
-		script:   script, store: built, requests: map[string]openRequest{},
+		script:   script, store: built, requests: map[string]openRequest{}, rung: map[string]string{},
 	}, nil
 }
 
@@ -137,9 +156,16 @@ func (h *Host) Ack(_ context.Context, ringID string) error {
 	return nil
 }
 
-// ReadSince returns the delta for a request.
-func (h *Host) ReadSince(_ context.Context, conversationID, since, through string) ([]contracts.Entry, bool, error) {
-	return h.store.readSince(conversationID, since, through)
+// ReadSince returns the delta for a request, and the context the script gave
+// the conversation (#2331).
+func (h *Host) ReadSince(_ context.Context, conversationID, since, through string, contextBudgetTokens int) (contracts.Read, error) {
+	return h.store.readSince(conversationID, since, through, contextBudgetTokens)
+}
+
+// ContextBudgets is every context budget a delta read was given, in order —
+// what the companion passed through from the plugin's hello.
+func (h *Host) ContextBudgets() []int {
+	return h.store.contextBudgets()
 }
 
 // ReadOpener returns the recent tail, including the agent's own entries.
@@ -148,22 +174,72 @@ func (h *Host) ReadOpener(_ context.Context, conversationID, through string, bud
 }
 
 // Post records one outbound message and returns its id.
-func (h *Host) Post(_ context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
+func (h *Host) Post(_ context.Context, requestID, conversationID, text string, extras *contracts.PostExtras) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("fixture: Post needs a request and a conversation")
 	}
+	if extras == nil {
+		extras = &contracts.PostExtras{}
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if question != nil && h.refuseQuestion {
+	if extras.Question != nil && h.refuseQuestion {
 		h.refuseQuestion = false
 		return "", errQuestionRefused
 	}
 	h.posts = append(h.posts, PostRecord{
 		RequestID: requestID, ConversationID: conversationID, Text: text, At: time.Now(),
-		Question: question,
+		Question: extras.Question, Citations: extras.Citations, Activity: extras.Activity,
 	})
 	return fmt.Sprintf("msg_%03d", len(h.posts)), nil
 }
+
+// ListTools serves the agent's scripted catalog (#2349) — the same for every
+// conversation the script declares, as the platform's is the agent's.
+func (h *Host) ListTools(_ context.Context, conversationID string) ([]contracts.Tool, error) {
+	return h.store.toolsFor(conversationID)
+}
+
+// CallTool records one tool call and answers the script's scripted
+// result and `callUrn` (#2349) — the URN is the script's data, never built here. A request no ring delivered is refused before anything is
+// recorded, as the gateway host refuses it before anything is sent; a tool
+// the catalog does not list is the platform's `not_found`.
+func (h *Host) CallTool(_ context.Context, requestID, name string, arguments json.RawMessage) (contracts.ToolResult, error) {
+	h.mu.Lock()
+	conversationID, known := h.rung[requestID]
+	h.mu.Unlock()
+	if !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	scripted, listed, err := h.store.toolResult(conversationID, name)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	if !listed {
+		return contracts.ToolResult{}, errToolNotFound
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.toolCalls = append(h.toolCalls, ToolCallRecord{
+		RequestID: requestID, ConversationID: conversationID, Name: name,
+		Arguments: append(json.RawMessage(nil), arguments...), At: time.Now(),
+	})
+	return contracts.ToolResult{CallURN: scripted.CallURN, Result: scripted.Result}, nil
+}
+
+// toolNotFound is the platform's answer to a call naming a tool the catalog does
+// not list: a class and a sentence, like every host failure (decision 32).
+type toolNotFound struct{}
+
+func (toolNotFound) Error() string { return "fixture: the agent has no such tool" }
+
+func (toolNotFound) ErrorClass() string { return "not_found" }
+
+func (toolNotFound) ErrorInstruction() string {
+	return "That tool is not available in this conversation; tell the person it could not be done."
+}
+
+var errToolNotFound error = toolNotFound{}
 
 // CloseRequest closes a request and commits the offset when — and only when —
 // the outcome earns it.
@@ -213,6 +289,7 @@ func (h *Host) DeliverRing(ring contracts.Ring) error {
 		conversationID: ring.ConversationID,
 		throughCursor:  ring.ThroughCursor,
 	}
+	h.rung[ring.RequestID] = ring.ConversationID
 	h.rings++
 	h.mu.Unlock()
 
@@ -285,6 +362,13 @@ func (h *Host) Posts() []PostRecord {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return append([]PostRecord(nil), h.posts...)
+}
+
+// ToolCalls returns the tool calls that reached the host so far (#2349).
+func (h *Host) ToolCalls() []ToolCallRecord {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]ToolCallRecord(nil), h.toolCalls...)
 }
 
 // Closes returns the closed requests so far.

@@ -30,11 +30,11 @@ type closeCall struct {
 	errorClass string
 }
 
-func (f *failingHost) ReadSince(ctx context.Context, conversationID, since, through string) ([]contracts.Entry, bool, error) {
+func (f *failingHost) ReadSince(ctx context.Context, conversationID, since, through string, budget int) (contracts.Read, error) {
 	if f.readErr != nil {
-		return nil, false, f.readErr
+		return contracts.Read{}, f.readErr
 	}
-	return f.Host.ReadSince(ctx, conversationID, since, through)
+	return f.Host.ReadSince(ctx, conversationID, since, through, budget)
 }
 
 func (f *failingHost) ReadOpener(ctx context.Context, conversationID, through string, budget int) ([]contracts.Entry, error) {
@@ -44,11 +44,11 @@ func (f *failingHost) ReadOpener(ctx context.Context, conversationID, through st
 	return f.Host.ReadOpener(ctx, conversationID, through, budget)
 }
 
-func (f *failingHost) Post(ctx context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
+func (f *failingHost) Post(ctx context.Context, requestID, conversationID, text string, extras *contracts.PostExtras) (string, error) {
 	if f.postErr != nil {
 		return "", f.postErr
 	}
-	return f.Host.Post(ctx, requestID, conversationID, text, question)
+	return f.Host.Post(ctx, requestID, conversationID, text, extras)
 }
 
 func (f *failingHost) CloseRequest(ctx context.Context, requestID string, outcome contracts.Outcome, errorClass string) error {

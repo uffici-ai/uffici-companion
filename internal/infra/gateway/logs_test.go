@@ -86,7 +86,7 @@ func TestLogTrafficRidesItsOwnTransport(t *testing.T) {
 	if err != nil || result.Accepted != 2 {
 		t.Fatalf("PushLogs: %+v %v", result, err)
 	}
-	if _, _, err := host.ReadSince(ctx, conversationID, "1040", "1040"); err != nil {
+	if _, err := host.ReadSince(ctx, conversationID, "1040", "1040", 0); err != nil {
 		t.Fatalf("ReadSince: %v", err)
 	}
 
@@ -137,7 +137,7 @@ func TestAHeldPushNeverBlocksTheControlPlane(t *testing.T) {
 	if path := <-logs.started; path != "/v1/logs" {
 		t.Fatalf("expected the push in flight, saw %s", path)
 	}
-	if _, _, err := host.ReadSince(ctx, conversationID, "1040", "1040"); err != nil {
+	if _, err := host.ReadSince(ctx, conversationID, "1040", "1040", 0); err != nil {
 		t.Fatalf("the control plane waited on a held push: %v", err)
 	}
 	select {
@@ -235,7 +235,7 @@ func TestBusyTracksTheControlPlaneOnly(t *testing.T) {
 	if host.Busy() {
 		t.Fatal("log traffic made the control plane look busy")
 	}
-	if _, _, err := host.ReadSince(ctx, conversationID, "1040", "1040"); err != nil {
+	if _, err := host.ReadSince(ctx, conversationID, "1040", "1040", 0); err != nil {
 		t.Fatal(err)
 	}
 	if !host.Busy() {

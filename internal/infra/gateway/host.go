@@ -340,26 +340,103 @@ func (h *Host) markAcked(ringID string) {
 	}
 }
 
-// ReadSince reads a request's delta: (since, through], the agent's own omitted.
-func (h *Host) ReadSince(ctx context.Context, conversationID, since, through string) ([]contracts.Entry, bool, error) {
+// ReadSince reads a request's delta: (since, through], the agent's own omitted,
+// and the context the brief carries (#2331). The plugin's declared budget rides
+// along for the platform to size the context; 0 sends none.
+func (h *Host) ReadSince(ctx context.Context, conversationID, since, through string, contextBudgetTokens int) (contracts.Read, error) {
 	if since == "" {
 		// The contract's empty cursor is "from the beginning"; the protocol's is 0.
 		since = "0"
 	}
-	var answer protocol.ReadResponse
+	query := url.Values{"since": {since}, "through": {through}}
+	if contextBudgetTokens > 0 {
+		query.Set("budgetTokens", strconv.Itoa(contextBudgetTokens))
+	}
+	// The context is decoded on its own: a malformed one must not cost the
+	// brief, so it shadows the struct's typed field as raw bytes here.
+	var answer struct {
+		protocol.ReadResponse
+		Context json.RawMessage `json:"context"`
+	}
 	err := h.api.ticketed(ctx, conversationID, http.MethodGet,
 		"/v1/conversations/"+url.PathEscape(conversationID)+"/entries",
-		url.Values{"since": {since}, "through": {through}}, nil, &answer, controlAttempts, h.sleep)
+		query, nil, &answer, controlAttempts, h.sleep)
 	if err != nil {
 		h.logFailure("read", err)
-		return nil, false, err
+		return contracts.Read{}, err
 	}
 	if answer.Identity == nil {
 		// 🔴 The gateway refuses a read without it; one that arrives anyway is
 		// not the protocol, and a brief short of its identity floor is not sent.
-		return nil, false, localError(ClassPlatformError, http.StatusOK)
+		return contracts.Read{}, localError(ClassPlatformError, http.StatusOK)
 	}
-	return toEntries(answer.Entries), answer.Bounded, nil
+	return contracts.Read{
+		Entries: toEntries(answer.Entries),
+		Bounded: answer.Bounded,
+		Context: h.decodeContext(answer.Context),
+	}, nil
+}
+
+// Wire bounds the context must fit (wire/v1/schema/context.schema.json) — the
+// protocol admits more, and a brief over them would be refused by the plugin.
+const (
+	maxContextBlocks  = 64
+	maxContextMissing = 16
+)
+
+// KnowledgeUnavailableInstruction is the platform's sentence for a context it could
+// not deliver — the agents protocol's `knowledge_unavailable` instruction, verbatim.
+const KnowledgeUnavailableInstruction = "The organization's and this place's context were unavailable because of a system problem; tell the person you are working without them."
+
+// unreadableContext stands in for a context that arrived but could not be read: no
+// blocks, and the missing part NAMED — so the agent tells the person, rather than
+// working on as though nothing were missing (decision 32).
+func unreadableContext() *contracts.Context {
+	return &contracts.Context{
+		Blocks: []contracts.ContextBlock{},
+		Missing: []contracts.ContextMissing{{
+			Part: "context", Class: "knowledge_unavailable", Instruction: KnowledgeUnavailableInstruction,
+		}},
+	}
+}
+
+// decodeContext reads the platform's context: nil when ABSENT (an older gateway — the
+// plugin keeps its static hint), and an UNREADABLE one — not the protocol's shape, or
+// over the wire's bounds — becomes a context that names the missing part. 🔴 Never a
+// failed read, and never silent. Logged by class, never by text.
+func (h *Host) decodeContext(raw json.RawMessage) *contracts.Context {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var decoded protocol.Context
+	if protocol.Validate("context", raw) != nil || json.Unmarshal(raw, &decoded) != nil ||
+		len(decoded.Blocks) > maxContextBlocks || len(decoded.Missing) > maxContextMissing {
+		h.log.Warn("the read's context is not the protocol's shape; the brief names it missing",
+			slog.String("class", "knowledge_unavailable"))
+		return unreadableContext()
+	}
+	return toContext(&decoded)
+}
+
+// toContext maps the platform's context one to one — the companion composes
+// nothing. Absent stays nil: an older gateway sends none, and the plugin then
+// keeps its static hint rather than an empty stand-in.
+func toContext(in *protocol.Context) *contracts.Context {
+	if in == nil {
+		return nil
+	}
+	out := &contracts.Context{Tokens: in.Tokens, Bounded: in.Bounded}
+	for _, b := range in.Blocks {
+		out.Blocks = append(out.Blocks, contracts.ContextBlock{
+			Name: b.Name, Scope: b.Scope, Depth: b.Depth, Tokens: b.Tokens, Text: b.Text,
+		})
+	}
+	for _, m := range in.Missing {
+		out.Missing = append(out.Missing, contracts.ContextMissing{
+			Part: m.Part, Class: m.Class, Instruction: m.Instruction,
+		})
+	}
+	return out
 }
 
 // ReadOpener reads the recent tail within the harness's declared budget.
@@ -382,7 +459,7 @@ func (h *Host) ReadOpener(ctx context.Context, conversationID, through string, b
 // Post sends one message. The `postId` is minted here, once per call, and every
 // retry of the call carries the same one — so a post that reached the platform
 // but whose answer was lost is answered with the same message, never a second.
-func (h *Host) Post(ctx context.Context, requestID, conversationID, text string, question *contracts.Question) (string, error) {
+func (h *Host) Post(ctx context.Context, requestID, conversationID, text string, extras *contracts.PostExtras) (string, error) {
 	if requestID == "" || conversationID == "" {
 		return "", fmt.Errorf("gateway: Post needs a request and a conversation")
 	}
@@ -390,19 +467,86 @@ func (h *Host) Post(ctx context.Context, requestID, conversationID, text string,
 	if err != nil {
 		return "", err
 	}
+	body := protocol.PostRequest{PostID: postID, RequestID: requestID, Text: text, Audience: "external"}
+	if extras != nil {
+		body.Question = toPostQuestion(extras.Question)
+		body.Citations = extras.Citations
+		for _, a := range extras.Activity {
+			body.Activity = append(body.Activity, protocol.PostActivity{Tool: a.Tool, Summary: a.Summary})
+		}
+	}
 	var answer protocol.PostResponse
 	err = h.api.ticketed(ctx, conversationID, http.MethodPost,
-		"/v1/conversations/"+url.PathEscape(conversationID)+"/posts", nil,
-		protocol.PostRequest{
-			PostID: postID, RequestID: requestID, Text: text, Audience: "external",
-			Question: toPostQuestion(question),
-		},
+		"/v1/conversations/"+url.PathEscape(conversationID)+"/posts", nil, body,
 		&answer, controlAttempts, h.sleep)
 	if err != nil {
 		h.logFailure("post", err)
 		return "", err
 	}
 	return answer.MessageID, nil
+}
+
+// ListTools reads the agent's tool catalog for one conversation (#2349), under
+// that conversation's ticket. A read: retried like every other.
+func (h *Host) ListTools(ctx context.Context, conversationID string) ([]contracts.Tool, error) {
+	if conversationID == "" {
+		return nil, fmt.Errorf("gateway: ListTools needs a conversation")
+	}
+	var answer protocol.ToolCatalogResponse
+	err := h.api.ticketed(ctx, conversationID, http.MethodGet,
+		"/v1/conversations/"+url.PathEscape(conversationID)+"/tools", nil, nil, &answer, controlAttempts, h.sleep)
+	if err != nil {
+		h.logFailure("tool_catalog", err)
+		return nil, err
+	}
+	if answer.Tools == nil {
+		// The protocol requires the list; an answer without it is not the protocol.
+		return nil, localError(ClassPlatformError, http.StatusOK)
+	}
+	tools := make([]contracts.Tool, 0, len(answer.Tools))
+	for _, tool := range answer.Tools {
+		tools = append(tools, contracts.Tool{
+			Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters, Permission: tool.Permission,
+		})
+	}
+	return tools, nil
+}
+
+// CallTool makes one tool call on a request this companion was rung for, under
+// the ticket of that request's conversation (#2349).
+//
+// 🔴 A request this process never saw rung is refused HERE, before any ticket
+// mint or call: its conversation is unknown, and a plugin naming one is not
+// answering anything this companion delivered.
+//
+// 🔴 Sent at most once. A tool is not idempotent — "add a card" sent twice adds
+// two — so only what provably happened BEFORE the platform could run it is
+// retried: the ticket mint, and a ticket the gateway refused (it refuses before
+// it runs anything). A failure after the body left is answered as it came.
+func (h *Host) CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (contracts.ToolResult, error) {
+	conversationID, known := h.conversationOf(requestID)
+	if !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	if len(arguments) == 0 {
+		arguments = json.RawMessage("{}")
+	}
+	var answer protocol.ToolCallResponse
+	err := h.api.ticketedOnce(ctx, conversationID, http.MethodPost, "/v1/tool-calls",
+		protocol.ToolCallRequest{RequestID: requestID, Name: name, Arguments: arguments},
+		&answer, controlAttempts, h.sleep)
+	if err != nil {
+		h.logFailure("tool_call", err)
+		return contracts.ToolResult{}, err
+	}
+	if len(answer.Result) == 0 {
+		return contracts.ToolResult{}, localError(ClassPlatformError, http.StatusOK)
+	}
+	result := contracts.ToolResult{Result: answer.Result}
+	if answer.CallURN != nil {
+		result.CallURN = *answer.CallURN
+	}
+	return result, nil
 }
 
 // CloseRequest closes a request with its outcome.
@@ -474,6 +618,11 @@ var closeClassOf = map[string]string{
 	"redelivery_exhausted": "harness_error",
 	"post_too_large":       "over_budget",
 	"post_cap_exceeded":    "over_budget",
+	// A post the platform refused for citing a tool call that is not the agent's
+	// own in that conversation (#2348): the harness answered wrongly, which is
+	// a harness error, never `refused` (the agent declining). Named here so the
+	// mapping is a decision, not the default's accident.
+	"invalid_citation": "harness_error",
 }
 
 // PlatformErrorClass maps a companion or plugin error class onto the platform's

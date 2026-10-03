@@ -1,0 +1,24 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/tool-call-response.schema.json",
+	"title": "tool-call-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"callUrn": {
+			"anyOf": [
+				{
+					"type": "string",
+					"pattern": "^urn:uffici:tool_call:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+				},
+				{
+					"type": "null"
+				}
+			]
+		},
+		"result": {}
+	},
+	"required": [
+		"callUrn",
+		"result"
+	]
+}

@@ -22,7 +22,26 @@
       "additionalProperties": { "$ref": "#/$defs/conversation" }
     },
     "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/step" } },
-    "assert": { "$ref": "#/$defs/assertions" }
+    "assert": { "$ref": "#/$defs/assertions" },
+    "tools": {
+      "description": "The AGENT's tool catalog, as the platform lists it (the wire's tools.list result), served for every conversation: on the platform the catalog is the agent's, the same in each conversation it works in. Absent: the agent has no tools.",
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/tool" }
+    },
+    "results": {
+      "description": "Each tool's scripted answer, by tool name, given verbatim to every call of it, in any conversation: the result, and the callUrn that names the call (absent: null, a call that did not run). A listed tool with no answer answers {\"ok\": true} and a null callUrn; an answer for a tool the catalog does not list is refused at load.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["result"],
+        "additionalProperties": false,
+        "properties": {
+          "callUrn": { "type": "string", "minLength": 1 },
+          "result": {}
+        }
+      }
+    }
   },
   "$defs": {
     "conversation": {
@@ -35,7 +54,59 @@
           "type": "string",
           "description": "The companion's agent's committed position, the exclusive lower bound of the next delta. Advances only on an answered or empty close. EMPTY is legitimate and means nothing has been read yet, so the first delta covers the whole transcript."
         },
-        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } }
+        "entries": { "type": "array", "items": { "$ref": "#/$defs/entry" } },
+        "context": { "$ref": "#/$defs/context" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "description", "parameters", "permission"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+        "description": { "type": "string", "maxLength": 16000 },
+        "parameters": { "type": "object" },
+        "permission": { "enum": ["allow", "ask"] }
+      }
+    },
+    "context": {
+      "description": "What the scripted host answers with this conversation's delta read: the platform's composed context, as the brief carries it (the wire's context.schema.json). Absent: the read carries none, as from an older gateway.",
+      "type": "object",
+      "required": ["blocks", "tokens", "bounded"],
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "required": ["name", "scope", "tokens", "text"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+              "scope": { "type": "string", "pattern": "^[a-z][a-z_]{0,31}$" },
+              "depth": { "type": "integer", "minimum": 0, "maximum": 64 },
+              "tokens": { "type": "integer", "minimum": 0 },
+              "text": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "tokens": { "type": "integer", "minimum": 0 },
+        "bounded": { "type": "boolean" },
+        "missing": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "required": ["part", "class", "instruction"],
+            "additionalProperties": false,
+            "properties": {
+              "part": { "type": "string", "pattern": "^[a-z][a-z_]{0,31}$" },
+              "class": { "type": "string", "pattern": "^[a-z][a-z_]{0,63}$" },
+              "instruction": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
       }
     },
     "entry": {
@@ -99,6 +170,7 @@
             "secondConnection",
             "refuseNextQuestion",
             "restartHarness",
+            "expectToolCall",
             "wait"
           ]
         },
@@ -114,6 +186,8 @@
         "matcher": { "enum": ["nonEmpty", "contains", "matches", "question"] },
         "value": { "type": "string" },
         "cursor": { "type": "string" },
+        "name": { "type": "string", "minLength": 1 },
+        "argumentsContain": { "type": "string", "minLength": 1 },
         "afterFirstPost": { "type": "boolean" },
         "afterMs": { "type": "integer", "minimum": 0 },
         "withinMs": { "type": "integer", "minimum": 0 },
@@ -143,6 +217,11 @@
         "posts": { "type": "integer", "minimum": 0 },
         "closes": { "$ref": "#/$defs/counts" },
         "cancels": { "$ref": "#/$defs/counts" },
+        "toolCalls": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many tool calls reached the scripted host — zero included."
+        },
         "note": {
           "type": "string",
           "maxLength": 2000,

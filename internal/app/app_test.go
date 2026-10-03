@@ -18,6 +18,7 @@ import (
 	ws "github.com/coder/websocket"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
+	"github.com/uffici-ai/uffici-companion/internal/logship"
 	"github.com/uffici-ai/uffici-companion/internal/registry"
 	"github.com/uffici-ai/uffici-companion/internal/runner"
 )
@@ -443,13 +444,13 @@ func TestTheLogReportCountsBySourceAndFindsTheToken(t *testing.T) {
 			{Source: "other", Message: "ignored source"},
 		}},
 	}
-	got := logReportOf(batches, token)
+	got := logReportOf(batches, token, nil)
 	want := LogReport{Companion: 1, Plugin: 1, Harness: 3, Redactions: 3, TokenLeaks: 3}
 	if got != want {
 		t.Fatalf("logReportOf = %+v, want %+v", got, want)
 	}
 	// No token (a run that never minted one) finds nothing, rather than everything.
-	if leaks := logReportOf(batches, "").TokenLeaks; leaks != 0 {
+	if leaks := logReportOf(batches, "", nil).TokenLeaks; leaks != 0 {
 		t.Fatalf("an empty token matched %d lines", leaks)
 	}
 }
@@ -466,8 +467,44 @@ func TestTheLogReportCountsTheCanariesBySource(t *testing.T) {
 		{Source: "plugin", Message: "an ordinary line", Redactions: 9},
 		{Source: "harness", Message: canaryMessage + "[redacted] " + token, Redactions: 1},
 	}}}
-	if got := logReportOf(batches, token).Canaries; got != 1 {
+	if got := logReportOf(batches, token, nil).Canaries; got != 1 {
 		t.Fatalf("canaries = %d, want 1: only the companion's shipped redacted", got)
+	}
+}
+
+// 🔴 #2313: a restart counts only when the harness's own warning, logged inside
+// its window, was shipped — an info line, another source's warning, a warning
+// from the new process after the old connection closed, or a window whose close
+// was never seen all leave it silent.
+func TestTheLogReportCountsTheRestartsThatShippedTheirLastWords(t *testing.T) {
+	at := time.Date(2026, 10, 3, 0, 13, 15, 384_500_000, time.UTC)
+	ms := func(n int) string { return logship.FormatTS(at.Add(time.Duration(n) * time.Millisecond)) }
+	restarts := []runner.Window{
+		{From: at, To: at.Add(2 * time.Second)},
+		{From: at.Add(10 * time.Second), To: at.Add(12 * time.Second)},
+		{From: at.Add(20 * time.Second)},
+	}
+	batches := []contracts.LogBatch{{Entries: []contracts.LogEntry{
+		// Window 0: its millisecond opens it, so a warning in that millisecond is in.
+		{TS: ms(0), Source: "harness", Level: "warn", Message: "Shutdown context: signal=SIGTERM"},
+		// Window 1: an info line, a plugin warning, then the new process's startup
+		// warning after the close — none of them the dying harness's warning.
+		{TS: ms(10_500), Source: "harness", Level: "info", Message: "draining"},
+		{TS: ms(10_600), Source: "plugin", Level: "warn", Message: "disconnecting"},
+		{TS: ms(12_001), Source: "harness", Level: "warn", Message: "No env user allowlists"},
+		// Its close's own millisecond: possibly logged just after it, so never credited.
+		{TS: ms(12_000), Source: "harness", Level: "warn", Message: "logged as the close was seen"},
+		// Window 2 never saw the old connection close.
+		{TS: ms(20_500), Source: "harness", Level: "error", Message: "drain timed out"},
+	}}}
+	got := logReportOf(batches, "", restarts)
+	if got.Restarts != 3 || got.RestartsWithLastWords != 1 {
+		t.Fatalf("restarts %d with last words %d, want 3 and 1", got.Restarts, got.RestartsWithLastWords)
+	}
+	batches[0].Entries = append(batches[0].Entries,
+		contracts.LogEntry{TS: ms(11_000), Source: "harness", Level: "error", Message: "drain timed out"})
+	if got := logReportOf(batches, "", restarts).RestartsWithLastWords; got != 2 {
+		t.Fatalf("restarts with last words %d, want 2 once window 1 holds an error", got)
 	}
 }
 
@@ -532,11 +569,13 @@ func TestTheVerdictReportsCountsAndMissesAndNoContent(t *testing.T) {
 	report(logger, runner.Result{
 		RingsDelivered: 0,
 		Unmet:          []string{"step 3 (expectPost): no post satisfying contains \"filed\""},
-		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1},
+		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1, ToolCalls: 3},
 	})
 
 	logged := sink.String()
-	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered"} {
+	// 🔴 `"toolCalls":3`: the plugin's release e2e and the platform's read the
+	// tool-call count from this line by that name (#2349).
+	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered", `"toolCalls":3`} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the verdict never mentions %q:\n%s", want, logged)
 		}

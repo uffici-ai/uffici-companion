@@ -9,6 +9,7 @@ package hostsuite_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
@@ -21,6 +22,12 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/infra/memory"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
 )
+
+// suiteToolAnswer is what every subject's seeded tool answers. The URN is
+// configured here, in a test, because the companion never builds one.
+var suiteToolAnswer = contracts.ToolResult{
+	CallURN: "urn:uffici:tool_call:77", Result: json.RawMessage(`{"boards":[]}`),
+}
 
 func TestEveryAgentsHostSatisfiesTheContract(t *testing.T) {
 	implementations := map[string]hosttest.Factory{
@@ -59,6 +66,15 @@ func fixtureSubject(t *testing.T) hosttest.Subject {
 		Conversations: map[string]*fixture.Conversation{
 			"seeded": {ID: "conv_1", Offset: hosttest.SeedOffset, Entries: entries},
 		},
+		// The suite's one tool, scripted up front: a script's catalog is fixed
+		// when the host is built, and it is the agent's, not a conversation's.
+		Tools: []fixture.ScriptTool{{
+			Name: "list_boards", Description: "List the boards.",
+			Parameters: json.RawMessage(`{"type":"object","properties":{}}`), Permission: "allow",
+		}},
+		Results: map[string]fixture.ScriptResult{
+			"list_boards": {CallURN: suiteToolAnswer.CallURN, Result: suiteToolAnswer.Result},
+		},
 		Steps: []fixture.Step{{
 			Step: "ring", Conversation: "seeded", Reason: "mentioned",
 			CauseEntry: "e4", ThroughCursor: hosttest.SeedThrough,
@@ -74,6 +90,9 @@ func fixtureSubject(t *testing.T) hosttest.Subject {
 		OffsetOf:       func() (string, error) { return host.OffsetOf("seeded") },
 		ConversationID: "conv_1",
 		Logs:           host,
+		// Already in the script above; the suite seeds the same tool.
+		SeedTool:   func(contracts.Tool) {},
+		ToolAnswer: suiteToolAnswer,
 	}
 }
 
@@ -88,6 +107,11 @@ func memorySubject(t *testing.T) hosttest.Subject {
 		OffsetOf:       func() (string, error) { return host.OffsetOf("conv_1") },
 		ConversationID: "conv_1",
 		Logs:           host,
+		SeedTool: func(tool contracts.Tool) {
+			host.SetTools("conv_1", []contracts.Tool{tool})
+			host.SetToolResult(tool.Name, suiteToolAnswer)
+		},
+		ToolAnswer: suiteToolAnswer,
 	}
 }
 
@@ -160,6 +184,14 @@ func gatewaySubject(t *testing.T) hosttest.Subject {
 		OffsetOf:       func() (string, error) { return double.OffsetOf(conversationID) },
 		ConversationID: conversationID,
 		Logs:           host,
+		SeedTool: func(tool contracts.Tool) {
+			double.SetTools(conversationID, []protocol.ToolDescriptor{{
+				Name: tool.Name, Description: tool.Description, Parameters: tool.Parameters, Permission: tool.Permission,
+			}}, map[string]gatewaytest.ToolAnswer{
+				tool.Name: {CallURN: suiteToolAnswer.CallURN, Result: suiteToolAnswer.Result},
+			})
+		},
+		ToolAnswer: suiteToolAnswer,
 	}
 }
 

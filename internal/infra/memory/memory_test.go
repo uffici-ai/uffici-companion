@@ -45,7 +45,7 @@ func TestTheStubCountsItsReads(t *testing.T) {
 	host.Seed("conv_1", "", []contracts.Entry{{ID: "e1", Cursor: "c0001", Kind: "message"}})
 	ctx := context.Background()
 
-	if _, _, err := host.ReadSince(ctx, "conv_1", "", ""); err != nil {
+	if _, err := host.ReadSince(ctx, "conv_1", "", "", 0); err != nil {
 		t.Fatalf("ReadSince: %v", err)
 	}
 	if _, err := host.ReadOpener(ctx, "conv_1", "", 10); err != nil {

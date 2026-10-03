@@ -68,6 +68,16 @@ type Health struct {
 	// Logs is the log shipper's state, for `uffici doctor` (#2264): counts and
 	// words only — never a line, never the ticket.
 	Logs *HealthLogs `json:"logs,omitempty"`
+	// Tools is what the companion last read of the agent's tools, for `uffici
+	// doctor` (#2349): a count, never a name or a schema. Absent until a plugin
+	// first lists them — the catalog is read per conversation.
+	Tools *HealthTools `json:"tools,omitempty"`
+}
+
+// HealthTools is the most recently listed catalog's size.
+type HealthTools struct {
+	// Listed is how many tools the most recent conversation's catalog held.
+	Listed int `json:"listed"`
 }
 
 // HealthLogs is what the running companion says about shipping its log lines.
