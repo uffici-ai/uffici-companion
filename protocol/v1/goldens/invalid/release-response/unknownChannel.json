@@ -1,0 +1,7 @@
+{
+	"reason": "the channel is one of develop, uac, main (#2382)",
+	"value": {
+		"channel": "staging",
+		"version": "0.9.0"
+	}
+}

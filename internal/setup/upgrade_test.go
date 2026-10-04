@@ -167,6 +167,9 @@ func newUpgradeRig(t *testing.T, current, installedPlugin string) *upgradeRig {
 		},
 		Runner:  r.runner,
 		Release: r.rs.release,
+		// The gateway names no version unless a test says otherwise: the
+		// latest-release path every test before #2382 was written against.
+		Gateway: noGatewayVersion,
 		Exec: func(binary string, args []string) error {
 			r.execs = append(r.execs, append([]string{binary}, args...))
 			return nil
@@ -503,7 +506,7 @@ func TestUpgradeRefusalsAlongTheWay(t *testing.T) {
 		t.Fatal("an archive without uffici was read")
 	}
 	r := newUpgradeRig(t, "0.4.0", "0.4.0")
-	if _, err := targetVersion(context.Background(), r.opts, CompanionRepo, "latest-please"); err == nil {
+	if _, err := targetVersion(context.Background(), r.opts, CompanionRepo, "latest-please", ""); err == nil {
 		t.Fatal("a malformed pin was accepted")
 	}
 	// No release published: the latest cannot be read, and the run says so.

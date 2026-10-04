@@ -1,0 +1,32 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/release-response.schema.json",
+	"title": "release-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"channel": {
+			"type": "string",
+			"enum": [
+				"develop",
+				"uac",
+				"main"
+			]
+		},
+		"version": {
+			"anyOf": [
+				{
+					"type": "string",
+					"pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$"
+				},
+				{
+					"type": "null"
+				}
+			]
+		}
+	},
+	"required": [
+		"channel",
+		"version"
+	],
+	"additionalProperties": false
+}

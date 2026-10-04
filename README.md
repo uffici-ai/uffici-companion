@@ -57,15 +57,17 @@ curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/ins
 
 It does, in order:
 
-1. Downloads the companion for your platform from the latest release, checks it against the
-   release's checksum list, and installs it as `~/.local/bin/uffici`.
+1. Asks your agents gateway which release its machines run (see
+   [Which version you get](#which-version-you-get)), downloads the companion for your
+   platform from that release, checks it against the release's checksum list, and installs
+   it as `~/.local/bin/uffici`.
 2. Pairs it with your agent, using the code in the line: the key arrives sealed to this
    machine, and nobody has to approve anything — the administrator who asked for the line
    chose the agent. The code works once and for ten minutes; after that, get a new line from
    the **Connect** tab.
 3. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
    and starts it — or restarts it, if it was already running.
-4. Downloads the plugin for your harness from that plugin's own release, checks it, installs
+4. Downloads the plugin for your harness from the same release of that plugin, checks it, installs
    it into the harness, switches the Uffici platform on in the harness's configuration, and
    points the plugin at the companion.
 5. Asks whether to restart the harness so it loads the plugin, and restarts it on a yes —
@@ -94,33 +96,70 @@ companion and the plugin and keeps the key it has.
 ### Upgrade it
 
 ```sh
-uffici upgrade           # the companion and the plugin, to their latest releases
+uffici upgrade           # the companion and the plugin, to the release your gateway names
 uffici upgrade --check   # only say what is installed and what is released
 ```
 
 `uffici upgrade` needs no flags: `uffici setup` remembers the harness, its home and your agents
-host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the latest companion
-for this machine, verifies it against the release's checksum list and swaps it in beside the
+host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the companion release
+your agents gateway names (see [Which version you get](#which-version-you-get)) for this machine, verifies it against the release's checksum list and swaps it in beside the
 old one, so a failed download or check leaves the installed binary untouched. The new binary
-then installs the plugin from its latest release, sets the harness's configuration again,
+then installs the plugin from the same release, sets the harness's configuration again,
 restarts the companion's service, asks whether to restart the harness (as setup does, and
 only when it runs as a service; otherwise it tells you how), runs the doctor, and prints
 what moved from which version to which. It keeps the agent key and never pairs.
 
-- `--check` changes nothing: it exits 0 when everything is current and 10 when an upgrade
-  exists, so a scheduled job can ask.
+- `--check` changes nothing: it names the gateway, the channel and the version that gateway
+  names, and exits 0 when everything is current and 10 when an upgrade exists, so a
+  scheduled job can ask.
 - `--restart-harness` restarts the harness without asking; `--no-restart-harness` never
   does. With neither and no terminal — a scheduled job — the harness is left alone, so a
   scheduled upgrade that should restart it passes `--restart-harness`. Both flags arrived in
   0.6.0: an older installed companion refuses them, so upgrade from it with plain
   `uffici upgrade`, and the new binary asks at the terminal.
 - `--dry-run` says every step and does none.
-- It never downgrades. `--version X.Y.Z` (and `--plugin-version X.Y.Z`) installs a given
-  release on purpose, including over a build newer than the latest.
+- It follows the version your gateway names up or down. When it falls back to the latest
+  release, it never downgrades. `--version X.Y.Z` (and `--plugin-version X.Y.Z`) installs a
+  given release on purpose, including over a build newer than the latest.
+- `--gateway-url <url>` asks a different agents gateway, and remembers it for the service and
+  for the next run.
 - A machine set up before `setup.json` existed has nothing to read: run `uffici setup` once
   (with `--no-pair`, it keeps the key), then upgrade from then on.
 - While a repository is private, set `UFFICI_GITHUB_TOKEN` in the environment, as for the
   install.
+
+### Which version you get
+
+Your agents gateway names the release its machines run, and every run — the install line,
+`uffici setup` and `uffici upgrade` — asks it first. That version is installed exactly, for
+the companion and the plugin alike: when your environment moves forward your machine follows,
+and when it is rolled back your machine is rolled back with it. The order is:
+
+1. A version you pin: `--version` and `--plugin-version` (or `UFFICI_VERSION` for the
+   install line).
+2. The version your agents gateway names.
+3. The latest release, when the gateway cannot be reached or names no version. On this path
+   an upgrade never downgrades.
+
+Every run prints one line saying which of these chose the version, and why. `uffici upgrade
+--check` and `uffici doctor` show the channel and the version the gateway names. A release's
+files are published a few minutes after the release is named, so a machine that upgrades in
+that window is told that the release has no files yet and to try again in a few minutes;
+nothing on the machine changes.
+
+### Which gateway
+
+The install line, `uffici setup`, `uffici upgrade` and `uffici run` use the agents gateway
+named by, in this order:
+
+1. `--gateway-url <url>`.
+2. `UFFICI_GATEWAY_URL` in the environment.
+3. The gateway `uffici setup` recorded in `$UFFICI_HOME/setup.json`.
+4. `https://agents.uffici.ai`.
+
+Each run prints the gateway it uses and where it came from before it pairs or downloads
+anything. Whichever answered is written into the service and into `setup.json`, so a machine
+that took the default says so afterwards.
 
 **Without a code in the line** — a machine you pair by hand — the pairing step prints a code
 instead, which an administrator approves in the portal (see
@@ -160,7 +199,8 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `uffici setup` flag | Meaning |
 | --- | --- |
 | `--harness <kind>` | Install the plugin for this harness (`hermes`). Omit to install no plugin. |
-| `--gateway-url <url>` | Your agents host. `UFFICI_GATEWAY_URL` in the environment works too. |
+| `--gateway-url <url>` | Your agents gateway. Default: `UFFICI_GATEWAY_URL`, then the one recorded here, then `https://agents.uffici.ai` (see [Which gateway](#which-gateway)). |
+| `--version <x.y.z>` | The release this machine runs; the plugin follows it. The install line passes the version it downloaded. Default: the version your gateway names, else the latest. |
 | `--harness-home <dir>` | Where the harness keeps its files, if not where its own variable or default says. |
 | `--pairing-code <XXXX-XXXX>` | The pairing code from the portal's line. Pairs with no approval and no question, and pairs again over a key already in place (a re-pair). |
 | `--no-pair` | Skip pairing: the key is already in place, or mounted from a Secret. |
@@ -168,7 +208,7 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `--yes` | Pair without asking which agent and organization the key is for, and restart the harness without asking. |
 | `--restart-harness` | Restart the harness once its plugin is installed, without asking — only where it runs as its own user service. |
 | `--no-restart-harness` | Never restart the harness; say how to instead. Wins over `--yes`. |
-| `--plugin-version <x.y.z>` | Pin the plugin release. Default: the latest. |
+| `--plugin-version <x.y.z>` | Pin the plugin release. Default: `--version`, else the version your gateway names, else the latest. |
 | `--dry-run` | Print every action and perform none. Without `--pairing-code`, a key already in place is kept. |
 | `--home <dir>` | The companion's own directory, `~/.uffici` by default. |
 | `--harness-version <v>` | The harness's version, shown to the administrator who approves the pairing. |
@@ -342,7 +382,7 @@ The companion reads its environment once, at start.
 | Setting | Meaning |
 | --- | --- |
 | `UFFICI_AGENTS_HOST` | A **kind**, not an address: `gateway` (Uffici) or `fixture` (a scripted stand-in, for testing a plugin). Unset means `fixture`, so set `gateway` to reach Uffici. Anything else exits with status `2`. |
-| `UFFICI_GATEWAY_URL` | The agents host's HTTPS origin: the address your organization was given. Required with `gateway`, including for `setup`. `pair` and `doctor` fall back to the address `uffici setup` recorded for the same home. |
+| `UFFICI_GATEWAY_URL` | The agents gateway's HTTPS origin: the address your organization was given. `setup`, `upgrade` and `run` fall back to the address `uffici setup` recorded for the same home, then to `https://agents.uffici.ai` (see [Which gateway](#which-gateway)); `pair` and `doctor` fall back to the recorded address. |
 | `UFFICI_HOME` | The companion's directory: the key, the instance id, the wire socket and token. Default `~/.uffici`; the container image uses `/var/lib/uffici`. |
 | `$UFFICI_HOME/agent-key` | The agent key, mode `600`. A world- or group-readable file is refused, never repaired. |
 | `UFFICI_AGENT_KEY` | The key as an environment value, **only** for a pod mounting it from a Secret. The file wins when both exist. |

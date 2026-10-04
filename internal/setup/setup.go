@@ -34,10 +34,17 @@ type Options struct {
 	// HarnessHome overrides the manifest's `homeEnv` / `defaultHome`.
 	HarnessHome string
 	// GatewayURL is the agents host; required unless both the service and the
-	// pairing are skipped.
-	GatewayURL string
-	// PluginVersion pins the plugin release; empty is the latest.
-	PluginVersion string
+	// pairing are skipped. The caller resolves it (ResolveGateway) and says in
+	// GatewayFrom where it came from, for the line that names it (#2382).
+	GatewayURL, GatewayFrom string
+	// PluginVersion pins the plugin release. Version is the release the
+	// installer chose for the whole train (`--version`), which the plugin
+	// follows when it is not pinned itself. With neither, the version the agents
+	// gateway names, else the latest (#2382).
+	PluginVersion, Version string
+	// Gateway asks the agents gateway which release its machines run; nil asks
+	// through the plugin's Release (Release.GatewayVersion).
+	Gateway func(ctx context.Context, gatewayURL string) (GatewayRelease, error)
 	// PairingCode is the code in the command the portal gave (#2209). With it,
 	// pairing runs even when a key is already in place: running a fresh command
 	// is how a machine is re-paired. Secret-class — never printed here.
@@ -81,6 +88,24 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 	if opts.GatewayURL == "" && (!opts.NoService || !opts.NoPair) {
 		_, _ = fmt.Fprintln(out, "uffici setup: --gateway-url (or UFFICI_GATEWAY_URL) is required: the service and the pairing both need the agents host's address")
 		return ExitConfig
+	}
+	// Which gateway, and from where, BEFORE anything pairs or downloads (#2382).
+	if opts.GatewayURL != "" {
+		_, _ = fmt.Fprintf(out, "agents gateway: %s (%s)\n", opts.GatewayURL, NonEmpty(opts.GatewayFrom, "from --gateway-url"))
+	}
+	// The plugin's version: a pin, else the train's, else what the gateway names,
+	// else the latest — and one line saying which path chose it.
+	if opts.Harness != "" {
+		opts.PluginVersion = NonEmpty(opts.PluginVersion, opts.Version)
+		if opts.PluginVersion == "" {
+			ask := opts.Gateway
+			if ask == nil {
+				ask = opts.Release("uffici-for-" + opts.Harness).GatewayVersion
+			}
+			choice := askGateway(ctx, ask, opts.GatewayURL)
+			_, _ = fmt.Fprintln(out, choice.Line())
+			opts.PluginVersion = choice.version()
+		}
 	}
 	// Every step is announced BEFORE it runs — the person reads what is about to
 	// happen, and a step that hangs is named — and confirmed after.
@@ -223,6 +248,9 @@ type installedPlugin struct {
 func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(string, func() error) error) (installedPlugin, error) {
 	repo := "uffici-for-" + opts.Harness
 	release := opts.Release(repo)
+	if opts.PluginVersion != "" {
+		release.Version = opts.PluginVersion
+	}
 	asset := repo + ".tar.gz"
 	_, _ = fmt.Fprintf(out, "fetching %s from %s\n", asset, release.Describe())
 	data, err := release.FetchVerified(ctx, asset)

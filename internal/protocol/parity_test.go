@@ -188,6 +188,7 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"post-response":                PostResponse{},
 		"read-response":                ReadResponse{},
 		"release":                      Release{},
+		"release-response":             ReleaseResponse{},
 		"ring":                         Ring{},
 		"ticket-response":              TicketResponse{},
 		"tool-call-request":            ToolCallRequest{},

@@ -15,6 +15,11 @@ import (
 // doctorTimeout bounds the whole probe.
 const doctorTimeout = 20 * time.Second
 
+// releaseLineTimeout bounds the doctor's release line on its OWN clock: a slow
+// or unreachable gateway must not spend the probe's budget and turn the
+// companion's own checks into timeouts.
+const releaseLineTimeout = 10 * time.Second
+
 // doctorPoll is how often the doctor re-reads a running companion that has not
 // connected yet.
 const doctorPoll = 500 * time.Millisecond
@@ -42,6 +47,9 @@ type DoctorOptions struct {
 	// binary, and an answer from the process being replaced (launchd's bootout
 	// is asynchronous) says nothing about the new one.
 	ExpectVersion string
+	// Release names what the agents gateway names for its machines — the
+	// channel and the version (#2382); nil prints no release line.
+	Release func(ctx context.Context) string
 }
 
 // Doctor is DoctorWith and no options: what `uffici doctor` runs by hand.
@@ -71,6 +79,11 @@ func DoctorWith(ctx context.Context, config Config, out io.Writer, options Docto
 	_, _ = fmt.Fprintln(out, "uffici doctor")
 	say("agents host", config.GatewayURL)
 
+	if options.Release != nil {
+		releaseCtx, cancelRelease := context.WithTimeout(ctx, releaseLineTimeout)
+		say("release", options.Release(releaseCtx))
+		cancelRelease()
+	}
 	probeCtx, cancel := context.WithTimeout(ctx, doctorTimeout)
 	defer cancel()
 	if health, running := runningCompanion(probeCtx, config, options); running {

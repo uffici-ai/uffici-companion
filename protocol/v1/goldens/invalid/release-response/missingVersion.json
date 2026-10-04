@@ -1,0 +1,6 @@
+{
+	"reason": "the version is always present — null when the environment names none (#2382)",
+	"value": {
+		"channel": "develop"
+	}
+}

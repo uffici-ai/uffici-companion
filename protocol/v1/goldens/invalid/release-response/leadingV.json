@@ -1,0 +1,7 @@
+{
+	"reason": "a version is how the uffici tags spell it after the v — never `v0.9.0` (#2382)",
+	"value": {
+		"channel": "main",
+		"version": "v0.9.0"
+	}
+}
