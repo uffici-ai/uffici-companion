@@ -649,9 +649,11 @@ func TestAHeldRingDoesNotBurnARedeliveryAttempt(t *testing.T) {
 type attachingHost struct {
 	*memory.Host
 	onRead func()
+	reads  int
 }
 
 func (a *attachingHost) ReadSince(ctx context.Context, conversationID, since, through string, budget int) (contracts.Read, error) {
+	a.reads++
 	if a.onRead != nil {
 		hook := a.onRead
 		a.onRead = nil
@@ -788,6 +790,123 @@ func TestABriefLostOnAReplacedConnectionIsSentOnTheNewOne(t *testing.T) {
 	})
 	if len(replacement.briefs) != 1 {
 		t.Fatalf("%d brief(s) reached the replacement connection, want 1 — the request was stranded", len(replacement.briefs))
+	}
+}
+
+func TestARequestCancelledDuringAFailedSendIsNotRetriedOnTheReplacement(t *testing.T) {
+	// #2373: the platform cancels the request while its send is blocked on the
+	// dying connection, the replacement attaches, then the send fails. The
+	// retry of #2372 is owed only to a request still open — a cancelled one
+	// would reach the plugin as a brief after its cancel. Nothing is read
+	// for it a second time, and the lost send is no error: nothing is owed.
+	ctx := context.Background()
+	replacement := newRecorder()
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{})
+	dying := &droppingSink{recorder: newRecorder()}
+	var request *Request
+	dying.during = func() {
+		manager.mu.Lock()
+		request = manager.byID["req_1"]
+		manager.mu.Unlock()
+		if err := manager.OnPlatformCancel(ctx, "req_1", contracts.CancelStop); err != nil {
+			t.Errorf("OnPlatformCancel: %v", err)
+		}
+		manager.Detach("conn-1")
+		manager.Attach("conn-2", replacement, 48000)
+		if err := manager.RedeliverOpen(ctx); err != nil {
+			t.Errorf("RedeliverOpen: %v", err)
+		}
+	}
+	manager.Attach("conn-1", dying, 48000)
+
+	err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	})
+	if len(replacement.briefs) != 0 {
+		t.Fatalf("%d brief(s) reached the replacement connection, want 0 — the request was cancelled", len(replacement.briefs))
+	}
+	if host.reads != 1 {
+		t.Fatalf("the delta was read %d times, want 1 — a cancelled request was retried", host.reads)
+	}
+	if err != nil {
+		t.Fatalf("OnRing: %v, want nil for a request already withdrawn", err)
+	}
+	manager.mu.Lock()
+	briefing := request.briefing
+	manager.mu.Unlock()
+	if briefing {
+		t.Fatal("the cancelled request kept its in-flight mark")
+	}
+}
+
+func TestABriefLostOnTheSameConnectionIsAnErrorAndTheRequestStaysOpen(t *testing.T) {
+	// #2373 review: an OPEN request whose send fails with no replacement
+	// attached is a real lost brief — reported as an error, its in-flight mark
+	// cleared so the next attach's RedeliverOpen picks it up.
+	ctx := context.Background()
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{})
+	dying := &droppingSink{recorder: newRecorder()}
+	var request *Request
+	host.onRead = func() {
+		manager.mu.Lock()
+		request = manager.byID["req_1"]
+		manager.mu.Unlock()
+	}
+	manager.Attach("conn-1", dying, 48000)
+
+	err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	})
+	if err == nil {
+		t.Fatal("OnRing returned nil, want the lost brief's error")
+	}
+	manager.mu.Lock()
+	briefing, open := request.briefing, !request.State.Terminal()
+	manager.mu.Unlock()
+	if briefing {
+		t.Fatal("the request kept its in-flight mark after its send failed")
+	}
+	if !open {
+		t.Fatal("the request was closed by a lost brief, want it open for the next attach")
+	}
+}
+
+func TestARequestCancelledDuringTheDeltaReadIsNotBriefed(t *testing.T) {
+	// #2373 (the single-delivery half): the platform cancels the request while
+	// its delta is being read. The plugin has been told it is cancelled, so no
+	// brief may follow.
+	ctx := context.Background()
+	sink := newRecorder()
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{})
+	manager.Attach("conn-1", sink, 48000)
+	var request *Request
+	host.onRead = func() {
+		manager.mu.Lock()
+		request = manager.byID["req_1"]
+		manager.mu.Unlock()
+		if err := manager.OnPlatformCancel(ctx, "req_1", contracts.CancelStop); err != nil {
+			t.Errorf("OnPlatformCancel: %v", err)
+		}
+	}
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if len(sink.briefs) != 0 {
+		t.Fatalf("%d brief(s) went out for a request cancelled during its read, want 0", len(sink.briefs))
+	}
+	manager.mu.Lock()
+	briefing := request.briefing
+	manager.mu.Unlock()
+	if briefing {
+		t.Fatal("the cancelled request kept its in-flight mark")
 	}
 }
 

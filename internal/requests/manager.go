@@ -353,13 +353,20 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 
 	m.mu.Lock()
 	sink, connID := m.sink, m.connID
-	if sink == nil {
+	withdrawn := request.State.Terminal()
+	if sink == nil || withdrawn {
 		// 🔴 Cleared in the SAME critical section that found no sink: an Attach
 		// after this point is followed by a RedeliverOpen that sees the request
 		// unmarked and briefs it, so a held ring is never stranded (#2372).
 		request.briefing = false
 	}
 	m.mu.Unlock()
+	if withdrawn {
+		// Cancelled while its delta was read: the plugin was told, so no brief
+		// follows the cancel (#2373). A cancel landing during the send itself
+		// cannot be stopped here; advanceLocked drops that one afterwards.
+		return nil
+	}
 	if sink == nil {
 		// No plugin attached: the request stays open and is delivered when one
 		// arrives. It is NOT an error — a harness restarting is ordinary.
@@ -382,15 +389,22 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		// 🔴 A send that failed because ANOTHER connection replaced this one keeps
 		// its claim and goes out on the new one (#2372): that connection's
 		// RedeliverOpen skipped the request while this send was in flight, so
-		// nothing else would — it would sit until its deadline and expire.
+		// nothing else would — it would sit until its deadline and expire. A
+		// request cancelled while the send was blocked is owed nothing (#2373).
 		m.mu.Lock()
-		replaced := m.sink != nil && m.connID != connID
+		withdrawn := request.State.Terminal()
+		replaced := m.sink != nil && m.connID != connID && !withdrawn
 		if !replaced {
 			request.briefing = false
 		}
 		m.mu.Unlock()
 		if replaced {
 			return m.deliver(ctx, request)
+		}
+		if withdrawn {
+			// The cancel already reached the plugin; the lost send is not a
+			// failure of anything still owed (#2373).
+			return nil
 		}
 		return fmt.Errorf("sending the brief for %s: %w", request.RequestID, err)
 	}
