@@ -35,8 +35,14 @@ type UpgradeOptions struct {
 	// DryRun announces every step and performs none.
 	DryRun bool
 	// Version pins the companion release; PluginVersion the plugin's. Empty is
-	// the latest.
+	// the version the agents gateway names, else the latest (#2382).
 	Version, PluginVersion string
+	// GatewayURL is the --gateway-url flag; empty resolves it from the
+	// environment, the setup record, then DefaultGatewayURL (ResolveGateway).
+	GatewayURL string
+	// Gateway asks an agents gateway which release its machines run; nil asks
+	// through the companion's Release (Release.GatewayVersion).
+	Gateway func(ctx context.Context, gatewayURL string) (GatewayRelease, error)
 	// Current is this binary's version.
 	Current string
 	// FromVersion is the version the previous binary had, when this run is the
@@ -93,12 +99,29 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 		return fail("%v", err)
 	}
 
+	// ── Which gateway, and which version it names (#2382) ───────────────────
+	gateway, from := ResolveGateway(opts.GatewayURL, opts.Env, record.GatewayURL)
+	gatewayChanged := gateway != record.GatewayURL
+	say("agents gateway: %s (%s)", gateway, from)
+	// The gateway's version is a pin: it moves the machine up OR down, so a
+	// rolled-back environment rolls its machines back. Only the latest-release
+	// path refuses a downgrade. Asked once, and only when something is unpinned.
+	var choice releaseChoice
+	if opts.Version == "" || (record.Harness != "" && NonEmpty(opts.PluginVersion, opts.Version) == "") {
+		ask := opts.Gateway
+		if ask == nil {
+			ask = opts.Release(CompanionRepo, "").GatewayVersion
+		}
+		choice = askGateway(ctx, ask, gateway)
+		say("%s", choice.Line())
+	}
+
 	// ── What is installed, and what is released ─────────────────────────────
-	companionTarget, err := targetVersion(ctx, opts, CompanionRepo, opts.Version)
+	companionTarget, err := targetVersion(ctx, opts, CompanionRepo, opts.Version, choice.version())
 	if err != nil {
 		return fail("%v", err)
 	}
-	companionMove, err := decide("the companion", opts.Current, companionTarget, opts.Version != "")
+	companionMove, err := decide("the companion", opts.Current, companionTarget, NonEmpty(opts.Version, choice.version()) != "")
 	if err != nil {
 		say("uffici upgrade: %v", err)
 		return ExitConfig
@@ -108,11 +131,14 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 	if record.Harness != "" {
 		plugin.repo = "uffici-for-" + record.Harness
 		plugin.installed = installedPluginVersion(record)
-		plugin.target, err = targetVersion(ctx, opts, plugin.repo, opts.PluginVersion)
+		// One train: a pinned companion pins the plugin too, unless the plugin
+		// was pinned on its own — the same rule setup follows.
+		pluginPin := NonEmpty(opts.PluginVersion, opts.Version)
+		plugin.target, err = targetVersion(ctx, opts, plugin.repo, pluginPin, choice.version())
 		if err != nil {
 			return fail("%v", err)
 		}
-		plugin.move, err = decide("the plugin", plugin.installed, plugin.target, opts.PluginVersion != "")
+		plugin.move, err = decide("the plugin", plugin.installed, plugin.target, NonEmpty(pluginPin, choice.version()) != "")
 		if err != nil {
 			say("uffici upgrade: %v", err)
 			return ExitConfig
@@ -148,7 +174,7 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 		}
 		return ExitOK
 	}
-	if !companionMove && !plugin.move && opts.FromVersion == "" && stale == "" {
+	if !companionMove && !plugin.move && opts.FromVersion == "" && stale == "" && !gatewayChanged {
 		say("Everything is current; nothing to do.")
 		return ExitOK
 	}
@@ -164,6 +190,19 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 		}
 		say("done: %s", what)
 		return nil
+	}
+
+	// The resolved gateway is remembered BEFORE any handover, so the new binary
+	// — which gets no --gateway-url — resolves the same one.
+	if gatewayChanged {
+		if err := do(fmt.Sprintf("remember the agents gateway %s in %s", gateway, filepath.Join(opts.CompanionHome, RecordFile)), func() error {
+			changed := record
+			changed.GatewayURL = gateway
+			return WriteRecord(opts.CompanionHome, changed)
+		}); err != nil {
+			return fail("remembering the setup: %v", err)
+		}
+		record.GatewayURL = gateway
 	}
 
 	// ── The companion: replace the binary, then hand over ───────────────────
@@ -198,7 +237,7 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 
 	// ── The plugin, its settings, and the restarts ──────────────────────────
 	setupOpts := Options{
-		Harness: record.Harness, HarnessHome: record.HarnessHome, GatewayURL: record.GatewayURL,
+		Harness: record.Harness, HarnessHome: record.HarnessHome, GatewayURL: gateway,
 		PluginVersion: plugin.target, DryRun: opts.DryRun,
 		// 🔴 The machine's log settings as the last setup wrote them: an upgrade
 		// rewrites the unit, and must not quietly turn shipping back on.
@@ -208,11 +247,12 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 		Release: func(repo string) Release { return opts.Release(repo, plugin.target) },
 	}
 	// A new binary only runs once the service restarts; the service unit is
-	// rewritten too, so it names this binary and this agents host. FIRST, so a
-	// plugin step that fails cannot leave the old daemon running.
+	// rewritten too, so it names this binary and this agents host — and a new
+	// agents host alone rewrites it. FIRST, so a plugin step that fails cannot
+	// leave the old daemon running.
 	companionChanged := opts.FromVersion != "" || stale != ""
 	switch {
-	case companionChanged && record.Service:
+	case (companionChanged || gatewayChanged) && record.Service:
 		if err := installService(ctx, setupOpts, do); err != nil {
 			return fail("%v", err)
 		}
@@ -264,28 +304,35 @@ type pluginState struct {
 	move                    bool
 }
 
-// targetVersion is the pinned version, or the repository's latest.
-func targetVersion(ctx context.Context, opts UpgradeOptions, repo, pinned string) (string, error) {
+// targetVersion is the pinned version, else the one the agents gateway names,
+// else the repository's latest (#2382).
+func targetVersion(ctx context.Context, opts UpgradeOptions, repo, pinned, gatewayVersion string) (string, error) {
 	if pinned != "" {
 		if _, ok := parseVersion(pinned); !ok {
 			return "", fmt.Errorf("%q is not a release version (like 1.2.3)", pinned)
 		}
-		return pinned, nil
+		return strings.TrimPrefix(pinned, "v"), nil
+	}
+	if gatewayVersion != "" {
+		return gatewayVersion, nil
 	}
 	return opts.Release(repo, "").LatestVersion(ctx)
 }
 
-// decide reports whether what moves from installed to target, refusing a
-// downgrade that was not asked for by pinning a version.
+// decide reports whether what moves from installed to target. A pinned target
+// — a flag, or the version the agents gateway names — is installed exactly, up
+// or down (#2382); only the latest release refuses a downgrade.
 func decide(what, installed, target string, pinned bool) (bool, error) {
 	if installed == "" {
 		return true, nil
 	}
+	if pinned {
+		// By name, not by order: two prereleases of one release (`-dev.3`,
+		// `-dev.4`) are different builds that parseVersion ranks alike.
+		return strings.TrimPrefix(installed, "v") != target, nil
+	}
 	have, ok := parseVersion(installed)
 	if !ok {
-		if pinned {
-			return true, nil
-		}
 		return false, fmt.Errorf("%s is %s, a development build rather than a release; pass the version to install (like --version %s) to replace it anyway", what, installed, target)
 	}
 	want, _ := parseVersion(target)
@@ -293,9 +340,6 @@ func decide(what, installed, target string, pinned bool) (bool, error) {
 	case 0:
 		return false, nil
 	case 1:
-		if pinned {
-			return true, nil
-		}
 		return false, fmt.Errorf("%s is %s, newer than the latest release %s — upgrade never downgrades; pin the version to install one on purpose", what, installed, target)
 	default:
 		return true, nil
@@ -618,6 +662,13 @@ func parseVersion(v string) ([4]int, bool) {
 		out[3] = 1
 	}
 	return out, true
+}
+
+// IsReleaseVersion reports whether v is a release version (`1.2.3`,
+// `1.2.3-rc.1`), as every comparison here reads one.
+func IsReleaseVersion(v string) bool {
+	_, ok := parseVersion(v)
+	return ok
 }
 
 func compareVersions(a, b [4]int) int {

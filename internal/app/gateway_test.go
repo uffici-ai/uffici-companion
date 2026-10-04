@@ -541,3 +541,29 @@ func TestTheDoctorWaitsForTheVersionItExpects(t *testing.T) {
 		t.Fatalf("RunningCompanionVersion answered %q, %v", version, ok)
 	}
 }
+
+// The release line runs on its own clock (#2382's review): a gateway slow to
+// answer the release question must not spend the probe's budget.
+func TestTheDoctorsReleaseLineHasItsOwnBudget(t *testing.T) {
+	double := gatewaytest.New()
+	t.Cleanup(double.Close)
+	config := doctorConfig(t, double)
+	startDaemon(t, config)
+	waitUntil(t, "the doorbell", double.Connected)
+
+	var releaseDeadline time.Time
+	out := &syncBuffer{}
+	release := func(ctx context.Context) string {
+		releaseDeadline, _ = ctx.Deadline()
+		return "develop, 0.10.0-dev.4"
+	}
+	if code := DoctorWith(context.Background(), config, out, DoctorOptions{AwaitCompanion: time.Second, Release: release}); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, out.String())
+	}
+	if releaseDeadline.IsZero() || time.Until(releaseDeadline) > releaseLineTimeout {
+		t.Fatalf("the release line ran on the probe's clock (deadline in %s), not its own %s", time.Until(releaseDeadline), releaseLineTimeout)
+	}
+	if !strings.Contains(out.String(), "release      develop, 0.10.0-dev.4") {
+		t.Fatalf("no release line:\n%s", out.String())
+	}
+}

@@ -64,6 +64,8 @@ func newFor(t *testing.T, schema string) any {
 		return &PostResponse{}
 	case "read-response":
 		return &ReadResponse{}
+	case "release-response":
+		return &ReleaseResponse{}
 	case "ring":
 		return &Ring{}
 	case "ticket-response":

@@ -480,6 +480,7 @@ type rig struct {
 	home   string // the harness home
 	paired int
 	doctor int
+	rs     *releaseServer
 }
 
 func newRig(t *testing.T, manifest map[string]any, dryRun bool) *rig {
@@ -493,7 +494,7 @@ func newRig(t *testing.T, manifest map[string]any, dryRun bool) *rig {
 	rs := newReleaseServer(t, "uffici-for-hermes", "", map[string][]byte{"uffici-for-hermes.tar.gz": body, ChecksumsFile: sums})
 	userHome := t.TempDir()
 	harnessHome := filepath.Join(userHome, ".hermes")
-	r := &rig{runner: &recorder{answers: map[string]string{"hermes config env-path": filepath.Join(harnessHome, "custom.env") + "\n"}, fail: map[string]bool{}}, out: &bytes.Buffer{}, home: harnessHome}
+	r := &rig{runner: &recorder{answers: map[string]string{"hermes config env-path": filepath.Join(harnessHome, "custom.env") + "\n"}, fail: map[string]bool{}}, out: &bytes.Buffer{}, home: harnessHome, rs: rs}
 	r.opts = Options{
 		Harness: "hermes", HarnessVersion: "0.21.5", GatewayURL: "https://agents.example", DryRun: dryRun,
 		GOOS: "linux", UserHome: userHome, CompanionHome: filepath.Join(userHome, ".uffici"), Binary: "/opt/uffici", UID: "1000",
@@ -506,6 +507,7 @@ func newRig(t *testing.T, manifest map[string]any, dryRun bool) *rig {
 		},
 		Runner:  r.runner,
 		Release: func(repo string) Release { return rs.release(repo, "") },
+		Gateway: noGatewayVersion,
 		Pair:    func(context.Context) int { r.paired++; return ExitOK },
 		Doctor:  func(context.Context) int { r.doctor++; return ExitOK },
 	}

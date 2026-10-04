@@ -65,6 +65,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// failure reads as "the harness never attached" when it was simply slow.
 	attachWait := flags.Duration("attach-wait", runner.AttachWait,
 		"how long --once waits for a plugin whose harness is ready")
+	gatewayURL := flags.String("gateway-url", "", "the agents gateway's https origin (default $UFFICI_GATEWAY_URL, then the one uffici setup recorded, then "+setup.DefaultGatewayURL+")")
 
 	// `uffici run --fixture …` — the verb is optional so both spellings work.
 	if len(args) > 0 && args[0] == "run" {
@@ -93,7 +94,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		config.Transport = contracts.TransportSocket
 	}
 
-	resolved, err := app.LoadConfig(os.Getenv, config)
+	environment, line, err := daemonEnvironment(*gatewayURL, *home, os.Getenv)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici: %v\n", err)
+		return app.ExitConfig
+	}
+	if line != "" {
+		_, _ = fmt.Fprintf(stderr, "uffici: %s\n", line)
+	}
+	resolved, err := app.LoadConfig(environment, config)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "uffici: %v\n", err)
 		return app.ExitConfig
@@ -172,18 +181,7 @@ func terminalConfirm(out io.Writer) func(string) (bool, bool) {
 func gatewayEnvironment(home string, getenv func(string) string) app.Env {
 	recorded := ""
 	if strings.TrimSpace(getenv("UFFICI_GATEWAY_URL")) == "" {
-		// A kind that needs no agents host, only to resolve the home.
-		resolved, err := app.LoadConfig(func(key string) string {
-			if key == "UFFICI_AGENTS_HOST" {
-				return "fixture"
-			}
-			return getenv(key)
-		}, app.Config{Home: home})
-		if err == nil {
-			if record, err := setup.ReadRecord(resolved.Home); err == nil {
-				recorded = record.GatewayURL
-			}
-		}
+		recorded = recordedGateway(home, getenv)
 	}
 	return func(key string) string {
 		switch key {
@@ -196,6 +194,68 @@ func gatewayEnvironment(home string, getenv func(string) string) app.Env {
 			return recorded
 		}
 		return getenv(key)
+	}
+}
+
+// companionHome is the home LoadConfig resolves (--home, $UFFICI_HOME,
+// ~/.uffici), read with a kind that needs no agents host.
+func companionHome(home string, getenv func(string) string) (string, error) {
+	resolved, err := app.LoadConfig(func(key string) string {
+		if key == "UFFICI_AGENTS_HOST" {
+			return "fixture"
+		}
+		return getenv(key)
+	}, app.Config{Home: home})
+	return resolved.Home, err
+}
+
+// recordedGateway is the agents gateway `uffici setup` recorded in the home;
+// empty when there is no record.
+func recordedGateway(home string, getenv func(string) string) string {
+	resolved, err := companionHome(home, getenv)
+	if err != nil {
+		return ""
+	}
+	record, err := setup.ReadRecord(resolved)
+	if err != nil {
+		return ""
+	}
+	return record.GatewayURL
+}
+
+// daemonEnvironment is the environment `uffici run` reads (#2382). Against
+// the gateway — UFFICI_AGENTS_HOST=gateway, or a --gateway-url — the gateway is
+// resolved like setup's: the flag, UFFICI_GATEWAY_URL, the record, the default;
+// line names it and where it came from. Any other kind is left as it is.
+func daemonEnvironment(flagURL, home string, getenv func(string) string) (app.Env, string, error) {
+	kind := strings.TrimSpace(getenv("UFFICI_AGENTS_HOST"))
+	if strings.TrimSpace(flagURL) == "" && kind != "gateway" {
+		return getenv, "", nil
+	}
+	if kind != "" && kind != "gateway" {
+		return nil, "", fmt.Errorf("--gateway-url names an agents gateway, and UFFICI_AGENTS_HOST is %q", kind)
+	}
+	gateway, from := setup.ResolveGateway(flagURL, getenv, recordedGateway(home, getenv))
+	return func(key string) string {
+		switch key {
+		case "UFFICI_AGENTS_HOST":
+			return "gateway"
+		case "UFFICI_GATEWAY_URL":
+			return gateway
+		}
+		return getenv(key)
+	}, fmt.Sprintf("agents gateway: %s (%s)", gateway, from), nil
+}
+
+// gatewayReleaseLine asks the agents gateway what it names for its machines,
+// for the doctor's release line (#2382).
+func gatewayReleaseLine(gatewayURL, caFile string) func(ctx context.Context) string {
+	return func(ctx context.Context) string {
+		client, err := app.HTTPClient(caFile)
+		if err != nil {
+			return setup.DescribeGatewayRelease(setup.GatewayRelease{}, err)
+		}
+		return setup.DescribeGatewayRelease(setup.Release{Client: client}.GatewayVersion(ctx, gatewayURL))
 	}
 }
 
@@ -224,7 +284,7 @@ func doctor(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
-	return app.Doctor(ctx, resolved, stdout)
+	return app.DoctorWith(ctx, resolved, stdout, app.DoctorOptions{Release: gatewayReleaseLine(resolved.GatewayURL, resolved.CAFile)})
 }
 
 // setupCommand is `uffici setup` (#2182): the part of the install a shell
@@ -237,8 +297,9 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	harness := flags.String("harness", "", "the harness to install the plugin for (e.g. hermes); empty installs no plugin")
 	harnessVersion := flags.String("harness-version", "unknown", "that harness's version, as the admin sees it when approving the pairing")
 	harnessHome := flags.String("harness-home", "", "the harness's home directory (default: the manifest's variable, then its default)")
-	gatewayURL := flags.String("gateway-url", "", "the agents host's https origin (default $UFFICI_GATEWAY_URL)")
-	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: the latest)")
+	gatewayURL := flags.String("gateway-url", "", "the agents gateway's https origin (default $UFFICI_GATEWAY_URL, then the one recorded here, then "+setup.DefaultGatewayURL+")")
+	version := flags.String("version", "", "the release the installer chose for this machine; the plugin follows it unless --plugin-version pins its own (default: the version the agents gateway names, else the latest)")
+	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: --version, else the version the agents gateway names, else the latest)")
 	noPair := flags.Bool("no-pair", false, "skip pairing (the key is already in place, or mounted)")
 	noService := flags.Bool("no-service", false, "skip installing the companion as a service")
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
@@ -277,6 +338,12 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "uffici setup: unexpected argument %q — the harness is a flag: --harness %s\n", flags.Arg(0), flags.Arg(0))
 		return setup.ExitConfig
 	}
+	for _, pin := range []struct{ flag, value string }{{"--version", *version}, {"--plugin-version", *pluginVersion}} {
+		if pin.value != "" && !setup.IsReleaseVersion(pin.value) {
+			_, _ = fmt.Fprintf(stderr, "uffici setup: %s is %q, which is not a release version (like 1.2.3)\n", pin.flag, pin.value)
+			return setup.ExitConfig
+		}
+	}
 	if *harness != "" && !harnessName.MatchString(*harness) {
 		_, _ = fmt.Fprintf(stderr, "uffici setup: %q is not a harness name (lowercase letters, digits and dashes, like hermes)\n", *harness)
 		return setup.ExitConfig
@@ -285,10 +352,9 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintln(stderr, "uffici setup: Windows is not supported; see the README for the platforms that are")
 		return setup.ExitConfig
 	}
-	gateway := *gatewayURL
-	if gateway == "" {
-		gateway = os.Getenv("UFFICI_GATEWAY_URL")
-	}
+	// --gateway-url, UFFICI_GATEWAY_URL, the record of this home, the default
+	// (#2382) — whichever answers is written into the service and the record.
+	gateway, gatewayFrom := setup.ResolveGateway(*gatewayURL, os.Getenv, recordedGateway(*home, os.Getenv))
 	// The same environment the service, the pairing and the doctor will see.
 	environment := func(key string) string {
 		switch key {
@@ -350,6 +416,8 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		HarnessVersion: *harnessVersion,
 		HarnessHome:    *harnessHome,
 		GatewayURL:     gateway,
+		GatewayFrom:    gatewayFrom,
+		Version:        *version,
 		PluginVersion:  *pluginVersion,
 		PairingCode:    pairingCode,
 		NoPair:         *noPair,
@@ -368,7 +436,8 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		Runner:         setup.ExecRunner{},
 		Release: func(repo string) setup.Release {
 			return setup.Release{
-				Owner: "uffici-ai", Repo: repo, Version: *pluginVersion,
+				// The version is the run's to choose (setup.Run sets it).
+				Owner: "uffici-ai", Repo: repo,
 				// 🔴 Read from the environment, never a flag: a flag's value is
 				// in the process list and the shell history. Only needed while a
 				// plugin repository is private.
@@ -408,8 +477,9 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	home := flags.String("home", "", "the companion's home directory (default $UFFICI_HOME or ~/.uffici)")
 	check := flags.Bool("check", false, "only report installed versus latest: exit 0 when current, 10 when an upgrade exists")
 	dryRun := flags.Bool("dry-run", false, "announce every step and perform none")
-	version := flags.String("version", "", "pin the companion release (default: the latest); also how a newer build is replaced on purpose")
-	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: the latest)")
+	version := flags.String("version", "", "pin the companion release (default: the version the agents gateway names, else the latest); also how a newer build is replaced on purpose")
+	pluginVersion := flags.String("plugin-version", "", "pin the plugin release (default: the version the agents gateway names, else the latest)")
+	gatewayURL := flags.String("gateway-url", "", "the agents gateway's https origin (default $UFFICI_GATEWAY_URL, then the one recorded here, then "+setup.DefaultGatewayURL+")")
 	// Set by the replaced binary when it hands over to the new one: the version
 	// it had, for the before → after line. Not for people.
 	fromVersion := flags.String("from-version", "", "")
@@ -464,7 +534,7 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	return setup.Upgrade(ctx, setup.UpgradeOptions{
-		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion,
+		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion, GatewayURL: *gatewayURL,
 		Current: build.Version(), FromVersion: *fromVersion,
 		RestartHarness: restartChoice, Confirm: terminalConfirm(stdout),
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, UserHome: userHome, CompanionHome: resolved.Home,

@@ -45,10 +45,22 @@ func moduleRoot(t *testing.T) string {
 }
 
 // fakeBinaryArchive is what a release archive holds: `uffici` at the root.
-// The fake prints its arguments, which is how the hand-over is asserted.
+// The fake prints its arguments, which is how the hand-over is asserted, and
+// lists `-version` in its setup usage as a binary that knows the flag does.
 func fakeBinaryArchive(t *testing.T) []byte {
 	t.Helper()
-	script := "#!/bin/sh\nprintf 'fake-uffici %s\\n' \"$*\"\n"
+	return fakeBinaryArchiveWith(t, true)
+}
+
+// fakeBinaryArchiveWith builds the fake; knowsVersion=false is a release from
+// before `uffici setup --version`.
+func fakeBinaryArchiveWith(t *testing.T, knowsVersion bool) []byte {
+	t.Helper()
+	script := "#!/bin/sh\n"
+	if knowsVersion {
+		script += "if [ \"$2\" = -h ]; then printf '  -version string\\n' >&2; exit 2; fi\n"
+	}
+	script += "printf 'fake-uffici %s\\n' \"$*\"\n"
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -95,6 +107,11 @@ func runInstallerWith(t *testing.T, attrs *syscall.SysProcAttr, server *httptest
 		"UFFICI_RELEASES_API_URL="+server.URL,
 		"UFFICI_INSTALL_PREFIX="+prefix,
 		"UFFICI_GITHUB_TOKEN=",
+		"UFFICI_VERSION=",
+		"UFFICI_HOME=",
+		// 🔴 A run with no --gateway-url asks this loopback server, never the
+		// production default: it names no release, so the latest is fetched.
+		"UFFICI_GATEWAY_URL="+server.URL,
 		"HOME="+t.TempDir(),
 	)
 	out, err := cmd.CombinedOutput()
@@ -251,6 +268,8 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 		"UFFICI_RELEASES_API_URL="+server.URL,
 		"UFFICI_INSTALL_PREFIX="+t.TempDir(),
 		"UFFICI_GITHUB_TOKEN="+token,
+		"UFFICI_VERSION=",
+		"UFFICI_GATEWAY_URL="+server.URL, // answers 404: the latest release
 		"HOME="+t.TempDir(),
 	)
 	out, err := cmd.CombinedOutput()
@@ -305,5 +324,181 @@ func TestInstallScriptRefusesAnUnlistedAsset(t *testing.T) {
 	out, err := runInstaller(t, server, t.TempDir(), "--dry-run")
 	if err == nil || !strings.Contains(out, "did not vouch") {
 		t.Fatalf("an unlisted asset was installed: %v\n%s", err, out)
+	}
+}
+
+// ── Which release, and which gateway (#2382) ────────────────────────────────
+
+// trainServer serves one companion release by tag (never `latest`, unless
+// latest is set) and the gateway's `/v1/release` answer, from one origin.
+func trainServer(t *testing.T, tag string, archive []byte, release string, latest bool, sawAuth *bool) *httptest.Server {
+	t.Helper()
+	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  " + thisAsset() + "\n")}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/release" {
+			if r.Header.Get("Authorization") != "" {
+				*sawAuth = true
+			}
+			_, _ = w.Write([]byte(release))
+			return
+		}
+		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		prefix := "/uffici-ai/uffici-companion/releases/download/v" + tag + "/"
+		if latest {
+			prefix = "/uffici-ai/uffici-companion/releases/latest/download/"
+		}
+		if body, ok := assets[name]; ok && tag != "" && strings.HasPrefix(r.URL.Path, prefix) {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func TestInstallScriptInstallsTheVersionTheGatewayNames(t *testing.T) {
+	var sawAuth bool
+	server := trainServer(t, "0.10.0-dev.4", fakeBinaryArchive(t), `{"channel": "develop", "version": "0.10.0-dev.4"}`, false, &sawAuth)
+	out, err := runInstaller(t, server, t.TempDir(), "--harness", "hermes", "--yes", "--no-pair", "--gateway-url", server.URL)
+	if err != nil {
+		t.Fatalf("installer failed: %v\n%s", err, out)
+	}
+	for _, want := range []string{
+		"agents gateway: " + server.URL + " (from --gateway-url)",
+		"version: 0.10.0-dev.4, named by the agents gateway " + server.URL + " (channel develop)",
+		"fetching uffici 0.10.0-dev.4",
+		// Both processes agree: setup is handed the version the script installed.
+		"fake-uffici setup --harness hermes --yes --no-pair --gateway-url " + server.URL + " --version 0.10.0-dev.4",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("no %q:\n%s", want, out)
+		}
+	}
+	if sawAuth {
+		t.Fatal("the gateway was sent an Authorization header")
+	}
+
+	// A gateway rolled back to a release whose setup lacks --version: the
+	// binary is installed, and setup is not handed a flag it would refuse.
+	old := trainServer(t, "0.8.0", fakeBinaryArchiveWith(t, false), `{"channel":"main","version":"0.8.0"}`, false, &sawAuth)
+	out, err = runInstaller(t, old, t.TempDir(), "--yes", "--no-pair", "--gateway-url", old.URL)
+	if err != nil || strings.Contains(out, "--version 0.8.0") || !strings.Contains(out, "does not take setup --version") {
+		t.Fatalf("an older release was handed --version: %v\n%s", err, out)
+	}
+}
+
+func TestInstallScriptFallsBackToTheLatestWithOneLine(t *testing.T) {
+	var sawAuth bool
+	for _, tc := range []struct{ name, answer, line string }{
+		{name: "no version named", answer: `{"channel":"develop","version":null}`, line: "names no version"},
+		{name: "not a release", answer: `<html>`, line: "sent an answer that is not a release"},
+		{name: "not a release version", answer: `{"channel":"main","version":"latest"}`, line: "which is not a release version"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := trainServer(t, "latest", fakeBinaryArchive(t), tc.answer, true, &sawAuth)
+			out, err := runInstaller(t, server, t.TempDir(), "--yes", "--no-pair", "--gateway-url", server.URL)
+			if err != nil || !strings.Contains(out, "fetching the latest uffici") {
+				t.Fatalf("the latest was not fetched: %v\n%s", err, out)
+			}
+			if !strings.Contains(out, "version: the latest release — the agents gateway "+server.URL) || !strings.Contains(out, tc.line) {
+				t.Fatalf("no fallback line naming %q:\n%s", tc.line, out)
+			}
+			if strings.Count(out, "uffici-install: version: ") != 1 || strings.Contains(out, " --version ") {
+				t.Fatalf("want ONE version line and no --version handed over:\n%s", out)
+			}
+		})
+	}
+	// Unreachable: a closed loopback port.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+	server := trainServer(t, "latest", fakeBinaryArchive(t), "", true, &sawAuth)
+	out, err := runInstaller(t, server, t.TempDir(), "--yes", "--no-pair", "--gateway-url", closed.URL)
+	if err != nil || !strings.Contains(out, "version: the latest release — the agents gateway "+closed.URL+" could not be reached") {
+		t.Fatalf("an unreachable gateway did not fall back with its line: %v\n%s", err, out)
+	}
+}
+
+// A release whose files are not up yet names the version it waited for.
+func TestInstallScriptNamesAVersionWithoutAssetsYet(t *testing.T) {
+	var sawAuth bool
+	server := trainServer(t, "", fakeBinaryArchive(t), `{"channel":"develop","version":"0.10.0-dev.5"}`, false, &sawAuth)
+	out, err := runInstaller(t, server, t.TempDir(), "--yes", "--no-pair", "--gateway-url", server.URL)
+	if err == nil || !strings.Contains(out, "release v0.10.0-dev.5 has no assets yet") || !strings.Contains(out, "try again in a few minutes") {
+		t.Fatalf("want the no-assets-yet refusal: %v\n%s", err, out)
+	}
+}
+
+// 🔴 --gateway-url, UFFICI_GATEWAY_URL, the record, the production default —
+// each beating the next, and named before anything is downloaded. A `curl`
+// shim answers every gateway question unreachable and logs the URL, so no run
+// here reaches the production gateway.
+func TestInstallScriptResolvesTheGatewayInFourSteps(t *testing.T) {
+	realCurl, err := exec.LookPath("curl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shims := t.TempDir()
+	shim := "#!/bin/sh\nfor a in \"$@\"; do case \"$a\" in */v1/release) printf '%s\\n' \"$a\" >>\"$GATEWAY_LOG\"; exit 7 ;; esac; done\nexec " + realCurl + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(shims, "curl"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var sawAuth bool
+	server := trainServer(t, "latest", fakeBinaryArchive(t), "", true, &sawAuth)
+	for _, tc := range []struct {
+		name, flag, env, recorded, want, from string
+		homeFlag                              bool // the record lives under --home, not ~/.uffici
+	}{
+		{name: "the flag", flag: "https://flag.example", env: "https://env.example", recorded: "https://record.example", want: "https://flag.example", from: "from --gateway-url"},
+		{name: "the variable", env: "https://env.example", recorded: "https://record.example", want: "https://env.example", from: "from UFFICI_GATEWAY_URL"},
+		{name: "the record", recorded: "https://record.example", want: "https://record.example", from: "recorded in setup.json"},
+		{name: "the record under --home", recorded: "https://home.example", homeFlag: true, want: "https://home.example", from: "recorded in setup.json"},
+		{name: "the default", want: "https://agents.uffici.ai", from: "the default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := t.TempDir()
+			recordHome := filepath.Join(home, ".uffici")
+			if tc.homeFlag {
+				recordHome = filepath.Join(t.TempDir(), "elsewhere")
+			}
+			if tc.recorded != "" {
+				must(t, WriteRecord(recordHome, Record{GatewayURL: tc.recorded}))
+			}
+			log := filepath.Join(t.TempDir(), "asked")
+			args := []string{filepath.Join(moduleRoot(t), "install.sh"), "--yes", "--no-pair"}
+			if tc.homeFlag {
+				args = append(args, "--home", recordHome)
+			}
+			if tc.flag != "" {
+				args = append(args, "--gateway-url", tc.flag)
+			}
+			cmd := exec.Command("sh", args...)
+			cmd.Env = append(os.Environ(),
+				"PATH="+shims+":"+os.Getenv("PATH"),
+				"GATEWAY_LOG="+log,
+				"UFFICI_RELEASES_BASE_URL="+server.URL,
+				"UFFICI_RELEASES_API_URL="+server.URL,
+				"UFFICI_INSTALL_PREFIX="+t.TempDir(),
+				"UFFICI_GITHUB_TOKEN=",
+				"UFFICI_VERSION=",
+				"UFFICI_HOME=",
+				"UFFICI_GATEWAY_URL="+tc.env,
+				"HOME="+home,
+			)
+			raw, err := cmd.CombinedOutput()
+			out := string(raw)
+			if err != nil {
+				t.Fatalf("installer failed: %v\n%s", err, out)
+			}
+			named := strings.Index(out, "agents gateway: "+tc.want+" ("+tc.from+")")
+			fetched := strings.Index(out, "fetching the latest uffici")
+			if named < 0 || fetched < 0 || named > fetched {
+				t.Fatalf("the gateway %s (%s) is not named before the download:\n%s", tc.want, tc.from, out)
+			}
+			asked, _ := os.ReadFile(log)
+			if strings.TrimSpace(string(asked)) != tc.want+"/v1/release" {
+				t.Fatalf("asked %q, want %s/v1/release", asked, tc.want)
+			}
+		})
 	}
 }

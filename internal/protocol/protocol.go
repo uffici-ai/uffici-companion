@@ -541,3 +541,14 @@ type LogBatchResponse struct {
 	Accepted int `json:"accepted"`
 	Filtered int `json:"filtered"`
 }
+
+// ReleaseResponse is `GET /v1/release`'s answer (#2382): the line the agents
+// gateway is deployed from and the companion release it names for its
+// machines. Unauthenticated — it carries nothing but those two.
+type ReleaseResponse struct {
+	// Channel is `develop`, `uac` or `main`.
+	Channel string `json:"channel"`
+	// Version is `x.y.z[-pre]`, or null when the gateway names none — the
+	// machine then takes the latest release.
+	Version *string `json:"version"`
+}

@@ -151,7 +151,15 @@ func (r Release) assetAPIURL(ctx context.Context, asset string) (string, error) 
 			return a.URL, nil
 		}
 	}
+	if r.Version != "" {
+		return "", fmt.Errorf("%s has no asset named %s: %s", r.Describe(), asset, noAssetsYet(r.Version))
+	}
 	return "", fmt.Errorf("%s has no asset named %s", r.Describe(), asset)
+}
+
+// noAssetsYet is the sentence for a named release whose assets are missing.
+func noAssetsYet(version string) string {
+	return fmt.Sprintf("release v%s has no assets yet — a release's files are published a few minutes after it is tagged; try again in a few minutes", version)
 }
 
 func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
@@ -173,6 +181,12 @@ func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode == http.StatusNotFound {
+		if r.Version != "" {
+			// 🔴 A release's assets are built a few minutes AFTER its tag (#2382),
+			// and a gateway names a version the moment it deploys: a machine
+			// upgrading in that window gets here. Say which version it waited for.
+			return nil, fmt.Errorf("%s: %s", r.Describe(), noAssetsYet(r.Version))
+		}
 		return nil, fmt.Errorf("%s has no such release or asset (404) — is there a release yet, and is the repository public or a token set?", r.Describe())
 	}
 	if resp.StatusCode != http.StatusOK {

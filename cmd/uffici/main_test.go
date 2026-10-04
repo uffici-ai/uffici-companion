@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -139,11 +140,97 @@ func TestSetupRefusesBadFlagsAndNothingToDo(t *testing.T) {
 	}
 }
 
-func TestSetupWithoutAGatewayURLExitsTwo(t *testing.T) {
-	t.Setenv("UFFICI_GATEWAY_URL", "")
+// 🔴 #2382: setup resolves the gateway — --gateway-url, UFFICI_GATEWAY_URL, the
+// record of its home, the production default — and names it, with where it came
+// from, before it pairs. No harness here, so nothing asks the gateway anything.
+func TestSetupResolvesTheGatewayInFourStepsAndNamesIt(t *testing.T) {
+	for _, tc := range []struct {
+		name, flag, env, recorded, want, from string
+	}{
+		{name: "the flag", flag: "https://flag.example", env: "https://env.example", recorded: "https://record.example", want: "https://flag.example", from: "from --gateway-url"},
+		{name: "the variable", env: "https://env.example", recorded: "https://record.example", want: "https://env.example", from: "from UFFICI_GATEWAY_URL"},
+		{name: "the record", recorded: "https://record.example", want: "https://record.example", from: "recorded in setup.json"},
+		{name: "the default", want: "https://agents.uffici.ai", from: "the default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("UFFICI_GATEWAY_URL", tc.env)
+			home := t.TempDir()
+			if tc.recorded != "" {
+				if err := setup.WriteRecord(home, setup.Record{GatewayURL: tc.recorded, Service: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"setup", "--home", home, "--no-service", "--dry-run"}
+			if tc.flag != "" {
+				args = append(args, "--gateway-url", tc.flag)
+			}
+			var out, errOut bytes.Buffer
+			if code := run(args, &out, &errOut); code != 0 {
+				t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+			}
+			named := strings.Index(out.String(), "agents gateway: "+tc.want+" ("+tc.from+")")
+			paired := strings.Index(out.String(), "would pair")
+			if named < 0 || paired < 0 || named > paired {
+				t.Fatalf("the gateway %s (%s) is not named before pairing:\n%s", tc.want, tc.from, out.String())
+			}
+		})
+	}
+}
+
+// --version and --plugin-version are release versions, refused otherwise.
+func TestSetupRefusesAVersionThatIsNotARelease(t *testing.T) {
+	for _, flag := range []string{"--version", "--plugin-version"} {
+		var out, errOut bytes.Buffer
+		if code := run([]string{"setup", "--home", t.TempDir(), "--harness", "hermes", flag, "newest"}, &out, &errOut); code != 2 || !strings.Contains(errOut.String(), flag) {
+			t.Fatalf("%s: exit %d, stderr %q", flag, code, errOut.String())
+		}
+	}
+}
+
+// `uffici run` against the gateway resolves it the same four ways, and names it;
+// any other kind is left alone.
+func TestRunResolvesTheGatewayLikeSetup(t *testing.T) {
+	home := t.TempDir()
+	if err := setup.WriteRecord(home, setup.Record{GatewayURL: "https://record.example"}); err != nil {
+		t.Fatal(err)
+	}
+	envOf := func(values map[string]string) func(string) string {
+		return func(key string) string { return values[key] }
+	}
+	for _, tc := range []struct {
+		name, flag, home string
+		env              map[string]string
+		want, from       string
+	}{
+		{name: "the flag", flag: "https://flag.example", home: home, env: map[string]string{"UFFICI_GATEWAY_URL": "https://env.example"}, want: "https://flag.example", from: "from --gateway-url"},
+		{name: "the variable", home: home, env: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://env.example"}, want: "https://env.example", from: "from UFFICI_GATEWAY_URL"},
+		{name: "the record", home: home, env: map[string]string{"UFFICI_AGENTS_HOST": "gateway"}, want: "https://record.example", from: "recorded in setup.json"},
+		{name: "the default", home: t.TempDir(), env: map[string]string{"UFFICI_AGENTS_HOST": "gateway"}, want: setup.DefaultGatewayURL, from: "the default"},
+	} {
+		env, line, err := daemonEnvironment(tc.flag, tc.home, envOf(tc.env))
+		if err != nil || env("UFFICI_GATEWAY_URL") != tc.want || env("UFFICI_AGENTS_HOST") != "gateway" {
+			t.Fatalf("%s: %q, %v", tc.name, env("UFFICI_GATEWAY_URL"), err)
+		}
+		if line != "agents gateway: "+tc.want+" ("+tc.from+")" {
+			t.Fatalf("%s: line %q", tc.name, line)
+		}
+	}
+	// The fixture is not a gateway: nothing resolved, nothing named.
+	env, line, err := daemonEnvironment("", home, envOf(map[string]string{}))
+	if err != nil || line != "" || env("UFFICI_GATEWAY_URL") != "" {
+		t.Fatalf("a fixture run was given a gateway: %q %q %v", env("UFFICI_GATEWAY_URL"), line, err)
+	}
+	if _, _, err := daemonEnvironment("https://flag.example", home, envOf(map[string]string{"UFFICI_AGENTS_HOST": "fixture"})); err == nil {
+		t.Fatal("--gateway-url with UFFICI_AGENTS_HOST=fixture must be refused")
+	}
 	var out, errOut bytes.Buffer
-	if code := run([]string{"setup", "--home", t.TempDir(), "--harness", "hermes"}, &out, &errOut); code != 2 {
-		t.Fatalf("exit %d, want 2:\n%s%s", code, out.String(), errOut.String())
+	if code := run([]string{"--gateway-url", "https://flag.example", "--home", home}, &out, &errOut); code != 2 {
+		// No agent key in this home: the gateway kind refuses to start — after
+		// naming the gateway it resolved.
+		t.Fatalf("exit %d:\n%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "agents gateway: https://flag.example (from --gateway-url)") {
+		t.Fatalf("the run did not name its gateway:\n%s", errOut.String())
 	}
 }
 
@@ -172,7 +259,8 @@ func TestSetupDryRunReachesThePluginReleaseAndNamesTheMissingHarnessTool(t *test
 	t.Setenv("UFFICI_GITHUB_TOKEN", "")
 	t.Setenv("UFFICI_CA_FILE", "")
 	var out, errOut bytes.Buffer
-	code := run([]string{"setup", "--home", t.TempDir(), "--harness", "hermes", "--no-pair", "--no-service", "--dry-run", "--gateway-url", "https://agents.example"}, &out, &errOut)
+	// The gateway is the loopback server too, which names no release (404).
+	code := run([]string{"setup", "--home", t.TempDir(), "--harness", "hermes", "--no-pair", "--no-service", "--dry-run", "--gateway-url", server.URL}, &out, &errOut)
 	if code != 1 {
 		t.Fatalf("exit %d, want 1:\n%s%s", code, out.String(), errOut.String())
 	}
@@ -272,27 +360,77 @@ func TestUpgradeRefusesBadFlagsAndAMachineWithoutARecord(t *testing.T) {
 // The command reads the record and asks the plugin's release for its latest
 // version; a pinned companion version is what lets a development build (the one
 // under test) be compared at all.
+//
+// The recorded gateway is a loopback server too (#2382): --check names the
+// channel and the version it names, or that it names none.
 func TestUpgradeCheckReadsTheRecordAndTheLatestRelease(t *testing.T) {
-	home := t.TempDir()
-	if err := os.WriteFile(filepath.Join(home, "setup.json"), []byte(`{"harness":"hermes","gatewayUrl":"https://agents.example","service":true}`), 0o600); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name, answer, plugin, line string
+		code                       int
+	}{
+		// The latest path never replaces a development build unasked — the line still
+		// says the gateway named nothing.
+		{name: "no version named", answer: `{"channel":"develop","version":null}`, line: "(channel develop) names no version", code: 2},
+		// The gateway's version is a pin, for the companion and the plugin alike.
+		{name: "a version named", answer: `{"channel":"develop","version":"0.6.0-dev.1"}`, plugin: "0.6.0-dev.1", line: "version: 0.6.0-dev.1, named by the agents gateway", code: 10},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/repos/uffici-ai/uffici-for-hermes/releases/latest", "/repos/uffici-ai/uffici-companion/releases/latest":
+					_, _ = w.Write([]byte(`{"tag_name":"v0.5.0","assets":[]}`))
+				case "/v1/release":
+					_, _ = w.Write([]byte(tc.answer))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(server.Close)
+			home := t.TempDir()
+			if err := os.WriteFile(filepath.Join(home, "setup.json"), []byte(`{"harness":"hermes","gatewayUrl":"`+server.URL+`","service":true}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("UFFICI_RELEASES_BASE_URL", server.URL)
+			t.Setenv("UFFICI_RELEASES_API_URL", server.URL)
+			t.Setenv("UFFICI_GITHUB_TOKEN", "")
+			t.Setenv("UFFICI_CA_FILE", "")
+			t.Setenv("UFFICI_GATEWAY_URL", "")
+			var out, errOut bytes.Buffer
+			// Nothing pinned: the companion and the plugin both follow the gateway's
+			// answer — one train (a --version would pin both, #2382's review).
+			code := run([]string{"upgrade", "--home", home, "--check"}, &out, &errOut)
+			if code != tc.code || !strings.Contains(out.String(), tc.line) {
+				t.Fatalf("exit %d, want %d and %q:\n%s%s", code, tc.code, tc.line, out.String(), errOut.String())
+			}
+			if tc.plugin != "" && (!strings.Contains(out.String(), "companion  0.0.0-dev → "+tc.plugin+" available") ||
+				!strings.Contains(out.String(), "plugin     not installed → "+tc.plugin+" available")) {
+				t.Fatalf("want the companion and the plugin at %s:\n%s", tc.plugin, out.String())
+			}
+		})
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/repos/uffici-ai/uffici-for-hermes/releases/latest" {
-			_, _ = w.Write([]byte(`{"tag_name":"v0.5.0","assets":[]}`))
+}
+
+// `uffici doctor` names the channel and the version the gateway names (#2382).
+func TestDoctorNamesTheGatewaysRelease(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/release" {
+			_, _ = w.Write([]byte(`{"channel":"develop","version":"0.10.0-dev.4"}`))
 			return
 		}
 		http.NotFound(w, r)
 	}))
 	t.Cleanup(server.Close)
-	t.Setenv("UFFICI_RELEASES_BASE_URL", server.URL)
-	t.Setenv("UFFICI_RELEASES_API_URL", server.URL)
-	t.Setenv("UFFICI_GITHUB_TOKEN", "")
-	t.Setenv("UFFICI_CA_FILE", "")
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("UFFICI_GATEWAY_URL", server.URL)
+	t.Setenv("UFFICI_CA_FILE", ca)
 	var out, errOut bytes.Buffer
-	code := run([]string{"upgrade", "--home", home, "--check", "--version", "0.5.0"}, &out, &errOut)
-	if code != 10 || !strings.Contains(out.String(), "plugin     not installed → 0.5.0 available") {
-		t.Fatalf("exit %d, want 10:\n%s%s", code, out.String(), errOut.String())
+	// No agent key in this home, so the probe itself stops — after the release line.
+	_ = run([]string{"doctor", "--home", t.TempDir()}, &out, &errOut)
+	if !strings.Contains(out.String(), "release      channel develop, version 0.10.0-dev.4") {
+		t.Fatalf("the doctor did not name the gateway's release:\n%s%s", out.String(), errOut.String())
 	}
 }
 
