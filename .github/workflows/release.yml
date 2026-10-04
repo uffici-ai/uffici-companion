@@ -56,6 +56,10 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 🔴 Build the tag that triggered this run. A final whose tree equals its
+          # release candidate is tagged on the candidate's commit, and goreleaser
+          # left to read git would pick the candidate's tag and fail on its assets.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
       - name: Attest the archives
         # 🔴 Only once the repository is public: GitHub persists a build
         # attestation for public repositories (or a plan that includes them),
