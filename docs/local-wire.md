@@ -183,6 +183,16 @@ failed a call the request needed — a read, a post).
 - A `failed` request is already closed on the platform as an error, which tells the person the agent did not answer. The plugin stops the turn exactly as for any other cancel; the class is safe to log.
 - 🔴 `failed` and `error` were added to v1 before its first release: nothing had shipped to a machine, so v1 was still free to change. After a release, a new value here is a new version.
 
+### `release` — companion → plugin
+
+`conversationId` and `reason`: `pass_ended` (the agent's lane pass on a card ended —
+the card moved to another lane's agent), `archived` (the card was archived) or
+`deleted` (its conversation was deleted).
+
+- The plugin may discard whatever it holds for that conversation — a harness session above all. The next arrival in the lane rings with `resetSession: true` anyway, so a release that never arrives costs memory, never correctness.
+- 🔴 It withdraws NO request: an open one was cancelled by its own `cancel` first. A `release` is never answered.
+- Additive: a plugin that predates it ignores an unknown frame type, as every reader must.
+
 ### `call` — plugin → companion
 
 One platform control-plane operation, through the companion. Fields: `callId`, `op`, `deadlineMs`, and an optional object `payload`.

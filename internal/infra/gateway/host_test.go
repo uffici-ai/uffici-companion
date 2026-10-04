@@ -36,12 +36,13 @@ type rig struct {
 	host   *gateway.Host
 	logs   *syncBuffer
 
-	mu      sync.Mutex
-	delays  []time.Duration
-	skew    time.Duration
-	rings   chan contracts.Ring
-	cancels chan [2]string
-	ended   chan string
+	mu       sync.Mutex
+	delays   []time.Duration
+	skew     time.Duration
+	rings    chan contracts.Ring
+	cancels  chan [2]string
+	releases chan [2]string
+	ended    chan string
 }
 
 type syncBuffer struct {
@@ -88,7 +89,8 @@ func newRigWithPlugin(t *testing.T, harness func() (string, string), plugin func
 	}})
 	r := &rig{
 		double: double, logs: &syncBuffer{},
-		rings: make(chan contracts.Ring, 16), cancels: make(chan [2]string, 16), ended: make(chan string, 64),
+		rings: make(chan contracts.Ring, 16), cancels: make(chan [2]string, 16),
+		releases: make(chan [2]string, 16), ended: make(chan string, 64),
 	}
 	host, err := gateway.New(gateway.Options{
 		BaseURL: double.URL(), Key: gatewaytest.Key, InstanceID: instanceID, Version: "1.2.3",
@@ -160,8 +162,11 @@ func (r *rig) backoffDelays() []time.Duration {
 func (r *rig) open(t *testing.T) contracts.DoorbellClaim {
 	t.Helper()
 	claim, err := r.host.OpenDoorbell(context.Background(), contracts.Handlers{
-		OnRing:       func(ring contracts.Ring) { r.rings <- ring },
-		OnCancel:     func(id string, reason contracts.CancelReason) { r.cancels <- [2]string{id, string(reason)} },
+		OnRing:   func(ring contracts.Ring) { r.rings <- ring },
+		OnCancel: func(id string, reason contracts.CancelReason) { r.cancels <- [2]string{id, string(reason)} },
+		OnRelease: func(id string, reason contracts.ReleaseReason) {
+			r.releases <- [2]string{id, string(reason)}
+		},
 		OnDisconnect: func(reason string) { r.ended <- reason },
 	})
 	if err != nil {
@@ -397,6 +402,37 @@ func TestACancelReachesOnCancelInTheProtocolsWords(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("OnCancel was never called")
+	}
+}
+
+// 🔴 #2356: a release reaches OnRelease in the protocol's words, and the
+// conversation's cached ticket goes with it — the next read mints a fresh one.
+func TestAReleaseReachesOnReleaseAndDropsTheConversationsTicket(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	if _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0); err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if got := r.double.Mints("conversation"); got != 1 {
+		t.Fatalf("%d conversation mints before the release, want 1", got)
+	}
+	if err := r.double.Release(conversationID, "pass_ended"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-r.releases:
+		if got[0] != conversationID || contracts.ReleaseReason(got[1]) != contracts.ReleasePassEnded {
+			t.Fatalf("OnRelease(%q, %q)", got[0], got[1])
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnRelease was never called")
+	}
+	if _, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 0); err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if got := r.double.Mints("conversation"); got != 2 {
+		t.Fatalf("%d conversation mints after the release, want 2 — the cached ticket outlived it", got)
 	}
 }
 

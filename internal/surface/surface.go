@@ -631,6 +631,15 @@ func (f *frameSink) SendCancel(ctx context.Context, requestID string, reason con
 	})
 }
 
+// SendRelease writes one release (#2356): the plugin may discard what it holds
+// for the conversation. Ids and the platform's reason only.
+func (f *frameSink) SendRelease(ctx context.Context, conversationID string, reason contracts.ReleaseReason) error {
+	return f.send(ctx, map[string]any{
+		"v": wire.Version, "type": "release",
+		"conversationId": conversationID, "reason": string(reason),
+	})
+}
+
 // SendFailure writes a `failed` cancel carrying the platform's class and the
 // instruction the agent relays (#2077).
 func (f *frameSink) SendFailure(ctx context.Context, requestID, class, instruction string) error {

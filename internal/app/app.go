@@ -400,6 +400,13 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 				logger.Error("handling a cancel", slog.String("request", requestID))
 			}
 		},
+		OnRelease: func(conversationID string, reason contracts.ReleaseReason) {
+			logger.Info("releasing a conversation",
+				slog.String("conversation", conversationID), slog.String("reason", string(reason)))
+			if err := manager.OnPlatformRelease(serveCtx, conversationID, reason); err != nil {
+				logger.Warn("passing a release to the plugin", slog.String("conversation", conversationID))
+			}
+		},
 		OnDisconnect: func(reason string) {
 			logger.Warn("the agents host disconnected", slog.String("reason", reason))
 		},

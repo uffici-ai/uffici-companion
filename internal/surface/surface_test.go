@@ -330,6 +330,40 @@ func TestNewRefusesAnIncompleteSurface(t *testing.T) {
 	}
 }
 
+// 🔴 #2356: a release reaches the plugin over the real wire as a frame that
+// validates against the wire's own schema, in the platform's words.
+func TestAPlatformReleaseReachesThePluginAsAValidFrame(t *testing.T) {
+	r := newRig(t)
+	conn := r.attach(t, testToken)
+	receive(t, conn) // companion hello
+
+	ctx := context.Background()
+	claim, err := r.host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing:   func(ring contracts.Ring) { _ = r.manager.OnRing(ctx, ring) },
+		OnCancel: func(id string, reason contracts.CancelReason) { _ = r.manager.OnPlatformCancel(ctx, id, reason) },
+		OnRelease: func(id string, reason contracts.ReleaseReason) {
+			_ = r.manager.OnPlatformRelease(ctx, id, reason)
+		},
+		OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("OpenDoorbell: %v", err)
+	}
+	t.Cleanup(func() { _ = claim.Close() })
+
+	if err := r.host.DeliverRelease("conv_1", contracts.ReleasePassEnded); err != nil {
+		t.Fatalf("DeliverRelease: %v", err)
+	}
+	release := receive(t, conn)
+	if release["type"] != "release" || release["conversationId"] != "conv_1" || release["reason"] != "pass_ended" {
+		t.Fatalf("the plugin was sent %v", release)
+	}
+	raw, _ := json.Marshal(release)
+	if err := wire.Validate(raw); err != nil {
+		t.Fatalf("the companion sent a release that fails its own schema: %v", err)
+	}
+}
+
 // 🔴 The stop path, over the real wire. `/stop` is one of the oversight
 // controls the platform depends on (Art. 14), and the plugin only learns about
 // it through this frame — so the frame must arrive, and must itself validate.

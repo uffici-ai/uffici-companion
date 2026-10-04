@@ -1,0 +1,64 @@
+{
+	"entries": [
+		{
+			"id": "1042",
+			"cursor": "1042",
+			"at": "2026-09-23T10:00:00.000Z",
+			"author": {
+				"type": "user",
+				"id": "9a5b5e07-e417-40a6-bf4b-a96091ad27d7",
+				"label": "Mona Member",
+				"self": false
+			},
+			"kind": "message",
+			"text": "@smith can you triage the printer card?",
+			"attachments": []
+		}
+	],
+	"bounded": true,
+	"identity": {
+		"lines": [
+			"You are an AI agent, not a human.",
+			"Never present yourself as a human."
+		],
+		"disclosure": {
+			"mode": "labelled_ui"
+		}
+	},
+	"card": {
+		"state": "ok",
+		"cardUrn": "urn:uffici:card:3f8e2a1c-5b7d-4e9f-8a2b-6c1d0e9f7a3b",
+		"boardUrn": "urn:uffici:board:9c8b7a6f-5e4d-4c3b-8a29-1f0e9d8c7b6a",
+		"title": "Latest OpenAI Models.",
+		"description": "What shipped this quarter, with sources.",
+		"board": {
+			"name": "Copyright Work",
+			"briefing": "We track model releases for the newsletter."
+		},
+		"lane": {
+			"id": "4b3a2918-0f7e-4d6c-9b5a-48372615f0e9",
+			"name": "Research",
+			"instruction": "Research the topic in depth, bring in sources.",
+			"agentId": "e2a7f46c-aa42-48ec-ae37-a63815f4a700"
+		},
+		"lanes": [
+			{
+				"id": "8e7d6c5b-4a39-4281-9f0e-d1c2b3a49586",
+				"name": "Backlog"
+			},
+			{
+				"id": "4b3a2918-0f7e-4d6c-9b5a-48372615f0e9",
+				"name": "Research"
+			},
+			{
+				"id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+				"name": "Research Review"
+			}
+		],
+		"role": "lane_agent",
+		"pass": {
+			"arrivalEntryId": 1042,
+			"earlierEntries": 12
+		}
+	}
+}

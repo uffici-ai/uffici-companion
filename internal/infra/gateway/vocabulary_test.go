@@ -61,6 +61,20 @@ func TestCancelReasonsAreThePlatformsBothWays(t *testing.T) {
 	}
 }
 
+func TestReleaseReasonsAreThePlatformsBothWays(t *testing.T) {
+	m := manifest(t)
+	ours := []string{string(contracts.ReleasePassEnded), string(contracts.ReleaseArchived), string(contracts.ReleaseDeleted)}
+	theirs := slices.Clone(m.ReleaseReasons)
+	if len(theirs) == 0 {
+		t.Fatal("the manifest states no release reasons — this guard is vacuous")
+	}
+	sort.Strings(ours)
+	sort.Strings(theirs)
+	if !slices.Equal(ours, theirs) {
+		t.Errorf("the companion's release reasons %v are not the platform's %v", ours, theirs)
+	}
+}
+
 func TestCloseClassMappingSpeaksOnlyThePlatformsVocabulary(t *testing.T) {
 	m := manifest(t)
 	for input, output := range closeClassOf {

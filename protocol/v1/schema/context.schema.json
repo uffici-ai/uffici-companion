@@ -85,6 +85,7 @@
 							"shed",
 							"knowledge_unavailable",
 							"context_trimmed",
+							"card_unavailable",
 							"invalid_citation"
 						]
 					},

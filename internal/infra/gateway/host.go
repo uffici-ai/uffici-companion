@@ -248,6 +248,12 @@ func (h *Host) setConn(conn *websocket.Conn) {
 
 // remember records which conversation a request belongs to, for its close —
 // the one route whose path names a request rather than a conversation.
+// forgetConversation drops what the host caches for one conversation (#2356):
+// its conversation ticket. A later read mints a fresh one.
+func (h *Host) forgetConversation(conversationID string) {
+	h.api.forget(conversationID)
+}
+
 func (h *Host) remember(requestID, conversationID string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

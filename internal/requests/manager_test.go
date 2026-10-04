@@ -644,6 +644,182 @@ func TestAHeldRingDoesNotBurnARedeliveryAttempt(t *testing.T) {
 	}
 }
 
+// attachingHost attaches the plugin from inside the delta read: the plugin's
+// `ready` landing while a ring's delivery is reading over the network.
+type attachingHost struct {
+	*memory.Host
+	onRead func()
+}
+
+func (a *attachingHost) ReadSince(ctx context.Context, conversationID, since, through string, budget int) (contracts.Read, error) {
+	if a.onRead != nil {
+		hook := a.onRead
+		a.onRead = nil
+		hook()
+	}
+	return a.Host.ReadSince(ctx, conversationID, since, through, budget)
+}
+
+func TestAReadyDuringTheDeltaReadBriefsTheRequestOnce(t *testing.T) {
+	// 🔴 #2372: a ring arrives before `ready`, and its delivery reads the delta
+	// over the network before it looks for a sink. `ready` attaches while that
+	// read is in flight, so the delivery finds the sink and briefs it — and the
+	// attach's RedeliverOpen then briefed it AGAIN on the same connection: two
+	// `fresh` acks, two openers, one redelivery attempt spent (pr.yml run
+	// 37166433317, "7 opener(s), want 6").
+	ctx := context.Background()
+	sink := newRecorder()
+	counted := &redeliveryCounter{}
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{Observer: counted})
+	host.onRead = func() { manager.Attach("conn-1", sink, 48000) }
+
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if len(sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) after the ring, want 1 — the race this test is about never happened", len(sink.briefs))
+	}
+	// The `ready` handler's second half.
+	if err := manager.RedeliverOpen(ctx); err != nil {
+		t.Fatalf("RedeliverOpen: %v", err)
+	}
+	if len(sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) went out, want 1: RedeliverOpen re-sent a request already briefed on this connection", len(sink.briefs))
+	}
+	if counted.count != 0 {
+		t.Fatalf("%d redelivery/ies reported for a request briefed once", counted.count)
+	}
+}
+
+func TestAReadyThatRedeliversDuringTheDeltaReadBriefsTheRequestOnce(t *testing.T) {
+	// 🔴 #2372, the opposite order: `ready` attaches AND runs RedeliverOpen while
+	// the ring's first delivery is still reading the delta. Nothing had been sent,
+	// so RedeliverOpen started a second delivery — and both reads came back to a
+	// sink: two briefs, two `fresh` acks, two openers, with no redelivery counted.
+	ctx := context.Background()
+	sink := newRecorder()
+	counted := &redeliveryCounter{}
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{Observer: counted})
+	host.onRead = func() {
+		manager.Attach("conn-1", sink, 48000)
+		if err := manager.RedeliverOpen(ctx); err != nil {
+			t.Errorf("RedeliverOpen: %v", err)
+		}
+	}
+
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if len(sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) went out, want 1: RedeliverOpen started a second delivery of a request whose first was still reading", len(sink.briefs))
+	}
+	if counted.count != 0 {
+		t.Fatalf("%d redelivery/ies reported for a request briefed once", counted.count)
+	}
+}
+
+func TestARingHeldWhileItsReadRanIsStillBriefedByTheNextAttach(t *testing.T) {
+	// The in-flight mark must never strand a ring: a delivery that finds no sink
+	// clears it, so the attach that follows still briefs the request.
+	ctx := context.Background()
+	sink := newRecorder()
+	manager := New(seededHost(), Options{})
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	manager.Attach("conn-1", sink, 48000)
+	if err := manager.RedeliverOpen(ctx); err != nil {
+		t.Fatalf("RedeliverOpen: %v", err)
+	}
+	if len(sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) went out, want the held one", len(sink.briefs))
+	}
+}
+
+// droppingSink is a dying connection: its SendBrief runs `during` (the
+// replacement connection attaching) and then fails.
+type droppingSink struct {
+	*recorder
+	during func()
+}
+
+func (d *droppingSink) SendBrief(_ context.Context, _ Brief) error {
+	if d.during != nil {
+		hook := d.during
+		d.during = nil
+		hook()
+	}
+	return errors.New("the connection is gone")
+}
+
+func TestABriefLostOnAReplacedConnectionIsSentOnTheNewOne(t *testing.T) {
+	// 🔴 #2372 review of 02915a91: the send blocks on conn-1 while conn-1 drops
+	// and conn-2 attaches; conn-2's RedeliverOpen skips the request because its
+	// delivery is still in flight; then the send fails. With the mark cleared
+	// and nothing retrying, the request sat until its deadline and expired — a
+	// harness restart is exactly this reconnect.
+	ctx := context.Background()
+	replacement := newRecorder()
+	manager := New(seededHost(), Options{})
+	dying := &droppingSink{recorder: newRecorder()}
+	dying.during = func() {
+		manager.Detach("conn-1")
+		manager.Attach("conn-2", replacement, 48000)
+		if err := manager.RedeliverOpen(ctx); err != nil {
+			t.Errorf("RedeliverOpen: %v", err)
+		}
+	}
+	manager.Attach("conn-1", dying, 48000)
+
+	_ = manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	})
+	if len(replacement.briefs) != 1 {
+		t.Fatalf("%d brief(s) reached the replacement connection, want 1 — the request was stranded", len(replacement.briefs))
+	}
+}
+
+func TestARedeliveryOfARequestWhoseDeliveryIsInFlightSendsNothing(t *testing.T) {
+	// #2372 review (the older nit): the ack sweep and RedeliverOpen choose
+	// requests and mark them in different critical sections, so both could
+	// choose the same one. `redeliver` claims the request itself: a request
+	// already being delivered is never delivered a second time.
+	ctx := context.Background()
+	sink := newRecorder()
+	host := &attachingHost{Host: seededHost()}
+	manager := New(host, Options{})
+	manager.Attach("conn-1", sink, 48000)
+	host.onRead = func() {
+		manager.mu.Lock()
+		request := manager.byID["req_1"]
+		manager.mu.Unlock()
+		if err := manager.redeliver(ctx, request); err != nil {
+			t.Errorf("redeliver: %v", err)
+		}
+	}
+	if err := manager.OnRing(ctx, contracts.Ring{
+		RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
+		Reason: "mentioned", ThroughCursor: "c0002",
+	}); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if len(sink.briefs) != 1 {
+		t.Fatalf("%d brief(s) went out, want 1: a second collector delivered a request already in flight", len(sink.briefs))
+	}
+}
+
 // redeliveryCounter records only what it is asked about.
 type redeliveryCounter struct {
 	NopObserver
@@ -1054,5 +1230,68 @@ func TestTheFreshOpenerIsSizedToWhatTheContextLeft(t *testing.T) {
 				t.Fatalf("the brief carried context %+v, want %+v — the platform's, one to one", got, testCase.context)
 			}
 		})
+	}
+}
+
+// releasingSink is a plugin connection that can be told a conversation was
+// released (#2356).
+type releasingSink struct {
+	*recorder
+	released [][2]string
+}
+
+func (s *releasingSink) SendRelease(_ context.Context, conversationID string, reason contracts.ReleaseReason) error {
+	s.released = append(s.released, [2]string{conversationID, string(reason)})
+	return nil
+}
+
+// 🔴 #2356: a release reaches a sink that speaks it, and frees the
+// conversation's slot only once its request is over — a release withdraws
+// nothing, so an open request keeps the slot that makes the next ring
+// supersede it.
+func TestAReleaseReachesThePluginAndFreesOnlyAFinishedSlot(t *testing.T) {
+	r := newRig(t, Options{})
+	sink := &releasingSink{recorder: newRecorder()}
+	r.manager.Attach("conn-1", sink, 48000)
+	ctx := context.Background()
+
+	r.ring(t, "req_1", "c0001", "c0003")
+	if err := r.manager.OnPlatformRelease(ctx, "conv_1", contracts.ReleasePassEnded); err != nil {
+		t.Fatalf("OnPlatformRelease: %v", err)
+	}
+	if len(sink.released) != 1 || sink.released[0] != [2]string{"conv_1", "pass_ended"} {
+		t.Fatalf("the plugin was told %v", sink.released)
+	}
+	r.manager.mu.Lock()
+	_, held := r.manager.byConversation["conv_1"]
+	r.manager.mu.Unlock()
+	if !held {
+		t.Fatal("a release dropped the slot of a request still open")
+	}
+
+	// A slot whose request is over but still held — what a close racing a newer
+	// ring can leave — is the per-conversation state a release drops.
+	r.manager.mu.Lock()
+	r.manager.byConversation["conv_1"].State = StateCancelled
+	r.manager.mu.Unlock()
+	if err := r.manager.OnPlatformRelease(ctx, "conv_1", contracts.ReleaseArchived); err != nil {
+		t.Fatalf("OnPlatformRelease: %v", err)
+	}
+	r.manager.mu.Lock()
+	_, held = r.manager.byConversation["conv_1"]
+	r.manager.mu.Unlock()
+	if held {
+		t.Fatal("the slot of a finished request outlived its release")
+	}
+	if len(sink.released) != 2 || sink.released[1][1] != "archived" {
+		t.Fatalf("the plugin was told %v", sink.released)
+	}
+}
+
+// A sink that cannot speak a release hears nothing, and nothing fails.
+func TestAReleaseToASinkWithoutItIsNotAnError(t *testing.T) {
+	manager, _, _ := attached(t, Options{})
+	if err := manager.OnPlatformRelease(context.Background(), "conv_1", contracts.ReleaseDeleted); err != nil {
+		t.Fatalf("a release to a plain sink must be ordinary, got %v", err)
 	}
 }

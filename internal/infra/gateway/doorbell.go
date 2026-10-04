@@ -116,6 +116,13 @@ func (d *doorbell) dispatch(finished chan<- struct{}) {
 			d.handlers.OnRing(toRing(value))
 		case protocol.Cancel:
 			d.handlers.OnCancel(value.RequestID, contracts.CancelReason(value.Reason))
+		case protocol.Release:
+			// The conversation's cached ticket goes with it: nothing more is read there
+			// until the next arrival, which mints its own.
+			d.host.forgetConversation(value.ConversationID)
+			if d.handlers.OnRelease != nil {
+				d.handlers.OnRelease(value.ConversationID, contracts.ReleaseReason(value.Reason))
+			}
 		case disconnected:
 			d.handlers.OnDisconnect(string(value))
 		}
@@ -275,6 +282,15 @@ func (d *doorbell) connectOnce(ctx context.Context, policy *backoff) (endKind, t
 					continue
 				}
 				if !d.enqueue(ctx, cancel) {
+					return endTransient, 0, DisconnectConnectionLost
+				}
+			case protocol.FrameRelease:
+				var release protocol.Release
+				if err := json.Unmarshal(raw, &release); err != nil || release.ConversationID == "" {
+					h.log.Warn("skipping a release that did not decode")
+					continue
+				}
+				if !d.enqueue(ctx, release) {
 					return endTransient, 0, DisconnectConnectionLost
 				}
 			case protocol.FrameDisconnect:

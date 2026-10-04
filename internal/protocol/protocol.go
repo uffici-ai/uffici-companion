@@ -56,7 +56,8 @@ type Ring struct {
 	Deadline       time.Time `json:"deadline"`
 	Since          string    `json:"since"`
 	Through        string    `json:"through"`
-	// ResetSession is reserved: `false` in v1.
+	// ResetSession says start fresh (#2356): use no state from before this ring
+	// for this conversation — the first ring of a card's lane pass.
 	ResetSession bool `json:"resetSession"`
 }
 
@@ -78,6 +79,16 @@ type Cancel struct {
 	Envelope
 	RequestID string `json:"requestId"`
 	// Reason is `stop`, `superseded` or `expired`.
+	Reason string `json:"reason"`
+}
+
+// Release says the harness may discard what it holds for one conversation
+// (#2356): the agent's lane pass on a card ended, or the card was archived or
+// its conversation deleted. It withdraws no request.
+type Release struct {
+	Envelope
+	ConversationID string `json:"conversationId"`
+	// Reason is `pass_ended`, `archived` or `deleted`.
 	Reason string `json:"reason"`
 }
 
@@ -105,6 +116,7 @@ const (
 	FrameHello      = "hello"
 	FrameRing       = "ring"
 	FrameCancel     = "cancel"
+	FrameRelease    = "release"
 	FrameDisconnect = "disconnect"
 )
 
@@ -259,6 +271,72 @@ type ReadResponse struct {
 	// Context is the composed context (#2331) — on the entries read only, and
 	// optional, so an older gateway's read still decodes.
 	Context *Context `json:"context,omitempty"`
+	// Card is the card a card conversation's read is about (#2354). The companion
+	// forwards the context's Card block — the platform composed it — and never
+	// reads this; it is decoded so the struct matches the contract.
+	Card *CardRead `json:"card,omitempty"`
+}
+
+// CardRead is a read's card: `state` is "ok" with every other field, or
+// "unavailable" with none — the context then names `card_unavailable`.
+type CardRead struct {
+	State       string        `json:"state"`
+	CardURN     string        `json:"cardUrn,omitempty"`
+	BoardURN    string        `json:"boardUrn,omitempty"`
+	Title       string        `json:"title,omitempty"`
+	Description *string       `json:"description,omitempty"`
+	Board       *CardBoard    `json:"board,omitempty"`
+	Lane        *CardLane     `json:"lane,omitempty"`
+	Lanes       []CardLaneRef `json:"lanes,omitempty"`
+	Role        string        `json:"role,omitempty"`
+	// Pass is the lane pass the read is in (#2356).
+	Pass *CardPass `json:"pass,omitempty"`
+	// Work is the card's Work section, by pass (#2357).
+	Work []CardWorkPart `json:"work,omitempty"`
+}
+
+// CardWorkPart is one author's part of a card's Work section for one lane pass.
+// An agent author is its slug; a person carries no name at all.
+type CardWorkPart struct {
+	LaneName  *string        `json:"laneName"`
+	PassSeq   int            `json:"passSeq"`
+	Author    CardWorkAuthor `json:"author"`
+	Body      string         `json:"body"`
+	UpdatedAt string         `json:"updatedAt"`
+	Yours     bool           `json:"yours"`
+}
+
+// CardWorkAuthor is `agent` with its slug, or `user` with nothing else.
+type CardWorkAuthor struct {
+	Type string  `json:"type"`
+	Slug *string `json:"slug,omitempty"`
+}
+
+// CardPass is the arrival that began the pass, and how many entries of earlier
+// passes the read counted instead of serving.
+type CardPass struct {
+	ArrivalEntryID int `json:"arrivalEntryId"`
+	EarlierEntries int `json:"earlierEntries"`
+}
+
+// CardBoard is the card's board: its name and its briefing.
+type CardBoard struct {
+	Name     string  `json:"name"`
+	Briefing *string `json:"briefing"`
+}
+
+// CardLane is the lane the card is in, with its instruction and its agent.
+type CardLane struct {
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Instruction *string `json:"instruction"`
+	AgentID     *string `json:"agentId"`
+}
+
+// CardLaneRef is one lane of the board's lane map.
+type CardLaneRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 // Context is what the agent is told before the conversation, composed by the

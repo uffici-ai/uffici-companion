@@ -179,6 +179,19 @@ const (
 	CancelExpired CancelReason = "expired"
 )
 
+// ReleaseReason is why the platform released a conversation (#2356) — the
+// protocol's words, carried to the local wire verbatim.
+type ReleaseReason string
+
+const (
+	// ReleasePassEnded — the agent's lane pass on a card ended.
+	ReleasePassEnded ReleaseReason = "pass_ended"
+	// ReleaseArchived — the card was archived.
+	ReleaseArchived ReleaseReason = "archived"
+	// ReleaseDeleted — the card's conversation was deleted.
+	ReleaseDeleted ReleaseReason = "deleted"
+)
+
 // Handlers is what an AgentsHost calls on the companion. Every one is invoked
 // on the host's own goroutine and must not block.
 type Handlers struct {
@@ -186,6 +199,9 @@ type Handlers struct {
 	OnRing func(Ring)
 	// OnCancel withdraws an open request.
 	OnCancel func(requestID string, reason CancelReason)
+	// OnRelease says the harness may let go of a conversation (#2356). Optional:
+	// a nil handler drops the frame.
+	OnRelease func(conversationID string, reason ReleaseReason)
 	// OnDisconnect reports the doorbell closing, with a classified reason.
 	OnDisconnect func(reason string)
 }

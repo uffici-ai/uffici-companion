@@ -203,6 +203,8 @@ func Decode(raw []byte, dir Direction) (any, error) {
 		target = &Done{}
 	case "cancel":
 		target = &Cancel{}
+	case "release":
+		target = &Release{}
 	case "call":
 		target = &Call{}
 	case "result":

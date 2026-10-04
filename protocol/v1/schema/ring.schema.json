@@ -84,8 +84,7 @@
 			"pattern": "^\\d+$"
 		},
 		"resetSession": {
-			"type": "boolean",
-			"const": false
+			"type": "boolean"
 		}
 	},
 	"required": [

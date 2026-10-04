@@ -337,6 +337,22 @@ func (h *Host) DeliverCancel(requestID string, reason contracts.CancelReason) er
 	return nil
 }
 
+// DeliverRelease tells the companion a conversation was released (#2356), as
+// the doorbell would. A nil OnRelease drops it, as the real host does.
+func (h *Host) DeliverRelease(conversationID string, reason contracts.ReleaseReason) error {
+	h.mu.Lock()
+	if !h.open {
+		h.mu.Unlock()
+		return fmt.Errorf("memory: no doorbell is open")
+	}
+	handler := h.handlers.OnRelease
+	h.mu.Unlock()
+	if handler != nil {
+		handler(conversationID, reason)
+	}
+	return nil
+}
+
 // Questions returns every question a post carried (#2232), in order.
 func (h *Host) Questions() []contracts.Question {
 	h.mu.Lock()

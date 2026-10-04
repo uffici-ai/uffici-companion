@@ -504,6 +504,17 @@ func (d *Double) Cancel(requestID, reason string) error {
 	}))
 }
 
+// Release sends a release on the live doorbell (#2356).
+func (d *Double) Release(conversationID, reason string) error {
+	s, err := d.live()
+	if err != nil {
+		return err
+	}
+	return s.conn.Write(context.Background(), websocket.MessageText, mustJSON(protocol.Release{
+		Envelope: protocol.Envelope{Type: protocol.FrameRelease, V: 1}, ConversationID: conversationID, Reason: reason,
+	}))
+}
+
 // Disconnect sends a disconnect frame and closes the live socket with code.
 func (d *Double) Disconnect(reason string, code websocket.StatusCode) error {
 	s, err := d.live()

@@ -239,6 +239,7 @@
 									"shed",
 									"knowledge_unavailable",
 									"context_trimmed",
+									"card_unavailable",
 									"invalid_citation"
 								]
 							},
@@ -262,6 +263,235 @@
 				"bounded"
 			],
 			"additionalProperties": false
+		},
+		"card": {
+			"oneOf": [
+				{
+					"type": "object",
+					"properties": {
+						"state": {
+							"type": "string",
+							"const": "ok"
+						},
+						"cardUrn": {
+							"type": "string",
+							"pattern": "^urn:uffici:card:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+						},
+						"boardUrn": {
+							"type": "string",
+							"pattern": "^urn:uffici:board:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+						},
+						"title": {
+							"type": "string"
+						},
+						"description": {
+							"type": [
+								"string",
+								"null"
+							]
+						},
+						"board": {
+							"type": "object",
+							"properties": {
+								"name": {
+									"type": "string"
+								},
+								"briefing": {
+									"type": [
+										"string",
+										"null"
+									]
+								}
+							},
+							"required": [
+								"name",
+								"briefing"
+							]
+						},
+						"lane": {
+							"type": "object",
+							"properties": {
+								"id": {
+									"type": "string",
+									"format": "uuid",
+									"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+								},
+								"name": {
+									"type": "string"
+								},
+								"instruction": {
+									"type": [
+										"string",
+										"null"
+									]
+								},
+								"agentId": {
+									"anyOf": [
+										{
+											"type": "string",
+											"format": "uuid",
+											"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+										},
+										{
+											"type": "null"
+										}
+									]
+								}
+							},
+							"required": [
+								"id",
+								"name",
+								"instruction",
+								"agentId"
+							]
+						},
+						"lanes": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"id": {
+										"type": "string",
+										"format": "uuid",
+										"pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+									},
+									"name": {
+										"type": "string"
+									}
+								},
+								"required": [
+									"id",
+									"name"
+								]
+							}
+						},
+						"role": {
+							"type": "string",
+							"enum": [
+								"lane_agent",
+								"not_lane_agent"
+							]
+						},
+						"pass": {
+							"type": "object",
+							"properties": {
+								"arrivalEntryId": {
+									"type": "integer",
+									"minimum": 0,
+									"maximum": 9007199254740991
+								},
+								"earlierEntries": {
+									"type": "integer",
+									"minimum": 0,
+									"maximum": 9007199254740991
+								}
+							},
+							"required": [
+								"arrivalEntryId",
+								"earlierEntries"
+							]
+						},
+						"work": {
+							"type": "array",
+							"items": {
+								"type": "object",
+								"properties": {
+									"laneName": {
+										"type": [
+											"string",
+											"null"
+										]
+									},
+									"passSeq": {
+										"type": "integer",
+										"minimum": 0,
+										"maximum": 9007199254740991
+									},
+									"author": {
+										"oneOf": [
+											{
+												"type": "object",
+												"properties": {
+													"type": {
+														"type": "string",
+														"const": "agent"
+													},
+													"slug": {
+														"type": [
+															"string",
+															"null"
+														]
+													}
+												},
+												"required": [
+													"type",
+													"slug"
+												],
+												"additionalProperties": false
+											},
+											{
+												"type": "object",
+												"properties": {
+													"type": {
+														"type": "string",
+														"const": "user"
+													}
+												},
+												"required": [
+													"type"
+												],
+												"additionalProperties": false
+											}
+										]
+									},
+									"body": {
+										"type": "string"
+									},
+									"updatedAt": {
+										"type": "string",
+										"format": "date-time",
+										"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+									},
+									"yours": {
+										"type": "boolean"
+									}
+								},
+								"required": [
+									"laneName",
+									"passSeq",
+									"author",
+									"body",
+									"updatedAt",
+									"yours"
+								]
+							}
+						}
+					},
+					"required": [
+						"state",
+						"cardUrn",
+						"boardUrn",
+						"title",
+						"description",
+						"board",
+						"lane",
+						"lanes",
+						"role"
+					]
+				},
+				{
+					"type": "object",
+					"properties": {
+						"state": {
+							"type": "string",
+							"const": "unavailable"
+						}
+					},
+					"required": [
+						"state"
+					]
+				}
+			]
 		}
 	},
 	"required": [

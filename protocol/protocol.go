@@ -42,6 +42,7 @@ type Manifest struct {
 	Reserved          []string       `json:"reserved"`
 	ErrorClasses      []string       `json:"errorClasses"`
 	CancelReasons     []string       `json:"cancelReasons"`
+	ReleaseReasons    []string       `json:"releaseReasons"`
 	DisconnectReasons []string       `json:"disconnectReasons"`
 	ValidGoldens      map[string]int `json:"validGoldens"`
 	InvalidGoldens    map[string]int `json:"invalidGoldens"`

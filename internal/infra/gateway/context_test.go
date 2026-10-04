@@ -112,3 +112,42 @@ func TestAMalformedContextIsNamedMissingNeverDroppedNorAFailedRead(t *testing.T)
 		})
 	}
 }
+
+// 🔴 A card conversation's brief (#2354): the platform's Card block and a
+// card_unavailable entry reach the plugin exactly as composed — a scope the
+// companion has never heard of is still one block, mapped one to one.
+func TestACardBlockAndItsMissingEntrySurviveUnchanged(t *testing.T) {
+	cardText := "<<<card>>>\nCard: Latest OpenAI Models.\nLane instruction: Research the topic in depth.\n<<</card>>>"
+	in := &protocol.Context{
+		Blocks: []protocol.ContextBlock{
+			{Name: "Identity", Scope: "identity", Tokens: 31, Text: "You are an AI agent, not a human."},
+			{Name: "Card", Scope: "card", Tokens: 24, Text: cardText},
+		},
+		Tokens:  55,
+		Bounded: false,
+		Missing: []protocol.ContextMissing{{
+			Part: "card", Class: "card_unavailable",
+			Instruction: "This card's request could not be read; tell the person.",
+		}},
+	}
+	r := seedWithContext(t, in)
+	read, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	want := &contracts.Context{
+		Blocks: []contracts.ContextBlock{
+			{Name: "Identity", Scope: "identity", Tokens: 31, Text: "You are an AI agent, not a human."},
+			{Name: "Card", Scope: "card", Tokens: 24, Text: cardText},
+		},
+		Tokens:  55,
+		Bounded: false,
+		Missing: []contracts.ContextMissing{{
+			Part: "card", Class: "card_unavailable",
+			Instruction: "This card's request could not be read; tell the person.",
+		}},
+	}
+	if !reflect.DeepEqual(read.Context, want) {
+		t.Fatalf("the card context arrived as %+v, want %+v", read.Context, want)
+	}
+}

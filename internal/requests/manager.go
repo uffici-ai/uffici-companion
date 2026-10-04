@@ -41,6 +41,13 @@ type PluginSink interface {
 	SendFailure(ctx context.Context, requestID, class, instruction string) error
 }
 
+// ReleaseSink is a plugin sink that can say a conversation was released
+// (#2356). Optional: a sink without it simply hears nothing, and the next
+// arrival's `resetSession` starts the harness fresh anyway.
+type ReleaseSink interface {
+	SendRelease(ctx context.Context, conversationID string, reason contracts.ReleaseReason) error
+}
+
 // Observer is told what happened, for the fixture runner's expectations and for
 // the surface's one-line-per-frame log.
 //
@@ -332,9 +339,11 @@ func (m *Manager) OnRing(ctx context.Context, ring contracts.Ring) error {
 func (m *Manager) deliver(ctx context.Context, request *Request) error {
 	m.mu.Lock()
 	budget := contextBudget(m.budget)
+	request.briefing = true
 	m.mu.Unlock()
 	read, err := m.host.ReadSince(ctx, request.ConversationID, request.SinceCursor, request.ThroughCursor, budget)
 	if err != nil {
+		m.doneBriefing(request)
 		// 🔴 Closed as an error, never left to expire: an expiry closes as
 		// `cancelled`, which tells the person nothing, and the host has already
 		// retried what could be retried. The error close is what puts "the agent
@@ -344,6 +353,12 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 
 	m.mu.Lock()
 	sink, connID := m.sink, m.connID
+	if sink == nil {
+		// 🔴 Cleared in the SAME critical section that found no sink: an Attach
+		// after this point is followed by a RedeliverOpen that sees the request
+		// unmarked and briefs it, so a held ring is never stranded (#2372).
+		request.briefing = false
+	}
 	m.mu.Unlock()
 	if sink == nil {
 		// No plugin attached: the request stays open and is delivered when one
@@ -364,10 +379,24 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		Context:        read.Context,
 	}
 	if err := sink.SendBrief(ctx, brief); err != nil {
+		// 🔴 A send that failed because ANOTHER connection replaced this one keeps
+		// its claim and goes out on the new one (#2372): that connection's
+		// RedeliverOpen skipped the request while this send was in flight, so
+		// nothing else would — it would sit until its deadline and expire.
+		m.mu.Lock()
+		replaced := m.sink != nil && m.connID != connID
+		if !replaced {
+			request.briefing = false
+		}
+		m.mu.Unlock()
+		if replaced {
+			return m.deliver(ctx, request)
+		}
 		return fmt.Errorf("sending the brief for %s: %w", request.RequestID, err)
 	}
 
 	m.mu.Lock()
+	request.briefing = false
 	if !m.advanceLocked(request, StateDelivered) {
 		// Withdrawn while the brief was on the wire: nothing more to do for it.
 		m.mu.Unlock()
@@ -380,6 +409,13 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 
 	m.observer.BriefSent(request.RequestID, request.ConversationID, len(read.Entries), charsOf(read.Entries))
 	return nil
+}
+
+// doneBriefing clears a delivery's in-flight mark on a path that sent nothing.
+func (m *Manager) doneBriefing(request *Request) {
+	m.mu.Lock()
+	request.briefing = false
+	m.mu.Unlock()
 }
 
 // supersede cancels an open request and closes it upstream as cancelled.
@@ -533,6 +569,15 @@ func (m *Manager) redeliver(ctx context.Context, request *Request) error {
 	// `redelivery_exhausted` — deliberate: that bound exists for a plugin that
 	// keeps REJECTING or never acking, not for a wire that is down, where the
 	// ack timeout and the request's own deadline are what end it.
+	// 🔴 Claimed HERE, in the same critical section that counts it (#2372): the
+	// ack sweep and RedeliverOpen choose requests under one lock and deliver under
+	// another, so both may have chosen this one. A request whose delivery is in
+	// flight is never delivered a second time, and is not counted again.
+	if request.briefing {
+		m.mu.Unlock()
+		return nil
+	}
+	request.briefing = true
 	firstDelivery := request.DeliveredAt.IsZero()
 	if !firstDelivery {
 		request.Redeliveries++
@@ -703,6 +748,26 @@ func (m *Manager) OnPlatformCancel(ctx context.Context, requestID string, reason
 	return m.cancel(ctx, request, reason)
 }
 
+// OnPlatformRelease passes a release to the plugin (#2356) and drops the
+// manager's own slot for the conversation when the request in it is over.
+//
+// 🔴 A release withdraws NO request: one still open keeps its slot until its
+// own cancel or close — the platform cancels first, so an open one here means a
+// cancel still in flight, and dropping the slot would orphan it.
+func (m *Manager) OnPlatformRelease(ctx context.Context, conversationID string, reason contracts.ReleaseReason) error {
+	m.mu.Lock()
+	if request, held := m.byConversation[conversationID]; held && request.State.Terminal() {
+		delete(m.byConversation, conversationID)
+	}
+	sink := m.sink
+	m.mu.Unlock()
+	releaser, ok := sink.(ReleaseSink)
+	if !ok {
+		return nil
+	}
+	return releaser.SendRelease(ctx, conversationID, reason)
+}
+
 // Tick expires requests past their deadline and redelivers ones whose ack never
 // came. The clock is injected, so tests do not sleep.
 func (m *Manager) Tick(ctx context.Context) error {
@@ -718,7 +783,7 @@ func (m *Manager) Tick(ctx context.Context) error {
 			expired = append(expired, request)
 			continue
 		}
-		if request.State == StateDelivered && !request.DeliveredAt.IsZero() &&
+		if request.State == StateDelivered && !request.DeliveredAt.IsZero() && !request.briefing &&
 			now.Sub(request.DeliveredAt) > m.limits.AckTimeout {
 			unacked = append(unacked, request)
 		}
@@ -739,13 +804,30 @@ func (m *Manager) Tick(ctx context.Context) error {
 }
 
 // RedeliverOpen sends every unacknowledged request again — what a reconnect does.
+//
+// 🔴 Except one already briefed on the connection attached NOW (#2372). A ring
+// that arrives before `ready` reads its delta before it looks for a sink, so a
+// `ready` landing during that read lets the delivery brief it on the new
+// connection — and re-sending it here briefed the same request twice: two
+// `fresh` acks, two openers, a redelivery attempt spent. A held ring (no
+// owner) and a request reopened for a restarted harness (its owner purged at
+// Detach) still go out.
 func (m *Manager) RedeliverOpen(ctx context.Context) error {
 	m.mu.Lock()
 	var pending []*Request
 	for _, request := range m.byID {
-		if request.State == StateDelivered {
-			pending = append(pending, request)
+		if request.State != StateDelivered {
+			continue
 		}
+		if owner, sent := m.connOf[request.RequestID]; sent && owner == m.connID {
+			continue
+		}
+		// …and one whose delivery is still in flight: it will find the sink this
+		// attach just set, and a second delivery would brief it twice (#2372).
+		if request.briefing {
+			continue
+		}
+		pending = append(pending, request)
 	}
 	m.mu.Unlock()
 

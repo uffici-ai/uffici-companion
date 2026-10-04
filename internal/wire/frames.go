@@ -105,7 +105,7 @@ func CloseReasons() []CloseReason {
 
 // FrameTypes lists every frame `type` value.
 func FrameTypes() []string {
-	return []string{"hello", "ready", "brief", "ack", "opener", "post", "done", "cancel", "call", "result"}
+	return []string{"hello", "ready", "brief", "ack", "opener", "post", "done", "cancel", "release", "call", "result"}
 }
 
 // CallErrorClass is a `result` error's class: transport concerns only, a closed
@@ -347,6 +347,21 @@ type Done struct {
 	Outcome    string `json:"outcome"`
 	ErrorClass string `json:"errorClass,omitempty"`
 }
+
+// Release tells the plugin it may discard what it holds for one conversation
+// (#2356): `pass_ended`, `archived` or `deleted`. It withdraws no request.
+type Release struct {
+	Envelope
+	ConversationID string `json:"conversationId"`
+	Reason         string `json:"reason"`
+}
+
+// The release reasons, the platform's words carried through verbatim.
+const (
+	ReleasePassEnded = "pass_ended"
+	ReleaseArchived  = "archived"
+	ReleaseDeleted   = "deleted"
+)
 
 // Cancel withdraws an open request.
 type Cancel struct {

@@ -112,6 +112,7 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		{"post", "post", &Post{}},
 		{"done", "done", &Done{}},
 		{"cancel", "cancel", &Cancel{}},
+		{"release", "release", &Release{}},
 		{"call", "call", &Call{}},
 		{"result", "result", &Result{}},
 		{"hello", "pluginHello", &PluginHello{}},

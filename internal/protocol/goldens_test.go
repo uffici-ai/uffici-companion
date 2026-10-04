@@ -20,6 +20,8 @@ func newFor(t *testing.T, schema string) any {
 		return &Ack{}
 	case "cancel":
 		return &Cancel{}
+	case "release":
+		return &Release{}
 	case "close-request":
 		return &CloseRequest{}
 	case "close-response":

@@ -108,6 +108,13 @@ type Request struct {
 	// (#2331) — the fresh session's opener gets the declared budget minus this.
 	// Zero when the brief carried no context.
 	ContextTokens int
+
+	// briefing marks a delivery in flight (#2372): set under the manager's lock
+	// before the delta read, cleared when the brief is recorded as sent, when the
+	// send fails, or when no plugin was attached to send it to. RedeliverOpen and
+	// the ack sweep skip a request carrying it, so one read in flight is never
+	// joined by a second delivery of the same request.
+	briefing bool
 }
 
 // Limits bound one request. Zero values mean the defaults.

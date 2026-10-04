@@ -1,5 +1,5 @@
 {
-	"reason": "resetSession is reserved and false in v1",
+	"reason": "resetSession says start fresh or not — a boolean, never a string (#2356)",
 	"value": {
 		"type": "ring",
 		"v": 1,
@@ -17,6 +17,6 @@
 		"deadline": "2026-09-23T10:05:00.000Z",
 		"since": "1040",
 		"through": "1042",
-		"resetSession": true
+		"resetSession": "true"
 	}
 }

@@ -382,9 +382,9 @@ func TestCloseReasonsAndFrameTypesAreTheClosedVocabularies(t *testing.T) {
 		t.Fatalf("%d close reasons — the vocabulary is closed at eight", len(CloseReasons()))
 	}
 	// Ten since #2028's call/result tunnel: generic control-plane operations
-	// ride one frame pair instead of a frame each.
-	if len(FrameTypes()) != 10 {
-		t.Fatalf("%d frame types — the wire has ten", len(FrameTypes()))
+	// ride one frame pair instead of a frame each; eleven since #2356's release.
+	if len(FrameTypes()) != 11 {
+		t.Fatalf("%d frame types — the wire has eleven", len(FrameTypes()))
 	}
 	seen := map[string]bool{}
 	for _, reason := range CloseReasons() {

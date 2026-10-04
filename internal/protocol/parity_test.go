@@ -153,7 +153,9 @@ func compare(t *testing.T, path string, typ reflect.Type, node *schemaNode) erro
 		if property.Items != nil {
 			property = property.Items
 		}
-		if err := compare(t, path+"."+f.name, inner, property); err != nil {
+		// A nested union (a read's card, #2354) is walked as its arms' merge, like a
+		// top-level one.
+		if err := compare(t, path+"."+f.name, inner, property.merged()); err != nil {
 			return err
 		}
 	}
@@ -185,6 +187,7 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"post-request":                 PostRequest{},
 		"post-response":                PostResponse{},
 		"read-response":                ReadResponse{},
+		"release":                      Release{},
 		"ring":                         Ring{},
 		"ticket-response":              TicketResponse{},
 		"tool-call-request":            ToolCallRequest{},
