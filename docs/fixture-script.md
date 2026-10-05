@@ -32,6 +32,7 @@ exists, that cursors increase, that the tally expects at least one ring.
   "assert": { "ringsDelivered": 1 },
   "tools": [],
   "results": {},
+  "memory": { "unavailableIn": ["<name>"] },
   "logs": { "harnessLevel": "info" }
 }
 ```
@@ -40,6 +41,16 @@ exists, that cursors increase, that the tally expects at least one ring.
 
 - **`tools`** is the **agent's** tool catalog, in the `tools.list` result's shape (`name`, `description`, `parameters`, `permission`), served as written for **every** conversation the script declares. On the platform the catalog is the agent's, the same in each conversation it works in, so a plugin that keeps one catalog for its whole harness finds the same tools whichever conversation it listed first. Leave it out for an agent with no tools.
 - **`results`** is each tool's scripted answer, keyed by tool name: `{result, callUrn?}`, given verbatim to every call of it, in any conversation. The `callUrn` is the script's own data, relayed as written — the host never makes one up — and absent it answers `null`, a call that did not run. A listed tool with no answer answers `{"ok": true}` and a null `callUrn`; a call naming a tool the catalog does not list is the platform's `not_found`; a call naming a request no ring delivered is refused before anything is recorded.
+
+`memory` is optional: the agent's memory. Absent, the host keeps a working memory — a
+`remember` keeps one fact on the request's conversation, and a `recall` there answers the
+conversation's facts newest first, matched by a shared word of four or more letters (a
+stand-in for the platform's search: a run proves the round trip, not the ranking).
+`unavailable: true` answers every memory op as the platform does with its memory down;
+`unavailableIn` does that only in the conversations it names, so one run shows memory
+working in one conversation and an outage in another. The scripted host serves a memory
+op or a tool call on any request it rang, closed or not; the platform refuses one on a
+closed request, so a script never relies on that.
 
 `logs` is optional: what the scripted host answers a logs ticket with. Absent,
 shipping is on with the harness at `warn`, the platform's default. `ci/wave1.json` raises
@@ -50,7 +61,7 @@ floor (`UFFICI_LOG_LEVEL_HARNESS=info`) to match, because the stricter of the tw
 
 Keyed by a name the steps use; `id` is what travels the wire.
 
-- **`offset`** is the companion's agent's **committed** position: the exclusive lower bound of the next delta. It advances only when a request closes as `answered` or `empty`. Cancelled, superseded, expired and errored leave it, so the next brief covers the union — entries nobody answered stay in range.
+- **`offset`** is the companion's agent's **committed** position when the run starts: the exclusive lower bound of the first delta. It advances only when a request closes as `answered` or `empty`, and **every ring starts at the offset committed so far**, as the platform's would. Cancelled, superseded, expired and errored leave it, so the next brief covers the union — entries nobody answered stay in range.
 - **`entries`** are in cursor order, strictly increasing. They are already bounded: the platform bounds, the fixture serves.
 - An entry's `author.self` marks the answering agent's own. A **delta omits** them; an **opener includes** them.
 - **`context`** (optional) is what that conversation's delta read carries, written in the brief's context shape (`blocks`, `tokens`, `bounded`, optional `missing`). It is served as written and never sized to the budget — the platform composes and sizes it, the fixture only serves it. Leave it out to play a platform that sends none; the plugin then keeps its static hint.
@@ -72,6 +83,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `secondConnection` | Asserts a second plugin is refused with `already_attached` |
 | `refuseNextQuestion` | The platform fails the next post that carries a question (`platform_unavailable`), so the companion withdraws the request that asked — the one real way a turn waiting on a question is cancelled |
 | `expectToolCall` | Waits for a tool call on the current request: `name`, optional `argumentsContain` (a substring of the call's arguments as JSON), `withinMs` |
+| `expectMemory` | Waits for a memory op on the current request: `op` (`recall`, `remember`, `forget` or `unfold`), `withinMs` |
 | `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
 | `wait` | `ms` |
 
@@ -83,9 +95,9 @@ would pass instantly while asserting nothing.
 ### `assert`
 
 The terminal tally: `ringsDelivered`, `acks`, `sessions`, `openersSent`,
-`posts`, `closes`, `cancels`, `toolCalls`. `toolCalls`, when present, is exactly
+`posts`, `closes`, `cancels`, `toolCalls`, `memoryOps`. `toolCalls`, when present, is exactly
 how many tool calls reached the scripted host — zero included, so a script can
-assert that none did. It is a **second, independent** check — a run can
+assert that none did. `memoryOps` counts each memory op it names, and only those. It is a **second, independent** check — a run can
 pass every step and still have done more than the script intended.
 
 ## The verdict
@@ -154,6 +166,8 @@ asserting less than its author believed:
 - a cause entry that is neither declared nor appended by an earlier step;
 - a `contains` matcher with no value, which matches every post;
 - an `expectToolCall` with no `name`, which matches every call;
+- an `expectMemory` naming an op that is not one of the four, which nothing could meet;
+- memory taken down in a conversation the script does not declare;
 - a scripted result for a tool the script's `tools` do not list, or a tool listed twice;
 - cursors that do not strictly increase, which makes a delta range ambiguous;
 - **a script with no `ring` at all**, which could only ever prove the daemon starts.

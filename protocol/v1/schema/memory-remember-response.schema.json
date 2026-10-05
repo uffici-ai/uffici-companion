@@ -1,0 +1,15 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/memory-remember-response.schema.json",
+	"title": "memory-remember-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"urn": {
+			"type": "string",
+			"pattern": "^urn:uffici:fact:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+		}
+	},
+	"required": [
+		"urn"
+	]
+}

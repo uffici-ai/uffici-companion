@@ -57,9 +57,22 @@ type autoPlugin struct {
 	noAck bool
 	// beforePost runs between the ack and the post — a turn calling a tool (#2349).
 	beforePost func(ctx context.Context, requestID string)
+
+	briefsMu sync.Mutex
+	// briefs is every brief the plugin was handed, in order (#2390).
+	briefs []requests.Brief
+}
+
+func (a *autoPlugin) seen() []requests.Brief {
+	a.briefsMu.Lock()
+	defer a.briefsMu.Unlock()
+	return append([]requests.Brief(nil), a.briefs...)
 }
 
 func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error {
+	a.briefsMu.Lock()
+	a.briefs = append(a.briefs, brief)
+	a.briefsMu.Unlock()
 	if a.noAck {
 		return nil
 	}
@@ -812,5 +825,80 @@ func TestExpectToolCallIsScopedToTheCurrentRequest(t *testing.T) {
 	}
 	if result.OK() {
 		t.Fatal("turn one's tool call met turn two's expectation")
+	}
+}
+
+// 🔴 #2386: `expectMemory` is met by a memory op of that kind on the CURRENT
+// request, and the `memoryOps` tally asserts the ops it names.
+func TestExpectMemoryAndTheMemoryOpsTally(t *testing.T) {
+	ring := fixture.Step{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"}
+	for name, tc := range map[string]struct {
+		expect fixture.Step
+		tally  map[string]int
+		pass   bool
+	}{
+		"the op on this request":       {fixture.Step{Step: "expectMemory", Op: "remember", WithinMs: 1000}, map[string]int{"remember": 1}, true},
+		"another op is a miss":         {fixture.Step{Step: "expectMemory", Op: "forget", WithinMs: 200}, nil, false},
+		"a tally that disagrees fails": {fixture.Step{Step: "expectMemory", Op: "remember", WithinMs: 1000}, map[string]int{"remember": 2}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script([]fixture.Step{ring, tc.expect,
+				{Step: "expectPost", Matcher: "nonEmpty", WithinMs: 1000},
+			}, fixture.Assertions{RingsDelivered: 1, MemoryOps: tc.tally})
+			plugin := &autoPlugin{session: requests.SessionFresh, answer: "Noted."}
+			r := newRig(t, s, plugin)
+			plugin.beforePost = func(ctx context.Context, requestID string) {
+				if _, err := r.host.Memory(ctx, contracts.MemoryRemember, requestID, json.RawMessage(`{"text":"The forklift needs a service."}`)); err != nil {
+					t.Errorf("remember: %v", err)
+				}
+			}
+			result, err := r.runner.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.OK() != tc.pass {
+				t.Fatalf("OK() = %v, want %v: %v", result.OK(), tc.pass, result.Unmet)
+			}
+			if result.Counts.MemoryOps["remember"] != 1 {
+				t.Fatalf("memory ops counted %v, want one remember", result.Counts.MemoryOps)
+			}
+		})
+	}
+}
+
+// 🔴 #2390: a ring starts where the platform would — at the offset the last
+// answered close COMMITTED, never at the script's starting offset. The platform's
+// `since` is the participant's committed position, so a brief after an answered
+// turn carries only what came after it; one that re-carried the whole
+// conversation drove a resumed harness session with messages it already held.
+func TestARingAfterAnAnsweredCloseStartsAtTheCommittedOffset(t *testing.T) {
+	s := script([]fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Conversation: "invoices", Outcome: "answered", WithinMs: 1000},
+		{Step: "appendEntries", Conversation: "invoices", Entries: []fixture.ScriptEntry{
+			{ID: "e3", Cursor: "c0003", Kind: "message", Text: "and one more thing",
+				Author: fixture.ScriptAuthor{Type: "member", ID: "m1", Label: "Ana"}},
+		}},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e3", ThroughCursor: "c0003"},
+		{Step: "expectClose", Conversation: "invoices", Outcome: "answered", WithinMs: 1000},
+	}, fixture.Assertions{RingsDelivered: 2})
+	plugin := &autoPlugin{session: requests.SessionFresh, answer: "ok"}
+	r := newRig(t, s, plugin)
+	result, err := r.runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("Run: %v %v", err, result.Unmet)
+	}
+	briefs := plugin.seen()
+	if len(briefs) != 2 {
+		t.Fatalf("%d briefs, want 2", len(briefs))
+	}
+	if briefs[0].SinceCursor != "c0001" {
+		t.Fatalf("the first ring starts at %q, want the script's offset c0001", briefs[0].SinceCursor)
+	}
+	if briefs[1].SinceCursor != "c0002" {
+		t.Fatalf("the second ring starts at %q, want c0002 — what the answered close committed", briefs[1].SinceCursor)
+	}
+	if len(briefs[1].Delta) != 1 || briefs[1].Delta[0].ID != "e3" {
+		t.Fatalf("the second brief re-carried earlier entries: %+v", briefs[1].Delta)
 	}
 }

@@ -765,3 +765,40 @@ func TestAPostsCitationsAndActivityReachTheHost(t *testing.T) {
 		t.Fatalf("the host received %+v", extras)
 	}
 }
+
+// 🔴 #2385: `memory` is advertised exactly when ALL FOUR memory ops are served — a
+// plugin told so recalls before every model call, and an `unknown_op` recall would
+// read as a silent gap where "memory unavailable" must be said instead.
+func TestMemoryIsAdvertisedOnlyWhenAllFourOpsAreServed(t *testing.T) {
+	serve := func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage("{}"), nil }
+	all := map[string]CallHandler{
+		wire.OpMemoryRecall: serve, wire.OpMemoryRemember: serve, wire.OpMemoryForget: serve, wire.OpMemoryUnfold: serve,
+	}
+	threeOf := map[string]CallHandler{wire.OpMemoryRecall: serve, wire.OpMemoryRemember: serve, wire.OpMemoryForget: serve}
+	for name, tc := range map[string]struct {
+		calls map[string]CallHandler
+		want  bool
+	}{
+		"all four":    {all, true},
+		"three":       {threeOf, false},
+		"recall only": {map[string]CallHandler{wire.OpMemoryRecall: serve}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, Options{Calls: tc.calls})
+			conn := r.dial(t, testToken, true)
+			hello := receive(t, conn)
+			features, _ := hello["features"].([]any)
+			got := false
+			for _, feature := range features {
+				got = got || feature == wire.FeatureMemory
+			}
+			if got != tc.want {
+				t.Fatalf("features %v: memory advertised = %v, want %v", features, got, tc.want)
+			}
+			raw, _ := json.Marshal(hello)
+			if err := wire.Validate(raw); err != nil {
+				t.Fatalf("the hello fails its own schema: %v", err)
+			}
+		})
+	}
+}

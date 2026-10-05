@@ -575,6 +575,14 @@ func (s *Surface) features() []string {
 	if s.calls[wire.OpToolsList] != nil && s.calls[wire.OpToolsCall] != nil {
 		features = append(features, wire.FeatureTools)
 	}
+	// 🔴 `memory` only when all FOUR memory ops are served (#2385): a plugin told so
+	// recalls before every model call, and a recall answered `unknown_op` would read
+	// as a silent gap — the plugin renders "memory unavailable" for a companion that
+	// does not announce it.
+	if s.calls[wire.OpMemoryRecall] != nil && s.calls[wire.OpMemoryRemember] != nil &&
+		s.calls[wire.OpMemoryForget] != nil && s.calls[wire.OpMemoryUnfold] != nil {
+		features = append(features, wire.FeatureMemory)
+	}
 	return features
 }
 

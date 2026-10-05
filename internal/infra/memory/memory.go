@@ -49,6 +49,10 @@ type Host struct {
 	answers   map[string]contracts.ToolResult
 	toolCalls []ToolCall
 	extras    []contracts.PostExtras
+	// The agent's memory (#2385): every op served, and what each answers.
+	memoryCalls   []OpCall
+	memoryAnswers map[contracts.MemoryOp]json.RawMessage
+	memoryErr     error
 }
 
 // ToolCall is one recorded tool call (#2349).
@@ -236,6 +240,56 @@ func (h *Host) CallTool(_ context.Context, requestID, name string, arguments jso
 		return answer, nil
 	}
 	return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+// OpCall is one memory op the in-memory host served (#2385).
+type OpCall struct {
+	Op        contracts.MemoryOp
+	RequestID string
+	Body      json.RawMessage
+}
+
+// Memory records an op on a rung request and answers the op's configured answer —
+// `SetMemoryAnswer` — or the error set by `SetMemoryError`; a request no ring
+// delivered is refused before anything is recorded.
+func (h *Host) Memory(_ context.Context, op contracts.MemoryOp, requestID string, body json.RawMessage) (json.RawMessage, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, known := h.rung[requestID]; !known {
+		return nil, contracts.ErrUnknownRequest
+	}
+	h.memoryCalls = append(h.memoryCalls, OpCall{Op: op, RequestID: requestID, Body: append(json.RawMessage(nil), body...)})
+	if h.memoryErr != nil {
+		return nil, h.memoryErr
+	}
+	if answer, ok := h.memoryAnswers[op]; ok {
+		return answer, nil
+	}
+	return nil, fmt.Errorf("memory: no answer configured for %q", op)
+}
+
+// SetMemoryAnswer configures what one memory op answers.
+func (h *Host) SetMemoryAnswer(op contracts.MemoryOp, answer json.RawMessage) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.memoryAnswers == nil {
+		h.memoryAnswers = map[contracts.MemoryOp]json.RawMessage{}
+	}
+	h.memoryAnswers[op] = answer
+}
+
+// SetMemoryError makes every memory op fail with err; nil clears it.
+func (h *Host) SetMemoryError(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.memoryErr = err
+}
+
+// MemoryCalls returns the recorded memory ops.
+func (h *Host) MemoryCalls() []OpCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]OpCall(nil), h.memoryCalls...)
 }
 
 // PostExtras returns every post's extras that carried any, in order.

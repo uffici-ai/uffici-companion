@@ -106,6 +106,8 @@ type Counts struct {
 	Redeliveries int
 	// ToolCalls is how many tool calls reached the host (#2349).
 	ToolCalls int
+	// MemoryOps is how many of each memory op reached the host (#2386).
+	MemoryOps map[string]int
 }
 
 // events is everything the runner saw, in order.
@@ -389,6 +391,8 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return r.restartHarness(ctx, step)
 	case "expectToolCall":
 		return r.expectToolCall(ctx, step)
+	case "expectMemory":
+		return r.expectMemory(ctx, step)
 	default:
 		// Unreachable: Validate refuses unknown steps at load. Stated rather than
 		// ignored, because a silently skipped step is a removed assertion.
@@ -405,6 +409,14 @@ func (r *Runner) ring(index int, step fixture.Step) string {
 	if step.DeadlineMs > 0 {
 		deadline = r.clock().Add(time.Duration(step.DeadlineMs) * time.Millisecond)
 	}
+	// 🔴 Where the platform would start (#2390): the offset the conversation's
+	// last answered or empty close COMMITTED. The script's own `offset` is only
+	// where the store began; ringing from it re-carried the whole conversation
+	// into every brief, which the platform never does.
+	since, err := r.host.OffsetOf(step.Conversation)
+	if err != nil {
+		return err.Error()
+	}
 	requestID := fmt.Sprintf("req_%d", index)
 	r.ringMu.Lock()
 	r.lastRing = requestID
@@ -418,7 +430,7 @@ func (r *Runner) ring(index int, step fixture.Step) string {
 		Reason:         step.Reason,
 		Cause:          contracts.Cause{EntryID: step.CauseEntry},
 		Deadline:       deadline,
-		SinceCursor:    conversation.Offset,
+		SinceCursor:    since,
 		ThroughCursor:  step.ThroughCursor,
 		ResetSession:   step.ResetSession,
 	}
@@ -506,6 +518,21 @@ func (r *Runner) expectToolCall(ctx context.Context, step fixture.Step) string {
 	}
 	return r.waitFor(ctx, step.WithinMs, matched,
 		fmt.Sprintf("no call of tool %q with arguments containing %q", step.Name, step.ArgumentsContain))
+}
+
+// expectMemory waits for a memory op on the CURRENT request (#2386): the harness's
+// own tool reaching the platform, or its prefetch before a turn.
+func (r *Runner) expectMemory(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, call := range r.host.MemoryCalls() {
+			if call.RequestID == current && string(call.Op) == step.Op {
+				return true
+			}
+		}
+		return false
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, fmt.Sprintf("no memory %s on the current request", step.Op))
 }
 
 // expectClose waits for a request to close, optionally for a NAMED conversation
@@ -730,6 +757,10 @@ func (r *Runner) result(unmet []string) Result {
 		Acks: map[string]int{}, Sessions: map[string]int{},
 		Closes: map[string]int{}, Cancels: map[string]int{},
 		ToolCalls: len(r.host.ToolCalls()),
+		MemoryOps: map[string]int{},
+	}
+	for _, call := range r.host.MemoryCalls() {
+		counts.MemoryOps[string(call.Op)]++
 	}
 	for _, ack := range r.events.acks {
 		counts.Acks[string(ack.outcome)]++
@@ -766,6 +797,7 @@ func (r *Runner) checkTally(result *Result, note func(string, ...any)) {
 	compare("session", want.Sessions, result.Counts.Sessions, note)
 	compare("close", want.Closes, result.Counts.Closes, note)
 	compare("cancel", want.Cancels, result.Counts.Cancels, note)
+	compare("memory op", want.MemoryOps, result.Counts.MemoryOps, note)
 }
 
 func compare(label string, want, got map[string]int, note func(string, ...any)) {

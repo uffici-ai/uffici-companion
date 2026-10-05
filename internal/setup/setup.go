@@ -324,6 +324,9 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 		}); err != nil {
 			return installedPlugin{}, fmt.Errorf("configuring %s: %w", opts.Harness, err)
 		}
+		if cfg.Note != "" {
+			_, _ = fmt.Fprintf(out, "note: %s\n", cfg.Note)
+		}
 	}
 
 	env, err := manifest.RenderEnv(map[string]string{

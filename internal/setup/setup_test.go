@@ -32,8 +32,11 @@ func goodManifest() map[string]any {
 		"defaultHome":     "~/.hermes",
 		"enable":          []string{"hermes", "plugins", "enable", "uffici-for-hermes"},
 		"configSet":       []string{"hermes", "config", "set"},
-		"config":          []map[string]string{{"key": "gateway.platforms.uffici.enabled", "value": "true"}},
-		"envPath":         []string{"hermes", "config", "env-path"},
+		"config": []map[string]string{
+			{"key": "gateway.platforms.uffici.enabled", "value": "true"},
+			{"key": "memory.memory_enabled", "value": "false", "note": "This Hermes's own memory is off on every platform it serves."},
+		},
+		"envPath": []string{"hermes", "config", "env-path"},
 		"env": map[string]string{
 			"UFFICI_WIRE_SOCKET":     "${wireSocket}",
 			"UFFICI_WIRE_TOKEN_FILE": "${wireTokenFile}",
@@ -63,7 +66,7 @@ func TestParseManifestAcceptsTheShapeAPluginReleaseShips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a valid manifest was refused: %v", err)
 	}
-	if m.Name != "uffici-for-hermes" || m.EnvFile != ".env" || len(m.Config) != 1 {
+	if m.Name != "uffici-for-hermes" || m.EnvFile != ".env" || len(m.Config) != 2 || m.Config[1].Note == "" {
 		t.Fatalf("manifest read wrong: %+v", m)
 	}
 }
@@ -534,6 +537,10 @@ func TestRunInstallsEverythingInOrder(t *testing.T) {
 	}
 	if !r.runner.ran("hermes config set gateway.platforms.uffici.enabled true") {
 		t.Fatal("the configuration key was not set")
+	}
+	// A key that is the whole harness's says so, after the step that set it (#2386).
+	if out := r.out.String(); !strings.Contains(out, "done: run hermes config set memory.memory_enabled false\nnote: This Hermes's own memory is off on every platform it serves.\n") {
+		t.Fatalf("the key's note was not printed after its step:\n%s", out)
 	}
 	env, err := os.ReadFile(filepath.Join(r.home, "custom.env"))
 	if err != nil || !strings.Contains(string(env), "UFFICI_WIRE_SOCKET="+filepath.Join(r.opts.CompanionHome, "wire.sock")) || !strings.Contains(string(env), "UFFICI_WIRE_TOKEN_FILE="+filepath.Join(r.opts.CompanionHome, "wire-token")) {

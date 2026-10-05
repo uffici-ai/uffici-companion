@@ -68,7 +68,7 @@ every v1 companion does, so a newer plugin never sends an older companion a fiel
 it would drop: `question` means a `post` may carry a question; `redelivery` means
 a restarted harness process is handed again every request its predecessor had
 accepted; `tools` means the plugin may call [`tools.list`](#toolslist) and
-[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. An
+[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. An
 absent list means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
@@ -242,6 +242,22 @@ result}`.
 - A result too large for the call bound is answered `upstream_failed` with a sentence telling the agent the tool ran and to ask for less — a narrower query, fewer results — and the call's `callUrn` in `upstream`, so the answer can still cite it. Never a truncation.
 - Neither the arguments nor the result reach a log line. The companion logs one line per call: the tool's name, the request and the class.
 - Sent only to a companion whose `hello` lists the `tools` feature.
+
+#### `memory.recall`, `memory.remember`, `memory.forget`, `memory.unfold`
+
+The agent's memory in Uffici: what was learned at the place the conversation sits, kept
+by the organization rather than by the agent. Every op is bound to the request the
+plugin is answering, like a tool call — a `requestId` the companion did not deliver is
+refused with `not_permitted` and nothing is sent — and each is sent at most once.
+
+- **`memory.recall`** `{requestId, query, limit?, deadlineMs?}` → `{hits, degraded, missing?}`. Every level the conversation sits under is searched — the organization, its folders, the conversation — and each hit names its `level` (`conversation`, `folder` or `organization`), never a folder. Of two near-duplicates the closer level wins. `distance` is `null` when full text found the hit; `degraded: true` says full text stood in for some or all of the answer, and `missing: ["embeddings"]` that the query itself could not be embedded. An empty `hits` with neither flag means nothing matched.
+- 🔴 **`deadlineMs` is the plugin's whole budget**, and the companion answers inside it: it keeps a margin back and hands Uffici a shorter deadline still, so the answer arrives before a harness's own bound on the call. A deadline it misses is answered `upstream_failed` with a sentence saying memory could not be checked — never an empty recall that reads as "nothing remembered".
+- **`memory.remember`** `{requestId, text}` → `{urn}` — ONE fact about the work, on the request's conversation. There is no level: an agent writes where it is, and a person promotes.
+- **`memory.forget`** `{requestId, urn, replacementUrn?}` → `{urn, supersededBy}` — MARKS a fact an agent wrote in this conversation superseded, by a newer fact of this conversation or by the request. It never deletes; anything else is refused, carried as `upstream_failed` with Uffici's class `forget_refused` in `upstream`.
+- **`memory.unfold`** `{requestId, urn, depth?, limit?}` → `{urn, supersededBy, rows}` — what a fact superseded, up to two hops back. `supersededBy: {visible: false}` means it was superseded by something this conversation cannot see.
+- A failure is answered as it came, `upstream_failed` with Uffici's class in `upstream` and its sentence as the `instruction`, for the agent to relay.
+- Facts, queries and hits never reach a log line. The companion logs one line per op: the op, the request and the class.
+- Sent only to a companion whose `hello` lists the `memory` feature, which it announces only when it serves all four.
 
 ### `result` — companion → plugin
 

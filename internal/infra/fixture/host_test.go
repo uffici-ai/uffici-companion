@@ -460,3 +460,116 @@ func TestTheAgentsCatalogIsServedInEveryConversation(t *testing.T) {
 		t.Fatalf("ToolCalls = %+v", calls)
 	}
 }
+
+// The scripted memory (#2385): a working stand-in for knowledge-api — remember,
+// recall by a shared word, forget, unfold — and, scripted `unavailable`, every op
+// the platform's `platform_unavailable` with the memory family's sentence.
+func TestTheHostServesAWorkingMemoryAndCanBeTakenDown(t *testing.T) {
+	ring := func(t *testing.T, host *Host) {
+		t.Helper()
+		claim, err := host.OpenDoorbell(context.Background(), contracts.Handlers{
+			OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = claim.Close() })
+		if err := host.DeliverRing(contracts.Ring{RingID: "ring_1", RequestID: "req_1", ConversationID: "conv_1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	host, err := New(testScript())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{}`)); !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("memory before any ring = %v", err)
+	}
+	ring(t, host)
+	remembered, err := host.Memory(ctx, contracts.MemoryRemember, "req_1", json.RawMessage(`{"text":"The forklift needs a service."}`))
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var fact struct {
+		URN string `json:"urn"`
+	}
+	_ = json.Unmarshal(remembered, &fact)
+	if _, err := host.Memory(ctx, contracts.MemoryRemember, "req_1", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("a remember with no text was taken")
+	}
+	hit, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"when is the forklift serviced?","limit":3}`))
+	miss, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"coffee"}`))
+	if !strings.Contains(string(hit), "forklift") || strings.Contains(string(miss), "forklift") {
+		t.Fatalf("recall answered %s and %s", hit, miss)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryForget, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`)); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryForget, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`)); err == nil {
+		t.Fatal("a fact was forgotten twice")
+	}
+	if after, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"forklift"}`)); strings.Contains(string(after), "forklift") {
+		t.Fatalf("a forgotten fact was recalled: %s", after)
+	}
+	unfolded, err := host.Memory(ctx, contracts.MemoryUnfold, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`))
+	if err != nil || !strings.Contains(string(unfolded), `"rows":[]`) {
+		t.Fatalf("unfold = %s, %v", unfolded, err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryOp("dream"), "req_1", nil); err == nil {
+		t.Fatal("an unknown op was served")
+	}
+	if calls := host.MemoryCalls(); len(calls) != 9 || calls[0].Op != contracts.MemoryRemember {
+		t.Fatalf("recorded %d memory calls: %+v", len(calls), calls)
+	}
+
+	down := testScript()
+	down.Memory = &ScriptMemory{Unavailable: true}
+	downHost, err := New(down)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ring(t, downHost)
+	_, err = downHost.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"x"}`))
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "platform_unavailable" ||
+		!strings.Contains(classified.ErrorInstruction(), "could not check what was remembered") {
+		t.Fatalf("an unavailable memory answered %v", err)
+	}
+}
+
+// `unavailableIn` takes memory down in the conversations it names and nowhere else
+// (#2386): one run shows a working memory and an outage.
+func TestMemoryCanBeTakenDownInOneConversation(t *testing.T) {
+	s := testScript()
+	s.Conversations["onboarding"] = &Conversation{ID: "conv_2", Offset: "", Entries: s.Conversations["invoices"].Entries}
+	s.Memory = &ScriptMemory{UnavailableIn: []string{"onboarding"}}
+	host, err := New(s)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	claim, err := host.OpenDoorbell(context.Background(), contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = claim.Close() })
+	for _, ring := range []contracts.Ring{
+		{RingID: "ring_1", RequestID: "req_up", ConversationID: "conv_1"},
+		{RingID: "ring_2", RequestID: "req_down", ConversationID: "conv_2"},
+	} {
+		if err := host.DeliverRing(ring); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	if _, err := host.Memory(ctx, contracts.MemoryRecall, "req_up", json.RawMessage(`{"query":"x"}`)); err != nil {
+		t.Fatalf("memory was down outside the named conversation: %v", err)
+	}
+	_, err = host.Memory(ctx, contracts.MemoryRecall, "req_down", json.RawMessage(`{"query":"x"}`))
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "platform_unavailable" {
+		t.Fatalf("memory in the named conversation answered %v", err)
+	}
+}

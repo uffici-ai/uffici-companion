@@ -23,6 +23,15 @@ const (
 	OpToolsCall = "tools.call"
 )
 
+// The agent's memory (#2385): four call ops, served only together. Each is bound to
+// a request this companion delivered, like a tool call.
+const (
+	OpMemoryRecall   = "memory.recall"
+	OpMemoryRemember = "memory.remember"
+	OpMemoryForget   = "memory.forget"
+	OpMemoryUnfold   = "memory.unfold"
+)
+
 // Op payload directions.
 const (
 	OpRequest = "request"

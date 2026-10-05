@@ -153,6 +153,9 @@ type Double struct {
 	logsGate       chan struct{}
 	logBatches     []protocol.LogBatch
 	toolCalls      []ToolCall
+	// memoryCalls and facts are the agent's memory (#2385).
+	memoryCalls []MemoryCall
+	facts       map[string][]*doubleFact
 }
 
 type ringed struct {
@@ -226,7 +229,7 @@ func (d *Double) SetTools(conversationID string, tools []protocol.ToolDescriptor
 }
 
 // Inject queues scripted answers for a route key: `connect`, `conversation`,
-// `entries`, `opener`, `posts`, `close`, `doorbell`, `tools`, `tool-calls`.
+// `entries`, `opener`, `posts`, `close`, `doorbell`, `tools`, `tool-calls`, `memory`.
 func (d *Double) Inject(route string, answers ...Injected) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -313,6 +316,8 @@ func (d *Double) serve(w http.ResponseWriter, r *http.Request) {
 		d.closeRoute(w, r)
 	case r.Method == http.MethodPost && path == "/v1/tool-calls":
 		d.toolCall(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/memory/"):
+		d.memory(w, r)
 	default:
 		fail(w, http.StatusNotFound, "not_found")
 	}

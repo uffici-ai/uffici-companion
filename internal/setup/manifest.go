@@ -35,6 +35,9 @@ func ManifestSchema() []byte { return manifestSchema }
 type ConfigSet struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// Note is what setup tells the person after setting the key: what it changes
+	// beyond this plugin (a key that is the whole harness's, not one platform's).
+	Note string `json:"note,omitempty"`
 }
 
 // Manifest is what a plugin release says about installing itself. Every field

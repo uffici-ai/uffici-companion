@@ -229,6 +229,12 @@ const FeatureRedelivery = "redelivery"
 // may carry `citations` and `activity` (#2349).
 const FeatureTools = "tools"
 
+// FeatureMemory says the plugin may call the four `memory.*` ops (#2385): recall,
+// remember, forget and unfold. Announced only when all four are served, so a plugin
+// told so never meets `unknown_op` mid-turn — and an older companion's silence tells
+// the plugin to render "memory unavailable" instead of an empty recall.
+const FeatureMemory = "memory"
+
 // Cause is the recorded human cause a request answers.
 type Cause struct {
 	EntryID  string `json:"entryId"`

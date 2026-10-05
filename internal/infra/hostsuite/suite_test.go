@@ -112,6 +112,14 @@ func memorySubject(t *testing.T) hosttest.Subject {
 			host.SetToolResult(tool.Name, suiteToolAnswer)
 		},
 		ToolAnswer: suiteToolAnswer,
+		// The stub answers what it is told: a URN for the remember, the fact for a recall.
+		SeedMemory: func(text string) {
+			urn := "urn:uffici:fact:9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+			host.SetMemoryAnswer(contracts.MemoryRemember, json.RawMessage(`{"urn":"`+urn+`"}`))
+			host.SetMemoryAnswer(contracts.MemoryRecall, json.RawMessage(`{"hits":[{"urn":"`+urn+
+				`","level":"conversation","distance":null,"text":"`+text+
+				`","at":"2026-10-04T10:00:00.000Z","source":{"kind":"remembered"}}],"degraded":false}`))
+		},
 	}
 }
 

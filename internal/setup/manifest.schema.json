@@ -70,7 +70,13 @@
         "required": ["key", "value"],
         "properties": {
           "key": { "type": "string", "minLength": 1 },
-          "value": { "type": "string", "minLength": 1 }
+          "value": { "type": "string", "minLength": 1 },
+          "note": {
+            "description": "A sentence setup prints after setting the key: what it changes beyond this plugin — a key that is the whole harness's, not one platform's, says so here.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
         }
       }
     },

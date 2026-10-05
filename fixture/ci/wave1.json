@@ -26,6 +26,7 @@
       }
     }
   },
+  "memory": { "unavailableIn": ["onboarding"] },
   "conversations": {
     "invoices": {
       "id": "conv_ci_invoices",
@@ -201,6 +202,25 @@
             "type": "member",
             "id": "member_5",
             "label": "Joana Lima",
+            "self": false
+          }
+        }
+      ]
+    },
+    "ledger": {
+      "id": "conv_ci_ledger",
+      "offset": "",
+      "entries": [
+        {
+          "id": "l1",
+          "cursor": "c0001",
+          "at": "2026-09-18T14:00:00Z",
+          "kind": "message",
+          "text": "Please remember for later, with your uffici_remember tool: invoices for the Lisbon client go out on the 10th. [remember-this]",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
             "self": false
           }
         }
@@ -732,22 +752,111 @@
       "conversation": "support",
       "outcome": "answered",
       "withinMs": 240000
+    },
+    {
+      "step": "ring",
+      "conversation": "ledger",
+      "reason": "mentioned",
+      "causeEntry": "l1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000,
+      "note": "🔴 #2386, the agent's memory. The model mock calls `uffici_remember` on the marker (a real model is asked to in words) with a fact carrying the memory canary; the plugin carries it through the companion's `memory.remember`, and the scripted host keeps it on this conversation."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectMemory",
+      "op": "remember",
+      "withinMs": 120000,
+      "note": "The fact reached the platform side, on THIS request."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "ledger",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Gate before the recall ring."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "ledger",
+      "entries": [
+        {
+          "id": "l2",
+          "cursor": "c0002",
+          "at": "2026-09-18T14:05:00Z",
+          "kind": "message",
+          "text": "When do the Lisbon invoices go out?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "ledger",
+      "reason": "mentioned",
+      "causeEntry": "l2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "🔴 The recall. Before Hermes calls the model, the plugin's memory provider asks `memory.recall` with the turn's text; the fact shares its words, so it comes back and Hermes fences it into `<memory-context>` on the USER side. The runners judge that from the model mock's `memory_recalled` boolean — never its text. `onboarding`'s turns are the outage: the script takes memory down there, and each of them must tell the model so inside the same fence."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectMemory",
+      "op": "recall",
+      "withinMs": 60000,
+      "note": "The prefetch reached the platform side on THIS request, before the answer."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "ledger",
+      "outcome": "answered",
+      "withinMs": 240000
     }
   ],
   "assert": {
-    "ringsDelivered": 13,
-    "openersSent": 6,
+    "ringsDelivered": 15,
+    "openersSent": 7,
     "closes": {
-      "answered": 10,
+      "answered": 12,
       "cancelled": 2,
       "error": 1
     },
     "sessions": {
-      "fresh": 6,
-      "resumed": 8
+      "fresh": 7,
+      "resumed": 9
     },
-    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).",
-    "posts": 10,
-    "toolCalls": 1
+    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).\n\n🔴 `memoryOps` names `remember` alone (#2386): recall is not counted, because Hermes skips a prefetch on a trivial prompt, so a count would assert Hermes's heuristic; `ledger`'s `expectMemory` step and the runners' `memory_recalled` judgement carry it.",
+    "posts": 12,
+    "toolCalls": 1,
+    "memoryOps": { "remember": 1 }
   }
 }

@@ -28,6 +28,7 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
 	"github.com/uffici-ai/uffici-companion/internal/logship"
+	"github.com/uffici-ai/uffici-companion/internal/memoryops"
 	"github.com/uffici-ai/uffici-companion/internal/observe"
 	"github.com/uffici-ai/uffici-companion/internal/redact"
 	"github.com/uffici-ai/uffici-companion/internal/registry"
@@ -361,11 +362,11 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	pushes := &logship.PushHandler{Shipper: shipper, Ring: logging.ring, Redactor: logging.redactor}
 	wire, err = surface.New(listener, manager, surface.Options{
 		Token: token, Logger: logger, Version: config.Version,
-		Calls: map[string]surface.CallHandler{
+		Calls: callHandlers(map[string]surface.CallHandler{
 			wireOpLogsPush:      pushes.Handle,
 			wirepkg.OpToolsList: toolCalls.List,
 			wirepkg.OpToolsCall: toolCalls.Call,
-		},
+		}, (&memoryops.Handler{Host: host, Logger: logger.With("component", "memory")}).Handlers()),
 	})
 	if err != nil {
 		return ExitConfig, err
@@ -846,4 +847,20 @@ func loadFixture(path string) (*fixture.Script, *fixture.Host, error) {
 		return nil, nil, err
 	}
 	return script, host, nil
+}
+
+// callHandlers merges the call-op tables: the agent's memory (#2385) is four ops
+// served together, beside the logs and tool ops.
+func callHandlers(tables ...map[string]surface.CallHandler) map[string]surface.CallHandler {
+	out := map[string]surface.CallHandler{}
+	for _, table := range tables {
+		for op, handler := range table {
+			if _, taken := out[op]; taken {
+				// Two families serving one op would silently lose one of them.
+				panic("companion: two call handlers for the op " + op)
+			}
+			out[op] = handler
+		}
+	}
+	return out
 }

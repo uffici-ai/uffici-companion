@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/uffici-ai/uffici-companion/internal/wire"
 	"strings"
 	"testing"
 
@@ -47,6 +48,10 @@ type Subject struct {
 	// ToolAnswer is what the seeded tool's call answers. 🔴 The subject's own
 	// configuration, never built here: a call URN is opaque to the companion.
 	ToolAnswer contracts.ToolResult
+	// SeedMemory prepares the subject so a remember of `text` and then a recall
+	// sharing a word with it answer that text (#2385). Nil for a subject whose
+	// memory already works; a canned host configures its answers here.
+	SeedMemory func(text string)
 }
 
 // Factory builds a Subject seeded with the standard transcript below.
@@ -276,6 +281,52 @@ func Run(t *testing.T, name string, factory Factory) {
 			}
 			if result.CallURN != subject.ToolAnswer.CallURN || string(result.Result) != string(subject.ToolAnswer.Result) {
 				t.Fatalf("CallTool = %+v, want the configured %+v: a call's URN and result are relayed as given", result, subject.ToolAnswer)
+			}
+		})
+
+		// The agent's memory (#2385): refused on a request never rung, like a tool call.
+		t.Run("a memory op on a request never rung is refused", func(t *testing.T) {
+			subject := factory(t)
+			for _, op := range contracts.MemoryOps {
+				_, err := subject.Host.Memory(context.Background(), op, "req_never_rung", json.RawMessage(`{}`))
+				if !errors.Is(err, contracts.ErrUnknownRequest) {
+					t.Fatalf("Memory(%s) on an unrung request = %v, want ErrUnknownRequest", op, err)
+				}
+			}
+		})
+
+		t.Run("a rung request remembers, and a recall relays it in the wire's shape", func(t *testing.T) {
+			subject := factory(t)
+			const fact = "The Lisbon client is invoiced on the fifth."
+			if subject.SeedMemory != nil {
+				subject.SeedMemory(fact)
+			}
+			claim := openDoorbell(t, subject)
+			t.Cleanup(func() { _ = claim.Close() })
+			ring := standardRing(subject.ConversationID)
+			ring.RequestID = "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21"
+			if err := subject.DeliverRing(ring); err != nil {
+				t.Fatalf("DeliverRing: %v", err)
+			}
+			ctx := context.Background()
+			remembered, err := subject.Host.Memory(ctx, contracts.MemoryRemember, ring.RequestID,
+				json.RawMessage(`{"requestId":"`+ring.RequestID+`","text":"`+fact+`"}`))
+			if err != nil {
+				t.Fatalf("Memory(remember): %v", err)
+			}
+			if err := wire.ValidateOpPayload(wire.OpMemoryRemember, wire.OpResult, remembered); err != nil {
+				t.Fatalf("a remember's answer is not the wire's shape: %v (%s)", err, remembered)
+			}
+			recalled, err := subject.Host.Memory(ctx, contracts.MemoryRecall, ring.RequestID,
+				json.RawMessage(`{"requestId":"`+ring.RequestID+`","query":"When is Lisbon invoiced?"}`))
+			if err != nil {
+				t.Fatalf("Memory(recall): %v", err)
+			}
+			if err := wire.ValidateOpPayload(wire.OpMemoryRecall, wire.OpResult, recalled); err != nil {
+				t.Fatalf("a recall's answer is not the wire's shape: %v (%s)", err, recalled)
+			}
+			if !strings.Contains(string(recalled), fact) {
+				t.Fatalf("the recall did not relay what was remembered: %s", recalled)
 			}
 		})
 

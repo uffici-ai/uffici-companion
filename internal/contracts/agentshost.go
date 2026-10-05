@@ -255,6 +255,15 @@ type AgentsHost interface {
 	// platform. Arguments and the result are tenant content and never logged.
 	CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (ToolResult, error)
 
+	// Memory runs one of the agent's memory ops on a request this companion was
+	// rung for, under that request's conversation (#2385). Body is the op's wire
+	// payload; 🔴 the request it is bound to is ALWAYS the argument, never one the
+	// body carries. The answer is the platform's, as JSON. 🔴 Never sent twice
+	// once it may have reached the platform (a remember is not idempotent), and
+	// neither the body nor the answer is ever logged — facts and queries are tenant
+	// content. A request never rung is ErrUnknownRequest, before anything is sent.
+	Memory(ctx context.Context, op MemoryOp, requestID string, body json.RawMessage) (json.RawMessage, error)
+
 	// CloseRequest closes a request with its outcome, and an error class when
 	// the outcome is an error.
 	CloseRequest(ctx context.Context, requestID string, outcome Outcome, errorClass string) error
@@ -321,6 +330,20 @@ type ToolResult struct {
 	CallURN string
 	Result  json.RawMessage
 }
+
+// MemoryOp is one of the agent's four memory operations (#2385).
+type MemoryOp string
+
+// The memory operations, as the platform's routes name them.
+const (
+	MemoryRecall   MemoryOp = "recall"
+	MemoryRemember MemoryOp = "remember"
+	MemoryForget   MemoryOp = "forget"
+	MemoryUnfold   MemoryOp = "unfold"
+)
+
+// MemoryOps are the four, in the order the platform documents them.
+var MemoryOps = []MemoryOp{MemoryRecall, MemoryRemember, MemoryForget, MemoryUnfold}
 
 // ErrUnknownRequest is a tool call naming a request this companion was never
 // rung for: refused before anything is sent (#2349).

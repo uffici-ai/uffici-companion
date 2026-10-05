@@ -24,6 +24,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/uffici-ai/uffici-companion/internal/contracts"
 	"github.com/uffici-ai/uffici-companion/internal/schemas"
 
 	contract "github.com/uffici-ai/uffici-companion/fixture"
@@ -49,6 +50,18 @@ type Script struct {
 	// every call in any conversation; a listed tool with none answers
 	// `{"ok":true}` and a null `callUrn`.
 	Results map[string]ScriptResult `json:"results,omitempty"`
+	// Memory scripts the agent's memory (#2385); nil is a working memory.
+	Memory *ScriptMemory `json:"memory,omitempty"`
+}
+
+// ScriptMemory scripts the agent's memory (#2385).
+type ScriptMemory struct {
+	// Unavailable answers every memory op `platform_unavailable` — knowledge-api down.
+	Unavailable bool `json:"unavailable"`
+	// UnavailableIn names the conversations whose memory ops answer
+	// `platform_unavailable`, so one run can show memory working in one
+	// conversation and an outage in another.
+	UnavailableIn []string `json:"unavailableIn,omitempty"`
 }
 
 // ScriptLogs scripts the logs ticket's answer (#2267).
@@ -176,6 +189,9 @@ type Step struct {
 	Name             string `json:"name,omitempty"`
 	ArgumentsContain string `json:"argumentsContain,omitempty"`
 
+	// expectMemory: the memory op (`recall`, `remember`, `forget`, `unfold`).
+	Op string `json:"op,omitempty"`
+
 	// injectCancel
 	AfterFirstPost bool `json:"afterFirstPost,omitempty"`
 	AfterMs        int  `json:"afterMs,omitempty"`
@@ -206,6 +222,9 @@ type Assertions struct {
 	// ToolCalls, when present, is exactly how many tool calls reached the host
 	// (#2349) — zero included, so a script can assert that none did.
 	ToolCalls *int `json:"toolCalls,omitempty"`
+	// MemoryOps is how many of each memory op reached the host, for the ops it
+	// names; an op it does not name is not asserted.
+	MemoryOps map[string]int `json:"memoryOps,omitempty"`
 	// 🔴 There is deliberately no `unmetExpectations`. It existed, pinned to 0
 	// by the schema and read by nothing — and wiring it into the tally produced
 	// a SECOND note for every miss, restating the list of misses that is already
@@ -227,7 +246,7 @@ var knownSteps = map[string]bool{
 	"disconnectPlugin": true, "expectRedelivery": true,
 	"secondConnection": true, "wait": true,
 	"refuseNextQuestion": true, "restartHarness": true,
-	"expectToolCall": true,
+	"expectToolCall": true, "expectMemory": true,
 }
 
 var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}
@@ -328,6 +347,13 @@ func (s *Script) Validate() error {
 	if len(s.Steps) == 0 {
 		return fmt.Errorf("fixture: the script has no steps, so it would assert nothing and exit 0")
 	}
+	if s.Memory != nil {
+		for _, name := range s.Memory.UnavailableIn {
+			if _, ok := s.Conversations[name]; !ok {
+				return fmt.Errorf("fixture: memory is unavailable in %q, which is not a conversation of this script", name)
+			}
+		}
+	}
 
 	// 🔴 Entries a step APPENDS count as present for every later step. Without
 	// this, a script that rings on a message it just appended is refused — which
@@ -373,6 +399,10 @@ func (s *Script) Validate() error {
 			}
 			if (step.Matcher == "contains" || step.Matcher == "matches") && step.Value == "" {
 				return fmt.Errorf("fixture: step %d uses matcher %q with no value, which matches everything", i, step.Matcher)
+			}
+		case "expectMemory":
+			if !knownMemoryOp(step.Op) {
+				return fmt.Errorf("fixture: step %d expects memory op %q, which is not one of the four", i, step.Op)
 			}
 		case "expectToolCall":
 			if step.Name == "" {
@@ -474,4 +504,14 @@ func parseAt(value string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return time.Parse(time.RFC3339, value)
+}
+
+// knownMemoryOp is whether op names one of the agent's four memory operations.
+func knownMemoryOp(op string) bool {
+	for _, known := range contracts.MemoryOps {
+		if string(known) == op {
+			return true
+		}
+	}
+	return false
 }

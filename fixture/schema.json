@@ -41,6 +41,21 @@
           "result": {}
         }
       }
+    },
+    "memory": {
+      "description": "The agent's memory (#2385). Absent: a working memory — what a request remembers in a conversation is recalled there, newest first, by a query sharing one of its words of four or more letters (a stand-in for the platform's search: the e2e asserts the round trip, not the ranking). `unavailable: true` answers every memory op `platform_unavailable`, the knowledge-api-down case.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unavailable": {
+          "type": "boolean"
+        },
+        "unavailableIn": {
+          "description": "The conversations, by name, whose memory ops answer `platform_unavailable`: memory working in one conversation of a run and down in another.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   },
   "$defs": {
@@ -171,6 +186,7 @@
             "refuseNextQuestion",
             "restartHarness",
             "expectToolCall",
+            "expectMemory",
             "wait"
           ]
         },
@@ -188,6 +204,7 @@
         "cursor": { "type": "string" },
         "name": { "type": "string", "minLength": 1 },
         "argumentsContain": { "type": "string", "minLength": 1 },
+        "op": { "enum": ["recall", "remember", "forget", "unfold"] },
         "afterFirstPost": { "type": "boolean" },
         "afterMs": { "type": "integer", "minimum": 0 },
         "withinMs": { "type": "integer", "minimum": 0 },
@@ -221,6 +238,10 @@
           "type": "integer",
           "minimum": 0,
           "description": "When present, exactly how many tool calls reached the scripted host — zero included."
+        },
+        "memoryOps": {
+          "$ref": "#/$defs/counts",
+          "description": "How many of each memory op reached the scripted host, for the ops named; an op not named is not asserted."
         },
         "note": {
           "type": "string",

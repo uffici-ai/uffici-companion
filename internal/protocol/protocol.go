@@ -458,6 +458,99 @@ type ToolCallRequest struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// MemoryRecallRequest is `POST /v1/memory/recall`' body (#2385): every level the
+// conversation sits under, searched for the query. 🔴 The query is tenant content:
+// never logged. DeadlineMS is the plugin's whole budget; every hop answers inside it.
+type MemoryRecallRequest struct {
+	RequestID  string `json:"requestId"`
+	Query      string `json:"query"`
+	Limit      int    `json:"limit,omitempty"`
+	DeadlineMS int    `json:"deadlineMs,omitempty"`
+}
+
+// MemorySource is who a fact came from: `remembered` or `member_written`.
+type MemorySource struct {
+	Kind string `json:"kind"`
+}
+
+// MemoryHit is one recalled fact. 🔴 A level, never a folder id or a chain; the
+// text is tenant content, never logged. Distance is nil when full text found it.
+type MemoryHit struct {
+	URN      string       `json:"urn"`
+	Level    string       `json:"level"`
+	Distance *float64     `json:"distance"`
+	Text     string       `json:"text"`
+	At       string       `json:"at"`
+	Source   MemorySource `json:"source"`
+}
+
+// MemoryRecallResponse answers a recall. Degraded says full text stood in;
+// Missing names what could not be had (`embeddings`).
+type MemoryRecallResponse struct {
+	Hits     []MemoryHit `json:"hits"`
+	Degraded bool        `json:"degraded"`
+	Missing  []string    `json:"missing,omitempty"`
+}
+
+// MemoryRememberRequest is `POST /v1/memory/remember`' body: ONE fact on the
+// conversation. There is no level: an agent writes where it is.
+type MemoryRememberRequest struct {
+	RequestID string `json:"requestId"`
+	Text      string `json:"text"`
+}
+
+// MemoryRememberResponse names the remembered fact.
+type MemoryRememberResponse struct {
+	URN string `json:"urn"`
+}
+
+// MemoryForgetRequest is `POST /v1/memory/forget`' body: MARK a fact superseded,
+// by a newer fact or by the request. Never a delete.
+type MemoryForgetRequest struct {
+	RequestID      string `json:"requestId"`
+	URN            string `json:"urn"`
+	ReplacementURN string `json:"replacementUrn,omitempty"`
+}
+
+// MemoryForgetResponse names what superseded the fact.
+type MemoryForgetResponse struct {
+	URN          string `json:"urn"`
+	SupersededBy string `json:"supersededBy"`
+}
+
+// MemoryUnfoldRequest is `POST /v1/memory/unfold`' body: what a URN superseded.
+type MemoryUnfoldRequest struct {
+	RequestID string `json:"requestId"`
+	URN       string `json:"urn"`
+	Depth     int    `json:"depth,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// MemorySupersededBy is what superseded an unfolded row: a URN this place can see,
+// or `{visible: false}` — something it cannot.
+type MemorySupersededBy struct {
+	Visible bool   `json:"visible"`
+	URN     string `json:"urn,omitempty"`
+}
+
+// MemoryUnfoldRow is one row an unfold reaches, `depth` hops back.
+type MemoryUnfoldRow struct {
+	URN            string        `json:"urn"`
+	Level          string        `json:"level"`
+	Text           string        `json:"text"`
+	At             string        `json:"at"`
+	Depth          int           `json:"depth"`
+	SupersededKind string        `json:"supersededKind"`
+	Source         *MemorySource `json:"source"`
+}
+
+// MemoryUnfoldResponse answers an unfold.
+type MemoryUnfoldResponse struct {
+	URN          string              `json:"urn"`
+	SupersededBy *MemorySupersededBy `json:"supersededBy"`
+	Rows         []MemoryUnfoldRow   `json:"rows"`
+}
+
 // ToolCallResponse answers a tool call: the tool's result as the platform
 // returned it (an actionable refusal included), and the call's ledger URN when
 // it ran — null when it did not (an approval asked for). 🔴 Never logged.

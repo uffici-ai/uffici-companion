@@ -42,6 +42,9 @@ type Host struct {
 	posts     []PostRecord
 	closes    []CloseRecord
 	toolCalls []ToolCallRecord
+	// memoryCalls and facts are the agent's memory (#2385).
+	memoryCalls []MemoryRecord
+	facts       map[string][]*fact
 	// rung is every request a ring delivered, by id, to its conversation — never
 	// forgotten at close, as the gateway host's memory is not (#2349).
 	rung map[string]string

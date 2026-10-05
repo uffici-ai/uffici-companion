@@ -34,7 +34,8 @@
 						"knowledge_unavailable",
 						"context_trimmed",
 						"card_unavailable",
-						"invalid_citation"
+						"invalid_citation",
+						"forget_refused"
 					]
 				},
 				"instruction": {
