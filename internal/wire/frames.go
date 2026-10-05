@@ -202,6 +202,21 @@ type PluginHello struct {
 	// omits it, and `uffici doctor` then says the plugin did not report it.
 	// Never a refusal: nothing here closes a connection or holds a ring.
 	Drift *Drift `json:"drift,omitempty"`
+	// HarnessSupport is the harness versions this plugin release supports and
+	// its verdict on HarnessVersion against them (#2414). Optional — an older
+	// plugin omits it. Never a refusal: the companion never parses a harness
+	// version, it only carries the plugin's word to `uffici doctor`.
+	HarnessSupport *HarnessSupport `json:"harnessSupport,omitempty"`
+}
+
+// HarnessSupport is a plugin's statement of the harness versions it supports
+// (#2414): client-reported, like Drift.
+type HarnessSupport struct {
+	// Range is the supported versions in the plugin's own words.
+	Range string `json:"range"`
+	// Supported is the plugin's verdict on the harness's version; nil when the
+	// plugin could not read that version.
+	Supported *bool `json:"supported,omitempty"`
 }
 
 // Drift is a plugin's report of its harness's drift from the plugin policy

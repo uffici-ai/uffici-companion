@@ -245,7 +245,7 @@ var knownSteps = map[string]bool{
 	"expectOffset": true, "injectCancel": true,
 	"disconnectPlugin": true, "expectRedelivery": true,
 	"secondConnection": true, "wait": true,
-	"refuseNextQuestion": true, "restartHarness": true,
+	"refuseNextQuestion": true, "restartHarness": true, "endHarnessSession": true,
 	"expectToolCall": true, "expectMemory": true,
 }
 
@@ -379,6 +379,13 @@ func (s *Script) Validate() error {
 			if step.CauseEntry != "" && !conversation.hasEntry(step.CauseEntry) &&
 				!appended[step.Conversation][step.CauseEntry] {
 				return fmt.Errorf("fixture: step %d names cause entry %q, which is neither in conversation %q nor appended by an earlier step", i, step.CauseEntry, step.Conversation)
+			}
+		case "endHarnessSession":
+			if _, ok := s.Conversations[step.Conversation]; !ok {
+				return fmt.Errorf("fixture: step %d ends the harness session of conversation %q, which the script does not declare", i, step.Conversation)
+			}
+			if step.WithinMs <= 0 {
+				return fmt.Errorf("fixture: step %d ends a harness session with no withinMs, so the driver is given no time to do it", i)
 			}
 		case "appendEntries":
 			if _, ok := s.Conversations[step.Conversation]; !ok {

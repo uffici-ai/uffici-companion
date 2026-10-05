@@ -77,6 +77,10 @@ type Health struct {
 	// credential. Absent while no plugin is attached, or when the attached one
 	// predates the report.
 	Drift *HealthDrift `json:"drift,omitempty"`
+	// Harness is the attached plugin's harness, its version, and the plugin's
+	// statement of the versions it supports (#2414), for `uffici doctor`.
+	// Absent while no plugin is attached.
+	Harness *HealthHarness `json:"harness,omitempty"`
 }
 
 // HealthDrift is a plugin's drift report as `/healthz` carries it. 🔴 No
@@ -86,6 +90,18 @@ type HealthDrift struct {
 	MCPServers  []string `json:"mcpServers"`
 	Channels    []string `json:"channels"`
 	LocalMemory []string `json:"localMemory"`
+}
+
+// HealthHarness is the attached plugin's harness as `/healthz` reports it
+// (#2414): the plugin's own words, never parsed by the companion.
+type HealthHarness struct {
+	Kind    string `json:"kind"`
+	Version string `json:"version"`
+	// Range and Supported are the plugin's support statement; Range is empty
+	// when the plugin predates it, and Supported nil when it could not read
+	// the harness's version.
+	Range     string `json:"range,omitempty"`
+	Supported *bool  `json:"supported,omitempty"`
 }
 
 // HealthTools is the most recently listed catalog's size.

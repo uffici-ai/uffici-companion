@@ -59,6 +59,9 @@ type Surface struct {
 	// drift is the ATTACHED plugin's report of its harness's drift (#2406), nil
 	// while none is connected or when the plugin predates the report.
 	drift *wire.Drift
+	// support is the ATTACHED plugin's statement of the harness versions it
+	// supports (#2414), nil while none is connected or when it predates it.
+	support *wire.HarnessSupport
 }
 
 // HarnessFacts reports the harness the last plugin said it translates for, or
@@ -91,6 +94,27 @@ func (s *Surface) Drift() *wire.Drift {
 		Channels:    slices.Clone(s.drift.Channels),
 		LocalMemory: slices.Clone(s.drift.LocalMemory),
 	}
+}
+
+// AttachedHarness reports, under one lock, whether a plugin is attached and,
+// when one is, its harness kind and version and its support statement
+// (#2414): one moment, so `/healthz` never pairs one plugin's facts with
+// another's support, or an attached flag with a detached plugin's facts.
+func (s *Surface) AttachedHarness() (attached bool, kind, version string, support *wire.HarnessSupport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.attached {
+		return false, "", "", nil
+	}
+	if s.support != nil {
+		copied := *s.support
+		if s.support.Supported != nil {
+			verdict := *s.support.Supported
+			copied.Supported = &verdict
+		}
+		support = &copied
+	}
+	return true, s.harnessKind, s.harnessVersion, support
 }
 
 // Options configure a Surface.
@@ -185,6 +209,7 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 	s.harnessKind, s.harnessVersion = hello.Harness, hello.HarnessVersion
 	s.pluginVersion = hello.PluginVersion
 	s.drift = hello.Drift
+	s.support = hello.HarnessSupport
 	s.mu.Unlock()
 	s.log.Info("plugin connected",
 		slog.String("conn", connID),
@@ -194,6 +219,7 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 		slog.String("processId", hello.ProcessID),
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
 		slog.Bool("driftReported", hello.Drift != nil),
+		slog.String("harnessInRange", supportVerdict(hello.HarnessSupport)),
 	)
 
 	if err := sink.sendCompanionHello(ctx, s.version, s.features()); err != nil {
@@ -491,6 +517,7 @@ func (s *Surface) release(connID string) {
 	s.attached = false
 	s.attachedConn = nil
 	s.drift = nil
+	s.support = nil
 	s.mu.Unlock()
 	s.manager.Detach(connID)
 }
@@ -742,4 +769,18 @@ func postExtrasOf(post *wire.Post) *contracts.PostExtras {
 		extras.Activity = append(extras.Activity, contracts.Activity{Tool: a.Tool, Summary: a.Summary})
 	}
 	return extras
+}
+
+// supportVerdict is the plugin's support verdict as one log word (#2414).
+func supportVerdict(support *wire.HarnessSupport) string {
+	switch {
+	case support == nil:
+		return "not_reported"
+	case support.Supported == nil:
+		return "unknown"
+	case *support.Supported:
+		return "yes"
+	default:
+		return "no"
+	}
 }

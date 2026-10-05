@@ -143,6 +143,21 @@ func TestValidateRefusesTheWaysAScriptCanAssertNothing(t *testing.T) {
 			},
 			"appends no entries",
 		},
+		{
+			// #2414: the driver ends the session of a conversation the script names.
+			"an endHarnessSession naming an undeclared conversation",
+			func(s *Script) {
+				s.Steps = append(s.Steps, Step{Step: "endHarnessSession", Conversation: "nowhere", WithinMs: 1000})
+			},
+			"ends the harness session of conversation",
+		},
+		{
+			"an endHarnessSession that gives the driver no time",
+			func(s *Script) {
+				s.Steps = append(s.Steps, Step{Step: "endHarnessSession", Conversation: "invoices"})
+			},
+			"no withinMs",
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			script := valid()

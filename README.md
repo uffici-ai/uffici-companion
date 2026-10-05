@@ -365,7 +365,10 @@ there.
 When the companion is running on this machine, the doctor asks it: whether its connection to
 Uffici is up, whether the harness's plugin is attached, and how many Uffici tools the agent's
 most recent conversation listed (the catalog is read per conversation, so a companion that has
-not answered a turn yet has none to report). With a plugin attached, it also shows what the
+not answered a turn yet has none to report). With a plugin attached, it shows the harness and
+its version on a `harness` line, with the plugin's word on whether this plugin release supports
+that version: a harness outside the plugin's range still connects and answers, but may
+misbehave without an error, so the line says so and names the range. It also shows what the
 plugin read of the harness's own configuration that reaches past Uffici, one `drift` line per
 kind: other MCP servers, other channels the harness answers on, and the harness's own memory
 still on — or `drift none`. These lines are for you to act on; none of them stops the agent

@@ -174,6 +174,9 @@ func reportRunning(ctx context.Context, config Config, health wstransport.Health
 	}
 	say("plugin", plugin)
 	if health.PluginAttached {
+		// 🔴 Reported, never refused (#2414): an unsupported harness changes no
+		// exit code either.
+		say("harness", describeHarness(health.Harness))
 		// 🔴 Reported, never refused (#2406): drift changes no exit code.
 		for _, line := range describeDrift(health.Drift) {
 			say("drift", line)
@@ -293,4 +296,27 @@ func printableNames(names []string) string {
 		clean = append(clean, textsafe.Visible(name))
 	}
 	return strings.Join(clean, ", ")
+}
+
+// describeHarness is the doctor's line about the attached harness (#2414): its
+// kind and version, and the plugin's word on whether this release supports it.
+// The companion never judges a harness version itself — the range and the
+// verdict are the plugin's.
+func describeHarness(harness *wstransport.HealthHarness) string {
+	if harness == nil {
+		return "not reported by the running companion — restart it to run this version"
+	}
+	name := strings.TrimSpace(textsafe.Visible(harness.Kind + " " + harness.Version))
+	supports := textsafe.Visible(harness.Range)
+	switch {
+	case harness.Range == "":
+		return name + " — support not reported; the plugin predates the report"
+	case harness.Supported == nil:
+		return name + " — the plugin could not read the harness's version; it supports " + supports
+	case *harness.Supported:
+		return name + " — supported by this plugin (" + supports + ")"
+	default:
+		return name + " — NOT supported by this plugin, which supports " + supports +
+			"; it may misbehave without an error. uffici upgrade brings a newer plugin, or run a harness in that range"
+	}
 }

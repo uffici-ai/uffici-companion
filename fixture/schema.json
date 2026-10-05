@@ -185,6 +185,7 @@
             "secondConnection",
             "refuseNextQuestion",
             "restartHarness",
+            "endHarnessSession",
             "expectToolCall",
             "expectMemory",
             "wait"

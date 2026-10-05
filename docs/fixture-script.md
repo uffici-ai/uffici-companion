@@ -85,6 +85,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `expectToolCall` | Waits for a tool call on the current request: `name`, optional `argumentsContain` (a substring of the call's arguments as JSON), `withinMs` |
 | `expectMemory` | Waits for a memory op on the current request: `op` (`recall`, `remember`, `forget` or `unfold`), `withinMs` |
 | `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
+| `endHarnessSession` | Logs `end the harness session` with the conversation's wire id as `conversation`, then waits `withinMs` for the run's outer driver to end that conversation's session inside the real harness — both drivers run the plugin's `dev/end_session.py` in the harness's container, which ends Hermes's live rows for it in `state.db`. The step asserts nothing itself: the script's next ring must ack `fresh` and earn an opener. A run with no driver fails the step |
 | `wait` | `ms` |
 
 🔴 **Every expectation is scoped to the CURRENT request** — the one the most

@@ -307,7 +307,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		if config.AttachWait > 0 {
 			scriptRunner.SetAttachWait(config.AttachWait)
 		}
-		scriptRunner.SetAnnounce(func(line string) { logger.Info(line) })
+		scriptRunner.SetAnnounce(func(line string, args ...any) { logger.Info(line, args...) })
 		// The script's expectations and the operational log both watch the
 		// state machine, which takes one observer.
 		observer = observe.Fanout(scriptRunner.Observer(), observer)
@@ -346,6 +346,11 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 			}
 			if wire := served.Load(); wire != nil {
 				health.Drift = healthDrift(wire.Drift())
+				// 🔴 One moment (#2414): the surface clears its flag before it tells the
+				// manager, so a separate manager read could say "attached" while the
+				// surface already reports no harness.
+				health.Harness = healthHarness(wire)
+				health.PluginAttached = health.PluginAttached && health.Harness != nil
 			}
 			return health
 		},
@@ -556,6 +561,20 @@ func healthDrift(drift *wirepkg.Drift) *wstransport.HealthDrift {
 		return nil
 	}
 	return &wstransport.HealthDrift{MCPServers: drift.MCPServers, Channels: drift.Channels, LocalMemory: drift.LocalMemory}
+}
+
+// healthHarness is the attached plugin's harness as `/healthz` carries it
+// (#2414).
+func healthHarness(wire *surface.Surface) *wstransport.HealthHarness {
+	attached, kind, version, support := wire.AttachedHarness()
+	if !attached {
+		return nil
+	}
+	harness := &wstransport.HealthHarness{Kind: kind, Version: version}
+	if support != nil {
+		harness.Range, harness.Supported = support.Range, support.Supported
+	}
+	return harness
 }
 
 // logsHealth is the shipper's state as `/healthz` reports it.

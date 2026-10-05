@@ -77,6 +77,15 @@ credential — and the plugin clips each name to 64 characters and each list to
 its bound itself, so its report can never be the reason a hello is refused. A
 plugin that omits `drift` is one that predates it.
 
+`harnessSupport`, optional, is the harness versions this plugin release supports
+and its verdict on `harnessVersion` against them: `range` (the supported versions
+in the plugin's own words, at most 64 characters) and `supported` (a boolean,
+**absent** when the plugin could not read its harness's version). Like `drift`, it
+is shown by `uffici doctor` and **never a refusal**. The plugin owns the range,
+because only it knows the interfaces it was written against and how its harness
+numbers releases; the companion never parses a harness version. A plugin
+that omits it is one that predates it.
+
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
 `orgSlug`. `features`, optional, lists what this companion can carry beyond what
 every v1 companion does, so a newer plugin never sends an older companion a field
@@ -145,6 +154,7 @@ Opens one request on one conversation: `requestId`, `conversationId`, `reason`
 
 - `outcome`: `accepted`, `deferred`, `rejected`.
 - `session`: `fresh` or `resumed`. **Freshness is the harness's fact**, not the platform's — only the plugin knows whether it opened a new session.
+  🔴 The plugin reads it from the harness's **routing decision**, never infers it from a lookup: a harness can hold an entry for a session it replaces the moment the message routes (Hermes drops one that is suspended, or ended in its database, and older releases reset one on a timer). A plugin that answered `resumed` because the key existed sent the turn to a new session with no history and no opener. The Hermes plugin routes through the harness's own call, the one the turn makes, and answers `fresh` when that session has no transcript. A check it cannot make answers `fresh`: a wrong `resumed` costs the conversation, a wrong `fresh` one extra read.
 - A `rejected` ack redelivers. A `deferred` ack keeps the request open with no session yet.
 
 ### `opener` — companion → plugin

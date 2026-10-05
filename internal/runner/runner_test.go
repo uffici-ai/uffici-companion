@@ -623,7 +623,7 @@ func restartRig(t *testing.T, next string) *Runner {
 	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
 		&autoPlugin{session: requests.SessionFresh, silent: true})
 	r.manager.BindProcess("process-1")
-	r.runner.SetAnnounce(func(string) {
+	r.runner.SetAnnounce(func(string, ...any) {
 		sink := &autoPlugin{manager: r.manager, session: requests.SessionFresh, silent: true}
 		r.manager.Detach("conn-1")
 		r.manager.Attach("conn-2", sink, 48000)
@@ -685,10 +685,10 @@ func TestRestartHarnessRecordsItsWindowUntilTheOldConnectionCloses(t *testing.T)
 	runner.plugin = plugin
 	inner := runner.announce
 	var asked time.Time
-	runner.SetAnnounce(func(line string) {
+	runner.SetAnnounce(func(line string, args ...any) {
 		asked = time.Now()
 		plugin.set(false)
-		inner(line)
+		inner(line, args...)
 	})
 	result, err := runner.Run(context.Background())
 	if err != nil || !result.OK() {
@@ -717,7 +717,7 @@ func TestRestartHarnessAnnouncesThePublishedLine(t *testing.T) {
 	runner := restartRig(t, "process-2")
 	var got []string
 	inner := runner.announce
-	runner.SetAnnounce(func(line string) { got = append(got, line); inner(line) })
+	runner.SetAnnounce(func(line string, args ...any) { got = append(got, line); inner(line, args...) })
 	if _, err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -738,6 +738,47 @@ func TestRestartHarnessWithNoDriverIsAMiss(t *testing.T) {
 	}
 	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
 		t.Fatalf("a restart with nobody to perform it passed: %v", result.Unmet)
+	}
+}
+
+// 🔴 #2414: `endHarnessSession` asks the driver, by the published line and the
+// conversation's WIRE id, and gives it the step's window; with no driver it is
+// a miss, never a silent pass.
+func TestEndHarnessSessionAnnouncesThePublishedLineWithTheConversation(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectAck", Outcome: "accepted", WithinMs: 1000},
+		{Step: "endHarnessSession", Conversation: "invoices", WithinMs: 50},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, silent: true})
+	type ask struct {
+		line string
+		args []any
+	}
+	var got []ask
+	r.runner.SetAnnounce(func(line string, args ...any) { got = append(got, ask{line, args}) })
+	started := time.Now()
+	result, err := r.runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("Run: %v %v", err, result.Unmet)
+	}
+	want := r.runner.script.Conversations["invoices"].ID
+	if len(got) != 1 || got[0].line != "end the harness session" ||
+		len(got[0].args) != 2 || got[0].args[0] != "conversation" || got[0].args[1] != want {
+		t.Fatalf("announced %+v, want the one published line with conversation %q", got, want)
+	}
+	if elapsed := time.Since(started); elapsed < 50*time.Millisecond {
+		t.Fatalf("the driver was given %v, want the step's 50ms", elapsed)
+	}
+
+	r = newRig(t, script(steps, fixture.Assertions{}), &autoPlugin{session: requests.SessionFresh, silent: true})
+	result, err = r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
+		t.Fatalf("ending a session with nobody to do it passed: %v", result.Unmet)
 	}
 }
 

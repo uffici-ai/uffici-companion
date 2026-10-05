@@ -48,6 +48,15 @@ const AttachWait = 15 * time.Second
 // alone would leave the step waiting on a restart nobody performs.
 const RestartHarnessLine = "restart the harness"
 
+// EndHarnessSessionLine is what an `endHarnessSession` step asks the run's
+// driver to act on (#2414), with the conversation's wire id as `conversation`.
+//
+// 🔴 A published literal, like RestartHarnessLine: both drivers end that
+// conversation's session INSIDE the real harness when the companion logs it —
+// for Hermes, its row in `state.db`, which a live gateway reads at routing time
+// and replaces with a new, empty session. Pinned from the platform's root.
+const EndHarnessSessionLine = "end the harness session"
+
 // Plugin is what the runner can do to the attached plugin, for the steps that
 // exercise reconnection and refusal.
 //
@@ -181,8 +190,9 @@ type Runner struct {
 	ringMu             sync.Mutex
 
 	// announce tells the run's driver something only it can do — restart the
-	// harness. Nil in a run with no driver, where `restartHarness` fails.
-	announce func(line string)
+	// harness, end a session inside it. Nil in a run with no driver, where
+	// `restartHarness` and `endHarnessSession` fail. args are slog key/values.
+	announce func(line string, args ...any)
 }
 
 // New builds a Runner.
@@ -212,7 +222,7 @@ func (r *Runner) SetAttachWait(wait time.Duration) {
 
 // SetAnnounce sets how the runner asks the run's driver to act: the daemon logs
 // the line, and the driver following that log acts on it.
-func (r *Runner) SetAnnounce(announce func(line string)) { r.announce = announce }
+func (r *Runner) SetAnnounce(announce func(line string, args ...any)) { r.announce = announce }
 
 // Observer is the runner's view of the state machine.
 func (r *Runner) Observer() requests.Observer { return (*observer)(r) }
@@ -389,6 +399,8 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return ""
 	case "restartHarness":
 		return r.restartHarness(ctx, step)
+	case "endHarnessSession":
+		return r.endHarnessSession(ctx, step)
 	case "expectToolCall":
 		return r.expectToolCall(ctx, step)
 	case "expectMemory":
@@ -651,6 +663,28 @@ func (r *Runner) restartHarness(ctx context.Context, step fixture.Step) string {
 	r.events.restarts = append(r.events.restarts, window)
 	r.events.mu.Unlock()
 	return miss
+}
+
+// endHarnessSession asks the driver to end the conversation's session inside
+// the harness (#2414), then gives it `withinMs` to do so.
+//
+// 🔴 Nothing here can see the session end — it lives in the harness — so this
+// step is never the evidence. The script's NEXT ring is: a plugin that reads its
+// harness's routing acks it `fresh` and earns an opener (`expectAck` with
+// `session: fresh`, then `expectOpener`), and one that read a stale lookup acks
+// `resumed`. A driver that ended nothing fails those expectations, not this one.
+func (r *Runner) endHarnessSession(ctx context.Context, step fixture.Step) string {
+	if r.announce == nil {
+		return "the script ends a harness session, but this run has no driver to do it"
+	}
+	conversation, ok := r.script.Conversations[step.Conversation]
+	if !ok {
+		// Unreachable: Validate refuses an unknown conversation at load.
+		return fmt.Sprintf("conversation %q is not in the script", step.Conversation)
+	}
+	r.announce(EndHarnessSessionLine, "conversation", conversation.ID)
+	r.sleep(ctx, r.within(step.WithinMs))
+	return ""
 }
 
 // waitFor polls a condition until it holds or the window closes.
