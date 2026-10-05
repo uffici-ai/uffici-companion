@@ -197,6 +197,25 @@ type PluginHello struct {
 	// reconnect is the same process, a different one is a restarted harness.
 	// Optional — an older plugin omits it. Not a secret.
 	ProcessID string `json:"processId,omitempty"`
+	// Drift is what in the harness's own configuration reaches past Uffici
+	// (#2406), as the plugin read it at this hello. Optional — an older plugin
+	// omits it, and `uffici doctor` then says the plugin did not report it.
+	// Never a refusal: nothing here closes a connection or holds a ring.
+	Drift *Drift `json:"drift,omitempty"`
+}
+
+// Drift is a plugin's report of its harness's drift from the plugin policy
+// (#1994 decision 13, #1958 decision 27): client-reported, names only.
+//
+// A kind the plugin could not read is nil; an empty list means it read the
+// source and found nothing.
+type Drift struct {
+	// MCPServers names the MCP servers the harness has configured and enabled.
+	MCPServers []string `json:"mcpServers"`
+	// Channels names the harness's other live channels, Uffici's own excluded.
+	Channels []string `json:"channels"`
+	// LocalMemory names the settings that keep a memory of the harness's own.
+	LocalMemory []string `json:"localMemory"`
 }
 
 // String redacts the token so the struct is safe to format.

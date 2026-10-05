@@ -185,6 +185,39 @@ func TestNestedStructsMatchTheirSchemaDefs(t *testing.T) {
 	}
 }
 
+// The hello's `drift` object lives inline on the plugin's shape (#2406).
+func TestDriftMatchesTheHelloSchema(t *testing.T) {
+	raw, err := fs.ReadFile(contract.FS(), "schema/hello.schema.json")
+	if err != nil {
+		t.Fatalf("reading the hello schema: %v", err)
+	}
+	var doc struct {
+		Defs struct {
+			PluginHello struct {
+				Properties struct {
+					Drift struct {
+						Properties map[string]json.RawMessage `json:"properties"`
+					} `json:"drift"`
+				} `json:"properties"`
+			} `json:"pluginHello"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing the hello schema: %v", err)
+	}
+	want := make([]string, 0, 3)
+	for property := range doc.Defs.PluginHello.Properties.Drift.Properties {
+		want = append(want, property)
+	}
+	sort.Strings(want)
+	if len(want) == 0 {
+		t.Fatal("the plugin hello's drift declares no properties — the comparison would be empty")
+	}
+	if got := jsonFieldNames(t, &Drift{}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("struct and schema disagree.\n  struct: %v\n  schema: %v", got, want)
+	}
+}
+
 // The `cause` object lives inline on the brief rather than in `$defs`.
 func TestCauseMatchesTheBriefSchema(t *testing.T) {
 	raw, err := fs.ReadFile(contract.FS(), "schema/brief.schema.json")

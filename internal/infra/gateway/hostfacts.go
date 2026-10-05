@@ -7,10 +7,10 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"unicode"
 	"unicode/utf16"
 
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/textsafe"
 )
 
 // hostFactMaxChars is the protocol's bound on the OS release (#2236), and
@@ -82,12 +82,7 @@ func clipFact(value string) string { return clipTo(value, hostFactMaxChars) }
 // 64 runes can still be over the gateway's 64 and refused — and the ticket that
 // carries it is refused whole, taking the companion offline over a label.
 func clipTo(value string, limit int) string {
-	value = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return -1
-		}
-		return r
-	}, strings.TrimSpace(value))
+	value = textsafe.Visible(strings.TrimSpace(value))
 	units := 0
 	for i, r := range value {
 		units += utf16.RuneLen(r)

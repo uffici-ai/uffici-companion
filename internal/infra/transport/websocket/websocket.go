@@ -72,6 +72,20 @@ type Health struct {
 	// doctor` (#2349): a count, never a name or a schema. Absent until a plugin
 	// first lists them — the catalog is read per conversation.
 	Tools *HealthTools `json:"tools,omitempty"`
+	// Drift is the attached plugin's report of its harness's drift, for
+	// `uffici doctor` (#2406): names only, never a URL, a header or a
+	// credential. Absent while no plugin is attached, or when the attached one
+	// predates the report.
+	Drift *HealthDrift `json:"drift,omitempty"`
+}
+
+// HealthDrift is a plugin's drift report as `/healthz` carries it. 🔴 No
+// `omitempty` on the kinds: a kind the plugin could not read is `null`, one it
+// read and found clean is `[]`, and the doctor says different things for each.
+type HealthDrift struct {
+	MCPServers  []string `json:"mcpServers"`
+	Channels    []string `json:"channels"`
+	LocalMemory []string `json:"localMemory"`
 }
 
 // HealthTools is the most recently listed catalog's size.

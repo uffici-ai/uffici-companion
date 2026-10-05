@@ -62,6 +62,21 @@ still ends in `redelivery_exhausted`. A plugin that omits it keeps the older
 rule, under which an acknowledged request is never redelivered and sits until
 its deadline after a restart.
 
+`drift`, optional, is what in the harness's own configuration reaches past
+Uffici, as the plugin read it at this hello — a client-reported signal that
+`uffici doctor` shows, and **never a refusal**: no value in it closes a
+connection, holds a ring or fails a setup step. Three kinds, each a list of
+names: `mcpServers` (MCP servers configured and enabled in the harness, whose
+calls never pass through the platform), `channels` (the harness's other live
+channels, Uffici's own excluded) and `localMemory` (the settings that keep a
+memory of the harness's own — for Hermes `memory.memory_enabled`,
+`memory.user_profile_enabled`, or `memory.provider` naming another provider).
+A kind the plugin could not read is absent; an empty list means it read the
+source and found nothing. Names only — never a URL, a header, a path or a
+credential — and the plugin clips each name to 64 characters and each list to
+its bound itself, so its report can never be the reason a hello is refused. A
+plugin that omits `drift` is one that predates it.
+
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
 `orgSlug`. `features`, optional, lists what this companion can carry beyond what
 every v1 companion does, so a newer plugin never sends an older companion a field

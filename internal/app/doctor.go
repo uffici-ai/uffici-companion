@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
+	"github.com/uffici-ai/uffici-companion/internal/textsafe"
 )
 
 // doctorTimeout bounds the whole probe.
@@ -171,6 +173,12 @@ func reportRunning(ctx context.Context, config Config, health wstransport.Health
 		plugin = "attached"
 	}
 	say("plugin", plugin)
+	if health.PluginAttached {
+		// 🔴 Reported, never refused (#2406): drift changes no exit code.
+		for _, line := range describeDrift(health.Drift) {
+			say("drift", line)
+		}
+	}
 	if logs := health.Logs; logs != nil {
 		say("log lines", describeLogs(*logs))
 	}
@@ -235,4 +243,54 @@ func describeTools(tools *wstransport.HealthTools) string {
 		noun = "tool"
 	}
 	return fmt.Sprintf("%d %s in the most recent conversation's catalog", tools.Listed, noun)
+}
+
+// driftKinds are the doctor's words for each kind of drift a plugin reports
+// (#2406), in the order it prints them: what the kind is, and what it means.
+var driftKinds = []struct {
+	label, meaning string
+	names          func(*wstransport.HealthDrift) []string
+}{
+	{"other MCP servers", "their tool calls never pass through Uffici",
+		func(d *wstransport.HealthDrift) []string { return d.MCPServers }},
+	{"other channels", "this harness also answers there, outside Uffici",
+		func(d *wstransport.HealthDrift) []string { return d.Channels }},
+	{"local memory still on", "notes no one in the organization can see or delete; uffici setup turns it off",
+		func(d *wstransport.HealthDrift) []string { return d.LocalMemory }},
+}
+
+// describeDrift is the doctor's lines about the harness's drift from the
+// plugin policy (#1994 decision 13): one per kind present, `none` when the
+// plugin read every kind and found nothing, and `not reported` when the plugin
+// predates the report. A kind the plugin could not read says so rather than
+// reading as clean.
+func describeDrift(drift *wstransport.HealthDrift) []string {
+	if drift == nil {
+		return []string{"not reported — the plugin predates the report; uffici upgrade brings one that does"}
+	}
+	var lines []string
+	for _, kind := range driftKinds {
+		names := kind.names(drift)
+		switch {
+		case names == nil:
+			lines = append(lines, kind.label+" not reported — the plugin could not read them")
+		case len(names) > 0:
+			lines = append(lines, fmt.Sprintf("%s: %s — %s", kind.label, printableNames(names), kind.meaning))
+		}
+	}
+	if len(lines) == 0 {
+		return []string{"none"}
+	}
+	return lines
+}
+
+// printableNames joins names for a terminal line through textsafe.Visible: a
+// name is the harness's configuration, and must not be able to steer or
+// disguise the line it is printed on.
+func printableNames(names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, name := range names {
+		clean = append(clean, textsafe.Visible(name))
+	}
+	return strings.Join(clean, ", ")
 }

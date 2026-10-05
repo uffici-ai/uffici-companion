@@ -318,6 +318,10 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	// logging.shipper, which is atomic, never through this variable.
 	var shipper *logship.Shipper
 
+	// The surface, for /healthz (#2406): published once built, read atomically,
+	// because the health handler serves before the surface exists.
+	var served atomic.Pointer[surface.Surface]
+
 	// The agent's Uffici tools (#2349), over whichever host is running. Built
 	// before the listener: /healthz reports the last catalog's size.
 	toolCalls := &tools.Handler{Host: host, Logger: logger}
@@ -339,6 +343,9 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 			health.Logs = logsHealth(config, logging.shipper.Load(), logging.ring)
 			if listed, ok := toolCalls.CatalogSize(); ok {
 				health.Tools = &wstransport.HealthTools{Listed: listed}
+			}
+			if wire := served.Load(); wire != nil {
+				health.Drift = healthDrift(wire.Drift())
 			}
 			return health
 		},
@@ -372,6 +379,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		return ExitConfig, err
 	}
 	control.surface = wire
+	served.Store(wire)
 	control.transport = wstransport.Options{
 		Kind: config.Transport, SocketPath: config.SocketPath, TCPAddr: config.TCPAddr,
 	}
@@ -539,6 +547,15 @@ func newShipper(config Config, host contracts.AgentsHost, logging *logging, clie
 	})
 	logging.shipper.Store(shipper)
 	return shipper
+}
+
+// healthDrift is the attached plugin's drift report as `/healthz` carries it
+// (#2406), nil when the plugin sent none.
+func healthDrift(drift *wirepkg.Drift) *wstransport.HealthDrift {
+	if drift == nil {
+		return nil
+	}
+	return &wstransport.HealthDrift{MCPServers: drift.MCPServers, Channels: drift.Channels, LocalMemory: drift.LocalMemory}
 }
 
 // logsHealth is the shipper's state as `/healthz` reports it.

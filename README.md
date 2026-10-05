@@ -365,7 +365,11 @@ there.
 When the companion is running on this machine, the doctor asks it: whether its connection to
 Uffici is up, whether the harness's plugin is attached, and how many Uffici tools the agent's
 most recent conversation listed (the catalog is read per conversation, so a companion that has
-not answered a turn yet has none to report). It does not open a second
+not answered a turn yet has none to report). With a plugin attached, it also shows what the
+plugin read of the harness's own configuration that reaches past Uffici, one `drift` line per
+kind: other MCP servers, other channels the harness answers on, and the harness's own memory
+still on — or `drift none`. These lines are for you to act on; none of them stops the agent
+working. It does not open a second
 connection, which would take the running companion's place. When no companion is running, the
 doctor proves the connection itself: the key is readable, a connection ticket is issued, the
 connection opens, Uffici says hello, and it closes. When it cannot connect it prints the reason

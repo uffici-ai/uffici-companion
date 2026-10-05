@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,6 +56,9 @@ type Surface struct {
 	harnessVersion string
 	// pluginVersion is the last plugin's own version, reported likewise (#2236).
 	pluginVersion string
+	// drift is the ATTACHED plugin's report of its harness's drift (#2406), nil
+	// while none is connected or when the plugin predates the report.
+	drift *wire.Drift
 }
 
 // HarnessFacts reports the harness the last plugin said it translates for, or
@@ -71,6 +75,22 @@ func (s *Surface) PluginVersion() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.pluginVersion
+}
+
+// Drift reports the connected plugin's drift report (#2406): nil while no
+// plugin is connected, or when the connected one sent none. The lists are
+// copies, safe to keep.
+func (s *Surface) Drift() *wire.Drift {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.drift == nil {
+		return nil
+	}
+	return &wire.Drift{
+		MCPServers:  slices.Clone(s.drift.MCPServers),
+		Channels:    slices.Clone(s.drift.Channels),
+		LocalMemory: slices.Clone(s.drift.LocalMemory),
+	}
 }
 
 // Options configure a Surface.
@@ -164,6 +184,7 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 	s.pendingProcess = hello.ProcessID
 	s.harnessKind, s.harnessVersion = hello.Harness, hello.HarnessVersion
 	s.pluginVersion = hello.PluginVersion
+	s.drift = hello.Drift
 	s.mu.Unlock()
 	s.log.Info("plugin connected",
 		slog.String("conn", connID),
@@ -172,6 +193,7 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 		slog.String("pluginVersion", hello.PluginVersion),
 		slog.String("processId", hello.ProcessID),
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
+		slog.Bool("driftReported", hello.Drift != nil),
 	)
 
 	if err := sink.sendCompanionHello(ctx, s.version, s.features()); err != nil {
@@ -468,6 +490,7 @@ func (s *Surface) release(connID string) {
 	s.mu.Lock()
 	s.attached = false
 	s.attachedConn = nil
+	s.drift = nil
 	s.mu.Unlock()
 	s.manager.Detach(connID)
 }

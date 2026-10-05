@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -218,6 +219,11 @@ const pluginReply = "yes, it is filed"
 // not stop the test, it just stops that goroutine, and the run then hangs
 // until the outer timeout with no reason given.
 func dialPluginErr(socket, token string) (*testPlugin, error) {
+	return dialPluginHello(socket, token, nil)
+}
+
+// dialPluginHello is dialPluginErr with extra fields on the plugin's hello.
+func dialPluginHello(socket, token string, extra map[string]any) (*testPlugin, error) {
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -236,7 +242,7 @@ func dialPluginErr(socket, token string) (*testPlugin, error) {
 	// naming something other than the cause.
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		plugin, err := attachOnce(ctx, client, token)
+		plugin, err := attachOnce(ctx, client, token, extra)
 		if err == nil {
 			return plugin, nil
 		}
@@ -247,16 +253,18 @@ func dialPluginErr(socket, token string) (*testPlugin, error) {
 }
 
 // attachOnce performs one dial + hello + companion-hello exchange.
-func attachOnce(ctx context.Context, client *http.Client, token string) (*testPlugin, error) {
+func attachOnce(ctx context.Context, client *http.Client, token string, extra map[string]any) (*testPlugin, error) {
 	conn, _, err := ws.Dial(ctx, "ws://companion/v1/ring", &ws.DialOptions{HTTPClient: client})
 	if err != nil {
 		return nil, err
 	}
 
-	raw, err := json.Marshal(map[string]any{
+	hello := map[string]any{
 		"v": 1, "type": "hello", "harness": "hermes", "harnessVersion": "0.21.3",
 		"pluginVersion": "0.1.0", "token": token, "contextBudgetTokens": 48000,
-	})
+	}
+	maps.Copy(hello, extra)
+	raw, err := json.Marshal(hello)
 	if err != nil {
 		_ = conn.CloseNow()
 		return nil, err
