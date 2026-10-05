@@ -36,6 +36,13 @@ func newRig(t *testing.T) *rig {
 // always the rig's own.
 func newRigWith(t *testing.T, options Options) *rig {
 	t.Helper()
+	return newRigObserved(t, options, nil)
+}
+
+// newRigObserved builds the rig with an observer on the manager, for a test that
+// must wait for the manager to have HANDLED a frame rather than merely sent it.
+func newRigObserved(t *testing.T, options Options, observer requests.Observer) *rig {
+	t.Helper()
 	host := memory.New()
 	host.Seed("conv_1", "c0001", []contracts.Entry{
 		{ID: "e1", Cursor: "c0001", Kind: "message", Text: "first",
@@ -43,7 +50,7 @@ func newRigWith(t *testing.T, options Options) *rig {
 		{ID: "e2", Cursor: "c0002", Kind: "message", Text: "second",
 			Author: contracts.Author{Type: "member", ID: "m1", Label: "Ana"}},
 	})
-	manager := requests.New(host, requests.Options{})
+	manager := requests.New(host, requests.Options{Observer: observer})
 	listener := memtransport.NewListener("memory://surface")
 	options.Token, options.Version = testToken, "0.1.0"
 	surface, err := New(listener, manager, options)
@@ -622,7 +629,8 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 		{"a reconnect of the same process", "proc-before-restart-0001", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t)
+			acks := &ackObserver{acked: make(chan string, 1)}
+			r := newRigObserved(t, Options{}, acks)
 			first := r.attachAs(t, "proc-before-restart-0001")
 			if err := r.manager.OnRing(context.Background(), contracts.Ring{
 				RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
@@ -636,6 +644,14 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 			send(t, first, map[string]any{
 				"v": 1, "type": "ack", "requestId": "req_1", "outcome": "accepted", "session": "resumed",
 			})
+			// 🔴 Wait for the manager to have HANDLED the ack (#2409): `send` only puts
+			// the frame on the wire, and a close processed first leaves the request
+			// unacknowledged — which every reconnect is owed, the same process included.
+			select {
+			case <-acks.acked:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the manager never handled the ack")
+			}
 			// Hermes goes away mid-turn.
 			_ = first.Close("gone")
 			deadline := time.Now().Add(2 * time.Second)
@@ -655,6 +671,19 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 				t.Fatalf("a reconnect of the same process was handed a %v it was already answering", frame["type"])
 			}
 		})
+	}
+}
+
+// ackObserver tells a test when the manager has handled an acknowledgement.
+type ackObserver struct {
+	requests.NopObserver
+	acked chan string
+}
+
+func (o *ackObserver) Acked(requestID string, _ requests.AckOutcome, _ requests.Session) {
+	select {
+	case o.acked <- requestID:
+	default:
 	}
 }
 
