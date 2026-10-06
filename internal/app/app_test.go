@@ -784,7 +784,7 @@ func TestNoTranscriptContentOrTokenReachesTheLog(t *testing.T) {
 	if len(log) == 0 {
 		t.Fatal("the run produced no log at all, so this guard looked at nothing")
 	}
-	for _, field := range []string{"deltaEntryCount", "deltaChars", "openerChars", "budgetDeclared", "elapsedMs"} {
+	for _, field := range []string{"deltaEntryCount", "deltaChars", "openerChars", "openerSummaryCount", "budgetDeclared", "elapsedMs"} {
 		if !strings.Contains(log, field) {
 			t.Fatalf("the log carries no %q, so the counts wave 4 needs are not being emitted", field)
 		}

@@ -375,7 +375,7 @@ func TestAPlatformCancelForAnUnknownRequestIsNotAnError(t *testing.T) {
 func TestNopObserverIsUsable(_ *testing.T) {
 	var observer Observer = NopObserver{}
 	observer.BriefSent("r", "c", 1, 2)
-	observer.OpenerSent("r", 1, 2, 3)
+	observer.OpenerSent("r", 1, 2, 3, 0)
 	observer.Acked("r", AckAccepted, SessionFresh)
 	observer.Posted("r", 1)
 	observer.Closed("r", contracts.OutcomeAnswered, "")
@@ -1412,5 +1412,46 @@ func TestAReleaseToASinkWithoutItIsNotAnError(t *testing.T) {
 	manager, _, _ := attached(t, Options{})
 	if err := manager.OnPlatformRelease(context.Background(), "conv_1", contracts.ReleaseDeleted); err != nil {
 		t.Fatalf("a release to a plain sink must be ordinary, got %v", err)
+	}
+}
+
+// openerCounts records what the manager told its observer about each opener.
+type openerCounts struct {
+	NopObserver
+	entries, summaries []int
+}
+
+func (o *openerCounts) OpenerSent(_ string, entries, _, _, summaryEntries int) {
+	o.entries = append(o.entries, entries)
+	o.summaries = append(o.summaries, summaryEntries)
+}
+
+// 🔴 #2451: the opener's log line counts the platform's summary entries — a count,
+// never their text — so a fresh session's fold is visible from the companion's
+// side without reading a transcript.
+func TestTheOpenerReportsHowManySummariesItCarried(t *testing.T) {
+	observer := &openerCounts{}
+	host := memory.New()
+	platform := contracts.Author{Type: "system", ID: "platform"}
+	host.Seed("conv_1", "", []contracts.Entry{
+		{ID: "40", Cursor: "c0001", Kind: "summary", Text: "Summary of 37 earlier messages.\nsegment", Author: platform},
+		{ID: "52", Cursor: "c0002", Kind: "summary", Text: "12 earlier messages are not shown here.", Author: platform},
+		{ID: "e3", Cursor: "c0003", Kind: "message", Text: "third", Author: contracts.Author{Type: "member", ID: "m1"}},
+	})
+	manager := New(host, Options{Observer: observer})
+	sink := newRecorder()
+	manager.Attach("conn-1", sink, 48000)
+	ctx := context.Background()
+	if err := manager.OnRing(ctx, ring("req_1", "", "c0003")); err != nil {
+		t.Fatalf("OnRing: %v", err)
+	}
+	if err := manager.OnAck(ctx, "conn-1", "req_1", AckAccepted, SessionFresh); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	if len(observer.entries) != 1 || observer.entries[0] != 3 {
+		t.Fatalf("the opener was reported with %v entries, want [3] — this guard needs the opener sent", observer.entries)
+	}
+	if observer.summaries[0] != 2 {
+		t.Fatalf("the opener reported %d summary entries, want 2", observer.summaries[0])
 	}
 }

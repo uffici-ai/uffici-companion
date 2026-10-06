@@ -335,7 +335,7 @@ one**: it maps the platform's bounded read one to one.
 `id`, `cursor`, `at`, `author`, `kind`, `text`, and optional `attachments`.
 
 - `author`: `type` (`member`, `agent`, `correspondent`, `system`), `id`, `label`, optional `handle` — the agent's `@slug`, so the model can address it — and `self`, true for the answering agent's own entries.
-- `kind`: `message`, `tool_line`, `tombstone` — **and anything else**, see forward compatibility.
+- `kind`: `message`, `tool_line`, `tombstone`, `summary` — **and anything else**, see forward compatibility. A `summary` arrives on an opener, authored by the platform (`system`): its text stands for earlier messages — a header line saying what it covers and how to read them, then the summary — or is one sentence saying earlier messages are not shown. A reader renders it as written, with no author label.
 - `attachments`: `id`, `name`, `ref`. By reference; bytes never ride this wire.
 
 ## The context
@@ -439,7 +439,7 @@ and the harness is not degraded more than the network already does:
 ## Forward compatibility
 
 🔴 **A reader ignores what it does not know.** This is a requirement, not a
-tolerance: a later summary entry kind must arrive with no version bump.
+tolerance: a new entry kind must arrive with no version bump, as `summary` did.
 
 - **An unknown field is ignored.** Schemas admit unknown properties deliberately; what they require is the fields that carry meaning, so a *renamed* field still fails.
 - **An unknown entry `kind` renders as a labelled line.** `kind` is deliberately **not** a closed enum in the schema. Closing it would make every future kind a breaking change.

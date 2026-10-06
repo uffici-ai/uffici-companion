@@ -164,6 +164,12 @@ func (s *store) readSince(conversationID, since, through string, contextBudgetTo
 		if entry.Author.Self {
 			continue
 		}
+		// 🔴 A scripted summary rides the opener only (#2451): the platform
+		// folds what a fresh session reads, and a delta — what the agent has
+		// not seen — never carries one.
+		if entry.Kind == contracts.EntryKindSummary {
+			continue
+		}
 		out = append(out, entry)
 	}
 	// The fixture never bounds: the platform bounds and the fixture serves what
@@ -203,7 +209,8 @@ func (s *store) contextBudgets() []int {
 }
 
 // readOpener returns the recent tail through `through`, INCLUDING the agent's
-// own entries.
+// own entries and any scripted `summary` entries (#2451) — the platform's fold,
+// served as written.
 //
 // The declared budget is recorded, never used to trim — trimming is the
 // platform's job, and a fixture that trimmed would be testing its own

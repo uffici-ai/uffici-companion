@@ -239,7 +239,7 @@ func (o *observer) BriefSent(requestID, _ string, _, _ int) {
 	o.events.notify()
 }
 
-func (o *observer) OpenerSent(requestID string, _, _, _ int) {
+func (o *observer) OpenerSent(requestID string, _, _, _, _ int) {
 	o.events.mu.Lock()
 	o.events.openers = append(o.events.openers, requestID)
 	o.events.mu.Unlock()

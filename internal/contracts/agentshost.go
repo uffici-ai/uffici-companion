@@ -83,6 +83,12 @@ type Entry struct {
 	Attachments []Attachment
 }
 
+// EntryKindSummary is the platform's summary entry (#2451): its own text
+// standing for earlier messages, carried on an opener and never on a delta.
+// The one kind the companion names — to count it and to script it; it renders
+// nothing and parses nothing in it.
+const EntryKindSummary = "summary"
+
 // Context is what the agent is told before the conversation (#2331): the
 // identity block first, then the organization's and each place's pinned
 // context, composed by the PLATFORM. The companion forwards it one to one and

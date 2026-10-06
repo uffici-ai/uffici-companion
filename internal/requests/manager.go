@@ -56,7 +56,7 @@ type ReleaseSink interface {
 // content into a log by construction rather than by accident.
 type Observer interface {
 	BriefSent(requestID, conversationID string, deltaEntries, deltaChars int)
-	OpenerSent(requestID string, entries, chars, budgetDeclared int)
+	OpenerSent(requestID string, entries, chars, budgetDeclared, summaryEntries int)
 	Acked(requestID string, outcome AckOutcome, session Session)
 	Posted(requestID string, chars int)
 	Closed(requestID string, outcome contracts.Outcome, errorClass string)
@@ -71,7 +71,7 @@ type NopObserver struct{}
 func (NopObserver) BriefSent(string, string, int, int) {}
 
 // OpenerSent ignores an opener.
-func (NopObserver) OpenerSent(string, int, int, int) {}
+func (NopObserver) OpenerSent(string, int, int, int, int) {}
 
 // Acked ignores an acknowledgement.
 func (NopObserver) Acked(string, AckOutcome, Session) {}
@@ -556,7 +556,7 @@ func (m *Manager) OnAck(ctx context.Context, connID, requestID string, outcome A
 			return fmt.Errorf("sending the opener for %s: %w", requestID, err)
 		}
 	}
-	m.observer.OpenerSent(requestID, len(entries), charsOf(entries), budget)
+	m.observer.OpenerSent(requestID, len(entries), charsOf(entries), budget, summariesOf(entries))
 
 	if !m.advance(request, StatePosting) {
 		return ErrClosedRequest
@@ -973,6 +973,18 @@ func (m *Manager) Open() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.byID)
+}
+
+// summariesOf counts the platform's summary entries (#2451) — the fold a fresh
+// session's opener carries. The kind is the platform's; the companion only counts.
+func summariesOf(entries []contracts.Entry) int {
+	total := 0
+	for _, entry := range entries {
+		if entry.Kind == contracts.EntryKindSummary {
+			total++
+		}
+	}
+	return total
 }
 
 func charsOf(entries []contracts.Entry) int {

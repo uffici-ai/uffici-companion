@@ -92,6 +92,46 @@ func TestTheOpenerIncludesTheAgentsOwnEntries(t *testing.T) {
 	}
 }
 
+// 🔴 #2451: a script can put the platform's summary entries in an opener. They
+// ride the opener ONLY — the platform folds what a fresh session would read, and
+// a delta is what the agent has not seen, which a summary never is.
+func TestAScriptedSummaryRidesTheOpenerAndNeverADelta(t *testing.T) {
+	script := testScript()
+	conversation := script.Conversations["invoices"]
+	conversation.Offset = ""
+	conversation.Entries = append([]ScriptEntry{{
+		ID: "40", Cursor: "c0000", At: "2026-09-17T13:00:00Z", Kind: contracts.EntryKindSummary,
+		Text:   "Summary of 37 earlier messages.\n[summary-canary] The invoice was approved.",
+		Author: ScriptAuthor{Type: "system", ID: "platform"},
+	}}, conversation.Entries...)
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	opener, err := host.ReadOpener(ctx, "conv_1", "c0004", 48000)
+	if err != nil {
+		t.Fatalf("ReadOpener: %v", err)
+	}
+	if len(opener) != 5 || opener[0].Kind != contracts.EntryKindSummary || opener[0].Author.Type != "system" {
+		t.Fatalf("the opener is %+v, want the summary first and then the four messages", opener)
+	}
+
+	read, err := host.ReadSince(ctx, "conv_1", "", "c0004", 0)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if len(read.Entries) == 0 {
+		t.Fatal("the delta is empty, so this guard proves nothing about what it leaves out")
+	}
+	for _, entry := range read.Entries {
+		if entry.Kind == contracts.EntryKindSummary {
+			t.Fatal("a delta carried a summary entry — the platform puts summaries on an opener only")
+		}
+	}
+}
+
 // 🔴 The bug worth the most: an offset advanced on a cancelled request means the
 // next brief starts after entries nobody answered, losing them for every agent.
 func TestOnlyAnsweredAndEmptyMoveTheOffset(t *testing.T) {
