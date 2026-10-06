@@ -13,3 +13,6 @@ func FactURN(id string) string { return urnPrefix + "fact:" + id }
 // RequestURN is an answer request's URN — what a forget with no replacement is
 // superseded by.
 func RequestURN(id string) string { return urnPrefix + "request:" + id }
+
+// ToolCallURN is a ledgered tool call's URN — what a re-run names (#2454).
+func ToolCallURN(id string) string { return urnPrefix + "tool_call:" + id }

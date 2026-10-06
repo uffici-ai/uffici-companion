@@ -577,13 +577,14 @@ func TestTheVerdictReportsCountsAndMissesAndNoContent(t *testing.T) {
 	report(logger, runner.Result{
 		RingsDelivered: 0,
 		Unmet:          []string{"step 3 (expectPost): no post satisfying contains \"filed\""},
-		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1, ToolCalls: 3},
+		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1, ToolCalls: 3, ToolReruns: 2},
 	})
 
 	logged := sink.String()
 	// 🔴 `"toolCalls":3`: the plugin's release e2e and the platform's read the
-	// tool-call count from this line by that name (#2349).
-	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered", `"toolCalls":3`} {
+	// tool-call count from this line by that name (#2349), and the re-run count
+	// as `toolReruns` (#2454).
+	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered", `"toolCalls":3`, `"toolReruns":2`} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the verdict never mentions %q:\n%s", want, logged)
 		}

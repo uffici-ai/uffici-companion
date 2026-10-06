@@ -50,6 +50,14 @@ func (f *fakeHost) CallTool(_ context.Context, requestID, name string, arguments
 	return f.result, f.callErr
 }
 
+func (f *fakeHost) RerunTool(_ context.Context, requestID, call string) (contracts.ToolResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	f.lastCalls = append(f.lastCalls, requestID+"/rerun/"+call)
+	return f.result, f.callErr
+}
+
 type classified struct{ class, instruction string }
 
 func (c classified) Error() string            { return "host: " + c.class }
@@ -352,5 +360,90 @@ func TestDefaultsNeedNoClockOrLogger(t *testing.T) {
 	}
 	if _, err := h.List(context.Background(), json.RawMessage(`{"conversationId":"c"}`)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// 🔴 #2454: a re-run answers in `tools.call`'s shape, validated against the
+// `tools.rerun` result schema; its line names the request, the URN and the
+// class, never the result.
+func TestARerunAnswersTheResultAndItsURN(t *testing.T) {
+	host := &fakeHost{result: contracts.ToolResult{
+		CallURN: "urn:uffici:tool_call:43", Result: json.RawMessage(`{"boards":[{"id":"b-1","name":"` + resultMarker + `"}]}`),
+	}}
+	h, _, logs := newHandler(host)
+	payload, err := h.Rerun(context.Background(),
+		json.RawMessage(`{"requestId":"req_1","call":"urn:uffici:tool_call:42"}`))
+	if err != nil {
+		t.Fatalf("Rerun: %v", err)
+	}
+	if err := wire.ValidateOpPayload(wire.OpToolsRerun, wire.OpResult, payload); err != nil {
+		t.Fatalf("the answer fails tools.rerun's result schema: %v", err)
+	}
+	if !strings.HasPrefix(string(payload), `{"callUrn":"urn:uffici:tool_call:43",`) {
+		t.Fatalf("Rerun = %s", payload)
+	}
+	if host.calls != 1 || host.lastCalls[0] != "req_1/rerun/urn:uffici:tool_call:42" {
+		t.Fatalf("the host saw %v", host.lastCalls)
+	}
+	line := logs.String()
+	if !strings.Contains(line, `"call":"urn:uffici:tool_call:42"`) || !strings.Contains(line, `"request":"req_1"`) ||
+		!strings.Contains(line, `"class":"ok"`) || !strings.Contains(line, "tool re-run answered") {
+		t.Fatalf("the re-run's line names no call, request and class: %s", line)
+	}
+	if strings.Contains(line, resultMarker) {
+		t.Fatalf("a log line carries the re-run's result: %s", line)
+	}
+}
+
+// A call whose arguments were not kept is the platform's RESULT, relayed as given.
+func TestARerunThatCannotRunIsAResultWithANullURN(t *testing.T) {
+	h, _, _ := newHandler(&fakeHost{result: contracts.ToolResult{
+		Result: json.RawMessage(`{"ok":false,"error":"rerun_unavailable","message":"The call's arguments were not kept, so it cannot be re-run. Run the tool again with what you need."}`),
+	}})
+	payload, err := h.Rerun(context.Background(), json.RawMessage(`{"requestId":"req_1","call":"urn:uffici:tool_call:42"}`))
+	if err != nil || !strings.HasPrefix(string(payload), `{"callUrn":null,`) || !strings.Contains(string(payload), "rerun_unavailable") {
+		t.Fatalf("Rerun = %s, %v", payload, err)
+	}
+}
+
+func TestARerunOnARequestNeverRungIsNotPermitted(t *testing.T) {
+	host := &fakeHost{callErr: contracts.ErrUnknownRequest}
+	h, _, logs := newHandler(host)
+	_, err := h.Rerun(context.Background(), json.RawMessage(`{"requestId":"req_x","call":"urn:uffici:tool_call:42"}`))
+	failure := failureOf(t, err)
+	if failure.Class != wire.ClassNotPermitted || failure.Instruction != UnknownRequestInstruction {
+		t.Fatalf("failure = %+v", failure)
+	}
+	if host.calls != 1 || !strings.Contains(logs.String(), "tool re-run failed") {
+		t.Fatalf("%d host calls; line %s", host.calls, logs.String())
+	}
+}
+
+func TestARerunPlatformFailureCarriesItsClassAndIsSentOnce(t *testing.T) {
+	host := &fakeHost{callErr: classified{"not_found", "That call cannot be found."}}
+	h, _, _ := newHandler(host)
+	_, err := h.Rerun(context.Background(), json.RawMessage(`{"requestId":"req_1","call":"urn:uffici:tool_call:42"}`))
+	failure := failureOf(t, err)
+	if failure.Class != wire.ClassUpstreamFailed || failure.Instruction != "That call cannot be found." ||
+		string(failure.Upstream) != `{"class":"not_found"}` || host.calls != 1 {
+		t.Fatalf("failure = %+v after %d host calls", failure, host.calls)
+	}
+}
+
+func TestAMalformedRerunIsMalformedPayload(t *testing.T) {
+	for name, payload := range map[string]string{
+		"not a urn":  `{"requestId":"r","call":"t#42"}`,
+		"no call":    `{"requestId":"r"}`,
+		"not json":   `[`,
+		"extra keys": `{"requestId":"r","call":"urn:uffici:tool_call:1","name":"list_boards"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			host := &fakeHost{}
+			h, _, _ := newHandler(host)
+			_, err := h.Rerun(context.Background(), json.RawMessage(payload))
+			if failure := failureOf(t, err); failure.Class != wire.ClassMalformedPayload || host.calls != 0 {
+				t.Fatalf("class %s after %d host calls, want malformed_payload and none", failure.Class, host.calls)
+			}
+		})
 	}
 }

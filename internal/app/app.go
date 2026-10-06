@@ -378,6 +378,9 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 			wireOpLogsPush:      pushes.Handle,
 			wirepkg.OpToolsList: toolCalls.List,
 			wirepkg.OpToolsCall: toolCalls.Call,
+			// A re-run of a recorded call (#2454): served beside the tool ops, so the
+			// hello advertises `rerun` with `tools`.
+			wirepkg.OpToolsRerun: toolCalls.Rerun,
 		}, (&memoryops.Handler{Host: host, Logger: logger.With("component", "memory")}).Handlers()),
 	})
 	if err != nil {
@@ -673,6 +676,7 @@ func report(logger *slog.Logger, result runner.Result) {
 		slog.Int("openers", result.Counts.Openers),
 		slog.Int("posts", result.Counts.Posts),
 		slog.Int("toolCalls", result.Counts.ToolCalls),
+		slog.Int("toolReruns", result.Counts.ToolReruns),
 		slog.Int("redeliveries", result.Counts.Redeliveries),
 		slog.Int("unmet", len(result.Unmet)),
 	)

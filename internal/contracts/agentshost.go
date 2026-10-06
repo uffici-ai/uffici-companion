@@ -255,6 +255,15 @@ type AgentsHost interface {
 	// platform. Arguments and the result are tenant content and never logged.
 	CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (ToolResult, error)
 
+	// RerunTool re-runs a call the platform recorded, named by its `tool_call`
+	// URN, on a request this companion was rung for (#2454): the platform runs
+	// the recorded tool with the recorded arguments as a NEW call, through
+	// today's approvals. 🔴 Never sent twice once it may have reached the
+	// platform — a re-run is a tool call, and a tool is not idempotent. The
+	// result is tenant content and never logged (the URN is an id and may be).
+	// A request never rung is ErrUnknownRequest, before anything is sent.
+	RerunTool(ctx context.Context, requestID, call string) (ToolResult, error)
+
 	// Memory runs one of the agent's memory ops on a request this companion was
 	// rung for, under that request's conversation (#2385). Body is the op's wire
 	// payload; 🔴 the request it is bound to is ALWAYS the argument, never one the

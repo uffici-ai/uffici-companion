@@ -222,6 +222,9 @@ type Assertions struct {
 	// ToolCalls, when present, is exactly how many tool calls reached the host
 	// (#2349) — zero included, so a script can assert that none did.
 	ToolCalls *int `json:"toolCalls,omitempty"`
+	// ToolReruns, when present, is exactly how many of those tool calls were
+	// re-runs of a recorded call (#2454) — a re-run counts in ToolCalls too.
+	ToolReruns *int `json:"toolReruns,omitempty"`
 	// MemoryOps is how many of each memory op reached the host, for the ops it
 	// names; an op it does not name is not asserted.
 	MemoryOps map[string]int `json:"memoryOps,omitempty"`
@@ -246,7 +249,7 @@ var knownSteps = map[string]bool{
 	"disconnectPlugin": true, "expectRedelivery": true,
 	"secondConnection": true, "wait": true,
 	"refuseNextQuestion": true, "restartHarness": true, "endHarnessSession": true,
-	"expectToolCall": true, "expectMemory": true,
+	"expectToolCall": true, "expectToolRerun": true, "expectMemory": true,
 }
 
 var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}

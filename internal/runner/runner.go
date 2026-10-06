@@ -115,6 +115,9 @@ type Counts struct {
 	Redeliveries int
 	// ToolCalls is how many tool calls reached the host (#2349).
 	ToolCalls int
+	// ToolReruns is how many of those tool calls were re-runs of a recorded call
+	// (#2454); a re-run is also counted in ToolCalls.
+	ToolReruns int
 	// MemoryOps is how many of each memory op reached the host (#2386).
 	MemoryOps map[string]int
 }
@@ -403,6 +406,8 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return r.endHarnessSession(ctx, step)
 	case "expectToolCall":
 		return r.expectToolCall(ctx, step)
+	case "expectToolRerun":
+		return r.expectToolRerun(ctx, step)
 	case "expectMemory":
 		return r.expectMemory(ctx, step)
 	default:
@@ -530,6 +535,21 @@ func (r *Runner) expectToolCall(ctx context.Context, step fixture.Step) string {
 	}
 	return r.waitFor(ctx, step.WithinMs, matched,
 		fmt.Sprintf("no call of tool %q with arguments containing %q", step.Name, step.ArgumentsContain))
+}
+
+// expectToolRerun waits for a re-run of a recorded call on the CURRENT request
+// (#2454): the plugin's re-run tool reaching the platform side.
+func (r *Runner) expectToolRerun(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, call := range r.host.ToolCalls() {
+			if call.RequestID == current && call.RerunOf != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, "no re-run of a recorded tool call")
 }
 
 // expectMemory waits for a memory op on the CURRENT request (#2386): the harness's
@@ -793,6 +813,11 @@ func (r *Runner) result(unmet []string) Result {
 		ToolCalls: len(r.host.ToolCalls()),
 		MemoryOps: map[string]int{},
 	}
+	for _, call := range r.host.ToolCalls() {
+		if call.RerunOf != "" {
+			counts.ToolReruns++
+		}
+	}
 	for _, call := range r.host.MemoryCalls() {
 		counts.MemoryOps[string(call.Op)]++
 	}
@@ -826,6 +851,9 @@ func (r *Runner) checkTally(result *Result, note func(string, ...any)) {
 	}
 	if want.ToolCalls != nil && result.Counts.ToolCalls != *want.ToolCalls {
 		note("assert: %d tool call(s), want %d", result.Counts.ToolCalls, *want.ToolCalls)
+	}
+	if want.ToolReruns != nil && result.Counts.ToolReruns != *want.ToolReruns {
+		note("assert: %d tool re-run(s), want %d", result.Counts.ToolReruns, *want.ToolReruns)
 	}
 	compare("ack", want.Acks, result.Counts.Acks, note)
 	compare("session", want.Sessions, result.Counts.Sessions, note)

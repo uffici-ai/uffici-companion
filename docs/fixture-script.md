@@ -40,7 +40,7 @@ exists, that cursors increase, that the tally expects at least one ring.
 `tools` and `results` are optional: the agent's Uffici tools.
 
 - **`tools`** is the **agent's** tool catalog, in the `tools.list` result's shape (`name`, `description`, `parameters`, `permission`), served as written for **every** conversation the script declares. On the platform the catalog is the agent's, the same in each conversation it works in, so a plugin that keeps one catalog for its whole harness finds the same tools whichever conversation it listed first. Leave it out for an agent with no tools.
-- **`results`** is each tool's scripted answer, keyed by tool name: `{result, callUrn?}`, given verbatim to every call of it, in any conversation. The `callUrn` is the script's own data, relayed as written — the host never makes one up — and absent it answers `null`, a call that did not run. A listed tool with no answer answers `{"ok": true}` and a null `callUrn`; a call naming a tool the catalog does not list is the platform's `not_found`; a call naming a request no ring delivered is refused before anything is recorded.
+- **`results`** is each tool's scripted answer, keyed by tool name: `{result, callUrn?}`, given verbatim to every call of it, in any conversation. The `callUrn` is the script's own data, relayed as written — the host never makes one up — and absent it answers `null`, a call that did not run. A listed tool with no answer answers `{"ok": true}` and a null `callUrn`; a call naming a tool the catalog does not list is the platform's `not_found`; a call naming a request no ring delivered is refused before anything is recorded. A **re-run** names a call by its `callUrn`: it must be a call made earlier in the same conversation (anything else is the platform's `not_found`), it answers that tool's scripted result again, and it is recorded as a tool call of its own.
 
 `memory` is optional: the agent's memory. Absent, the host keeps a working memory — a
 `remember` keeps one fact on the request's conversation, and a `recall` there answers the
@@ -83,6 +83,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `secondConnection` | Asserts a second plugin is refused with `already_attached` |
 | `refuseNextQuestion` | The platform fails the next post that carries a question (`platform_unavailable`), so the companion withdraws the request that asked — the one real way a turn waiting on a question is cancelled |
 | `expectToolCall` | Waits for a tool call on the current request: `name`, optional `argumentsContain` (a substring of the call's arguments as JSON), `withinMs` |
+| `expectToolRerun` | Waits for a re-run of a recorded tool call (`tools.rerun`) on the current request: `withinMs` |
 | `expectMemory` | Waits for a memory op on the current request: `op` (`recall`, `remember`, `forget` or `unfold`), `withinMs` |
 | `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
 | `endHarnessSession` | Logs `end the harness session` with the conversation's wire id as `conversation`, then waits `withinMs` for the run's outer driver to end that conversation's session inside the real harness — both drivers run the plugin's `dev/end_session.py` in the harness's container, which ends Hermes's live rows for it in `state.db`. The step asserts nothing itself: the script's next ring must ack `fresh` and earn an opener. A run with no driver fails the step |
@@ -96,9 +97,10 @@ would pass instantly while asserting nothing.
 ### `assert`
 
 The terminal tally: `ringsDelivered`, `acks`, `sessions`, `openersSent`,
-`posts`, `closes`, `cancels`, `toolCalls`, `memoryOps`. `toolCalls`, when present, is exactly
+`posts`, `closes`, `cancels`, `toolCalls`, `toolReruns`, `memoryOps`. `toolCalls`, when present, is exactly
 how many tool calls reached the scripted host — zero included, so a script can
-assert that none did. `memoryOps` counts each memory op it names, and only those. It is a **second, independent** check — a run can
+assert that none did. A re-run is a tool call and counts there too; `toolReruns`,
+when present, is exactly how many of them were re-runs. `memoryOps` counts each memory op it names, and only those. It is a **second, independent** check — a run can
 pass every step and still have done more than the script intended.
 
 ## The verdict

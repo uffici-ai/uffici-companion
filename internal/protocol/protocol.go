@@ -458,6 +458,15 @@ type ToolCallRequest struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// ToolRerunRequest is `POST /v1/tool-calls/rerun`' body (#2454): re-run the call
+// the URN names on the request the agent is answering. The answer is a
+// ToolCallResponse; a call whose arguments were not kept answers the result
+// `rerun_unavailable` with no URN.
+type ToolRerunRequest struct {
+	RequestID string `json:"requestId"`
+	Call      string `json:"call"`
+}
+
 // MemoryRecallRequest is `POST /v1/memory/recall`' body (#2385): every level the
 // conversation sits under, searched for the query. 🔴 The query is tenant content:
 // never logged. DeadlineMS is the plugin's whole budget; every hop answers inside it.

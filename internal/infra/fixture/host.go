@@ -59,6 +59,12 @@ type ToolCallRecord struct {
 	Name           string
 	Arguments      json.RawMessage
 	At             time.Time
+	// CallURN is the scripted URN the call was answered with (#2454), so a
+	// later re-run can name it; empty answered none.
+	CallURN string
+	// RerunOf is the URN a re-run named (#2454); empty for a first call. A
+	// re-run IS a tool call, so it is recorded here and counted as one.
+	RerunOf string
 }
 
 // PostRecord is one forwarded post.
@@ -225,7 +231,47 @@ func (h *Host) CallTool(_ context.Context, requestID, name string, arguments jso
 	defer h.mu.Unlock()
 	h.toolCalls = append(h.toolCalls, ToolCallRecord{
 		RequestID: requestID, ConversationID: conversationID, Name: name,
-		Arguments: append(json.RawMessage(nil), arguments...), At: time.Now(),
+		Arguments: append(json.RawMessage(nil), arguments...), At: time.Now(), CallURN: scripted.CallURN,
+	})
+	return contracts.ToolResult{CallURN: scripted.CallURN, Result: scripted.Result}, nil
+}
+
+// RerunTool re-runs a recorded call (#2454): the URN must name a call made
+// earlier in the SAME conversation — another conversation's, or one never made,
+// is the platform's `not_found` — and the re-run answers the original tool's
+// scripted result, recorded as a tool call carrying RerunOf. A request no ring
+// delivered is refused before anything is recorded.
+func (h *Host) RerunTool(_ context.Context, requestID, call string) (contracts.ToolResult, error) {
+	h.mu.Lock()
+	conversationID, known := h.rung[requestID]
+	var original *ToolCallRecord
+	for i := range h.toolCalls {
+		record := h.toolCalls[i]
+		if record.ConversationID == conversationID && record.CallURN != "" && record.CallURN == call {
+			original = &record
+			break
+		}
+	}
+	h.mu.Unlock()
+	if !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	if original == nil {
+		return contracts.ToolResult{}, errCallNotFound
+	}
+	scripted, listed, err := h.store.toolResult(conversationID, original.Name)
+	if err != nil {
+		return contracts.ToolResult{}, err
+	}
+	if !listed {
+		return contracts.ToolResult{}, errToolNotFound
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.toolCalls = append(h.toolCalls, ToolCallRecord{
+		RequestID: requestID, ConversationID: conversationID, Name: original.Name,
+		Arguments: append(json.RawMessage(nil), original.Arguments...), At: time.Now(),
+		CallURN: scripted.CallURN, RerunOf: call,
 	})
 	return contracts.ToolResult{CallURN: scripted.CallURN, Result: scripted.Result}, nil
 }
@@ -243,6 +289,20 @@ func (toolNotFound) ErrorInstruction() string {
 }
 
 var errToolNotFound error = toolNotFound{}
+
+// callNotFound is the platform's answer to a re-run naming a call this
+// conversation never made (#2454).
+type callNotFound struct{}
+
+func (callNotFound) Error() string { return "fixture: no such call in this conversation" }
+
+func (callNotFound) ErrorClass() string { return "not_found" }
+
+func (callNotFound) ErrorInstruction() string {
+	return "That call cannot be found in this conversation; run the tool again with what you need."
+}
+
+var errCallNotFound error = callNotFound{}
 
 // CloseRequest closes a request and commits the offset when — and only when —
 // the outcome earns it.

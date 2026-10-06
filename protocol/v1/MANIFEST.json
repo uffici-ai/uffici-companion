@@ -39,7 +39,8 @@
 		"ticket-response",
 		"tool-call-request",
 		"tool-call-response",
-		"tool-catalog-response"
+		"tool-catalog-response",
+		"tool-rerun-request"
 	],
 	"reserved": [],
 	"errorClasses": [
@@ -126,7 +127,8 @@
 		"ticket-response": 1,
 		"tool-call-request": 2,
 		"tool-call-response": 2,
-		"tool-catalog-response": 2
+		"tool-catalog-response": 2,
+		"tool-rerun-request": 1
 	},
 	"invalidGoldens": {
 		"ack": 2,
@@ -148,6 +150,7 @@
 		"release-response": 3,
 		"ring": 2,
 		"tool-call-response": 1,
-		"tool-catalog-response": 1
+		"tool-catalog-response": 1,
+		"tool-rerun-request": 1
 	}
 }

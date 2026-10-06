@@ -624,6 +624,11 @@ func (s *Surface) features() []string {
 	features := []string{wire.FeatureQuestion, wire.FeatureRedelivery}
 	if s.calls[wire.OpToolsList] != nil && s.calls[wire.OpToolsCall] != nil {
 		features = append(features, wire.FeatureTools)
+		// 🔴 `rerun` only beside `tools` and only when `tools.rerun` is served
+		// (#2454): a plugin told so offers the re-run tool to its model.
+		if s.calls[wire.OpToolsRerun] != nil {
+			features = append(features, wire.FeatureToolsRerun)
+		}
 	}
 	// 🔴 `memory` only when all FOUR memory ops are served (#2385): a plugin told so
 	// recalls before every model call, and a recall answered `unknown_op` would read

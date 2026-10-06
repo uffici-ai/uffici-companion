@@ -573,3 +573,64 @@ func TestMemoryCanBeTakenDownInOneConversation(t *testing.T) {
 		t.Fatalf("memory in the named conversation answered %v", err)
 	}
 }
+
+// 🔴 #2454: a re-run resolves its URN against the calls made in the SAME
+// conversation — another conversation's, or one never made, is `not_found` —
+// answers the original tool's scripted result, and is recorded as a tool call
+// carrying RerunOf.
+func TestTheHostReRunsARecordedCallInItsConversation(t *testing.T) {
+	script := testScript()
+	script.Conversations["desk"] = &Conversation{ID: "conv_2", Entries: []ScriptEntry{
+		{ID: "d1", Cursor: "c0001", Kind: "message", Text: "hi", Author: ScriptAuthor{Type: "member", ID: "m2", Label: "Rui"}},
+	}}
+	script.Tools = []ScriptTool{{Name: "list_boards", Permission: "allow"}}
+	script.Results = map[string]ScriptResult{
+		"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[{"id":"b-1","name":"Support"}]}`)},
+	}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1"); !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("a re-run before any ring = %v, want ErrUnknownRequest", err)
+	}
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Close() }()
+	for _, ring := range []contracts.Ring{
+		{RingID: "ring_1", RequestID: "req_1", ConversationID: "conv_1"},
+		{RingID: "ring_2", RequestID: "req_2", ConversationID: "conv_2"},
+	} {
+		if err := host.DeliverRing(ring); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notFound := func(err error) bool {
+		var classified contracts.ClassifiedError
+		return errors.As(err, &classified) && classified.ErrorClass() == "not_found" &&
+			classified.ErrorInstruction() != "" && err.Error() != ""
+	}
+	if _, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1"); !notFound(err) {
+		t.Fatalf("a re-run of a call never made = %v, want not_found", err)
+	}
+	if _, err := host.CallTool(ctx, "req_1", "list_boards", json.RawMessage(`{"q":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RerunTool(ctx, "req_2", "urn:uffici:tool_call:1"); !notFound(err) {
+		t.Fatalf("a re-run of another conversation's call = %v, want not_found", err)
+	}
+	result, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1")
+	if err != nil || result.CallURN != "urn:uffici:tool_call:1" || !strings.Contains(string(result.Result), "Support") {
+		t.Fatalf("RerunTool = %+v, %v", result, err)
+	}
+	calls := host.ToolCalls()
+	if len(calls) != 2 || calls[1].RerunOf != "urn:uffici:tool_call:1" || calls[1].Name != "list_boards" ||
+		string(calls[1].Arguments) != `{"q":"x"}` || calls[0].RerunOf != "" || calls[0].CallURN != "urn:uffici:tool_call:1" {
+		t.Fatalf("ToolCalls = %+v", calls)
+	}
+}

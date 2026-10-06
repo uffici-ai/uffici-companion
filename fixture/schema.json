@@ -187,6 +187,7 @@
             "restartHarness",
             "endHarnessSession",
             "expectToolCall",
+            "expectToolRerun",
             "expectMemory",
             "wait"
           ]
@@ -238,7 +239,12 @@
         "toolCalls": {
           "type": "integer",
           "minimum": 0,
-          "description": "When present, exactly how many tool calls reached the scripted host — zero included."
+          "description": "When present, exactly how many tool calls reached the scripted host — zero included. A re-run is a tool call and counts here."
+        },
+        "toolReruns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many of those tool calls were re-runs of a recorded call — zero included."
         },
         "memoryOps": {
           "$ref": "#/$defs/counts",

@@ -869,6 +869,60 @@ func TestExpectToolCallIsScopedToTheCurrentRequest(t *testing.T) {
 	}
 }
 
+// 🔴 #2454: `expectToolRerun` is met by a re-run on the CURRENT request, and the
+// `toolReruns` tally counts re-runs while `toolCalls` counts them too.
+func TestExpectToolRerunAndTheToolRerunsTally(t *testing.T) {
+	ring := fixture.Step{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"}
+	one, two := 1, 2
+	for name, tc := range map[string]struct {
+		rerun bool
+		tally *int
+		calls *int
+		pass  bool
+	}{
+		"a re-run meets the step":       {true, &one, &two, true},
+		"no re-run is a miss":           {false, nil, nil, false},
+		"a re-run tally that disagrees": {true, &two, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script([]fixture.Step{ring, {Step: "expectToolRerun", WithinMs: 300},
+				{Step: "expectPost", Matcher: "nonEmpty", WithinMs: 1000},
+			}, fixture.Assertions{RingsDelivered: 1, ToolCalls: tc.calls, ToolReruns: tc.tally})
+			s.Tools = []fixture.ScriptTool{{Name: "list_boards", Permission: "allow"}}
+			s.Results = map[string]fixture.ScriptResult{
+				"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[]}`)},
+			}
+			plugin := &autoPlugin{session: requests.SessionFresh, answer: "ok"}
+			r := newRig(t, s, plugin)
+			plugin.beforePost = func(ctx context.Context, requestID string) {
+				first, err := r.host.CallTool(ctx, requestID, "list_boards", json.RawMessage(`{}`))
+				if err != nil {
+					t.Errorf("CallTool: %v", err)
+				}
+				if tc.rerun {
+					if _, err := r.host.RerunTool(ctx, requestID, first.CallURN); err != nil {
+						t.Errorf("RerunTool: %v", err)
+					}
+				}
+			}
+			result, err := r.runner.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.OK() != tc.pass {
+				t.Fatalf("OK() = %v, want %v: %v", result.OK(), tc.pass, result.Unmet)
+			}
+			wantReruns := 0
+			if tc.rerun {
+				wantReruns = 1
+			}
+			if result.Counts.ToolReruns != wantReruns || result.Counts.ToolCalls != 1+wantReruns {
+				t.Fatalf("counted %d re-runs of %d calls", result.Counts.ToolReruns, result.Counts.ToolCalls)
+			}
+		})
+	}
+}
+
 // 🔴 #2386: `expectMemory` is met by a memory op of that kind on the CURRENT
 // request, and the `memoryOps` tally asserts the ops it names.
 func TestExpectMemoryAndTheMemoryOpsTally(t *testing.T) {

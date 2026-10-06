@@ -92,6 +92,8 @@ func newFor(t *testing.T, schema string) any {
 		return &ToolCallResponse{}
 	case "tool-catalog-response":
 		return &ToolCatalogResponse{}
+	case "tool-rerun-request":
+		return &ToolRerunRequest{}
 	}
 	t.Fatalf("no struct for schema %q", schema)
 	return nil
@@ -107,6 +109,8 @@ var clientBodies = map[string]bool{
 	// The agent's memory (#2385): the companion encodes all four requests.
 	"memory-recall-request": true, "memory-remember-request": true,
 	"memory-forget-request": true, "memory-unfold-request": true,
+	// A re-run of a recorded call (#2454).
+	"tool-rerun-request": true,
 }
 
 type golden struct{ schema, name string }

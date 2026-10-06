@@ -754,6 +754,58 @@
       "withinMs": 240000
     },
     {
+      "step": "appendEntries",
+      "conversation": "support",
+      "entries": [
+        {
+          "id": "s2",
+          "cursor": "c0002",
+          "at": "2026-09-18T13:05:00Z",
+          "kind": "message",
+          "text": "Check the boards again, please. [rerun-a-tool]",
+          "author": {
+            "type": "member",
+            "id": "member_5",
+            "label": "Joana Lima",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "support",
+      "reason": "mentioned",
+      "causeEntry": "s2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "🔴 #2454, a re-run of a recorded call. The model mock calls `uffici_rerun` on the marker with the latest `tool_call` URN its session carries — the earlier `list_boards` result's — and the plugin carries it through the companion's `tools.rerun`; the scripted host finds the call in THIS conversation and answers the tool's result again."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectToolRerun",
+      "withinMs": 120000,
+      "note": "The re-run reached the platform side, on THIS request — not merely offered."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "Support",
+      "withinMs": 120000,
+      "note": "`contains` the board's name, which only the re-run's result carries: this turn's own message never names it."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "support",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
       "step": "ring",
       "conversation": "ledger",
       "reason": "mentioned",
@@ -898,20 +950,21 @@
     }
   ],
   "assert": {
-    "ringsDelivered": 16,
+    "ringsDelivered": 17,
     "openersSent": 8,
     "closes": {
-      "answered": 13,
+      "answered": 14,
       "cancelled": 2,
       "error": 1
     },
     "sessions": {
       "fresh": 8,
-      "resumed": 9
+      "resumed": 10
     },
     "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).\n\n🔴 `memoryOps` names `remember` alone (#2386): recall is not counted, because Hermes skips a prefetch on a trivial prompt, so a count would assert Hermes's heuristic; `ledger`'s `expectMemory` step and the runners' `memory_recalled` judgement carry it.",
-    "posts": 13,
-    "toolCalls": 1,
+    "posts": 14,
+    "toolCalls": 2,
+    "toolReruns": 1,
     "memoryOps": { "remember": 1 }
   }
 }

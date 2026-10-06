@@ -537,10 +537,29 @@ func (h *Host) CallTool(ctx context.Context, requestID, name string, arguments j
 	if len(arguments) == 0 {
 		arguments = json.RawMessage("{}")
 	}
+	return h.toolCallOnce(ctx, conversationID, "/v1/tool-calls",
+		protocol.ToolCallRequest{RequestID: requestID, Name: name, Arguments: arguments})
+}
+
+// RerunTool re-runs a call the platform recorded, named by its `tool_call` URN,
+// on a request this companion was rung for (#2454): the same ticket, the same
+// at-most-once send and the same answer as CallTool — a re-run IS a tool call,
+// so a failure after the body left is never retried. A call whose arguments
+// were not kept is a RESULT (`rerun_unavailable`), never an error.
+func (h *Host) RerunTool(ctx context.Context, requestID, call string) (contracts.ToolResult, error) {
+	conversationID, known := h.conversationOf(requestID)
+	if !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	return h.toolCallOnce(ctx, conversationID, "/v1/tool-calls/rerun",
+		protocol.ToolRerunRequest{RequestID: requestID, Call: call})
+}
+
+// toolCallOnce sends one tool call's body under the conversation's ticket, at
+// most once, and maps the platform's answer to a ToolResult.
+func (h *Host) toolCallOnce(ctx context.Context, conversationID, path string, body any) (contracts.ToolResult, error) {
 	var answer protocol.ToolCallResponse
-	err := h.api.ticketedOnce(ctx, conversationID, http.MethodPost, "/v1/tool-calls",
-		protocol.ToolCallRequest{RequestID: requestID, Name: name, Arguments: arguments},
-		&answer, controlAttempts, h.sleep)
+	err := h.api.ticketedOnce(ctx, conversationID, http.MethodPost, path, body, &answer, controlAttempts, h.sleep)
 	if err != nil {
 		h.logFailure("tool_call", err)
 		return contracts.ToolResult{}, err

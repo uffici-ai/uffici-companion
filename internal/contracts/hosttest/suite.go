@@ -16,11 +16,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/uffici-ai/uffici-companion/internal/wire"
 	"strings"
 	"testing"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
+	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/wire"
 )
 
 // Subject is one implementation under test, plus the two things the suite needs
@@ -281,6 +282,54 @@ func Run(t *testing.T, name string, factory Factory) {
 			}
 			if result.CallURN != subject.ToolAnswer.CallURN || string(result.Result) != string(subject.ToolAnswer.Result) {
 				t.Fatalf("CallTool = %+v, want the configured %+v: a call's URN and result are relayed as given", result, subject.ToolAnswer)
+			}
+		})
+
+		// 🔴 #2454: a re-run is a tool call, refused on a request never rung with
+		// the contract's own error — before anything is sent.
+		t.Run("a re-run on a request never rung is refused", func(t *testing.T) {
+			subject := factory(t)
+			_, err := subject.Host.RerunTool(context.Background(), "req_never_rung", protocol.ToolCallURN("77"))
+			if !errors.Is(err, contracts.ErrUnknownRequest) {
+				t.Fatalf("RerunTool on an unrung request = %v, want ErrUnknownRequest", err)
+			}
+		})
+
+		t.Run("a re-run of a call made answers as the call did; one never made is an error", func(t *testing.T) {
+			subject := factory(t)
+			if subject.SeedTool == nil {
+				t.Fatal("the subject cannot seed a tool — every implementation serves the catalog")
+			}
+			subject.SeedTool(contracts.Tool{
+				Name: "list_boards", Description: "List the boards.",
+				Parameters: json.RawMessage(`{"type":"object","properties":{}}`), Permission: "allow",
+			})
+			ctx := context.Background()
+			claim := openDoorbell(t, subject)
+			t.Cleanup(func() { _ = claim.Close() })
+			ring := standardRing(subject.ConversationID)
+			ring.RequestID = "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21"
+			if err := subject.DeliverRing(ring); err != nil {
+				t.Fatalf("DeliverRing: %v", err)
+			}
+			// 🔴 A URN no call was answered with names nothing to re-run: an
+			// error, never an empty success the model would read as a result.
+			if _, err := subject.Host.RerunTool(ctx, ring.RequestID, protocol.ToolCallURN("999")); err == nil {
+				t.Fatal("RerunTool of a call never made returned no error")
+			}
+			first, err := subject.Host.CallTool(ctx, ring.RequestID, "list_boards", json.RawMessage(`{}`))
+			if err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			if first.CallURN == "" {
+				t.Fatal("the call answered no URN — the re-run below would name nothing")
+			}
+			rerun, err := subject.Host.RerunTool(ctx, ring.RequestID, first.CallURN)
+			if err != nil {
+				t.Fatalf("RerunTool: %v", err)
+			}
+			if rerun.CallURN != subject.ToolAnswer.CallURN || string(rerun.Result) != string(subject.ToolAnswer.Result) {
+				t.Fatalf("RerunTool = %+v, want the configured %+v: a re-run's URN and result are relayed as given", rerun, subject.ToolAnswer)
 			}
 		})
 

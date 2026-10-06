@@ -92,7 +92,7 @@ every v1 companion does, so a newer plugin never sends an older companion a fiel
 it would drop: `question` means a `post` may carry a question; `redelivery` means
 a restarted harness process is handed again every request its predecessor had
 accepted; `tools` means the plugin may call [`tools.list`](#toolslist) and
-[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. An
+[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `rerun`, only ever beside `tools`, means the plugin may call [`tools.rerun`](#toolsrerun). `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. An
 absent list means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
@@ -267,6 +267,19 @@ result}`.
 - A result too large for the call bound is answered `upstream_failed` with a sentence telling the agent the tool ran and to ask for less — a narrower query, fewer results — and the call's `callUrn` in `upstream`, so the answer can still cite it. Never a truncation.
 - Neither the arguments nor the result reach a log line. The companion logs one line per call: the tool's name, the request and the class.
 - Sent only to a companion whose `hello` lists the `tools` feature.
+
+#### `tools.rerun`
+
+Re-run a call Uffici recorded, named by its `tool_call` URN — one the agent sees in a
+summary, a search result or a trace — on the request the plugin is answering. The
+payload is `{requestId, call}`, `call` being `urn:uffici:tool_call:<n>`; the result is
+`tools.call`'s, `{callUrn, result}`.
+
+- Uffici runs the recorded tool again, now, with the arguments it had, as a **new** call: `callUrn` names the new call, and a tool that needs approval asks again.
+- A call whose arguments were not kept cannot be re-run, and that is a **result**, not an error: `{"ok": false, "error": "rerun_unavailable", "message": …}` with a `null` `callUrn`, for the model to read and act on.
+- A URN that names no call this agent made in this conversation is Uffici's `not_found`, answered `upstream_failed` with Uffici's sentence.
+- Everything else is `tools.call`'s: a `requestId` the companion did not deliver is `not_permitted` and nothing is sent, a re-run is sent at most once, a result over the call bound asks for less, and neither the result nor anything but the URN, the request and the class reaches a log line.
+- Sent only to a companion whose `hello` lists the `rerun` feature.
 
 #### `memory.recall`, `memory.remember`, `memory.forget`, `memory.unfold`
 

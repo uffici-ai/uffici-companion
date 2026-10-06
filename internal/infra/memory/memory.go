@@ -48,6 +48,9 @@ type Host struct {
 	tools     map[string][]contracts.Tool
 	answers   map[string]contracts.ToolResult
 	toolCalls []ToolCall
+	// callNames maps each URN a call was answered with to its tool (#2454), so
+	// a re-run resolves the URN the way the platform does: by a call made.
+	callNames map[string]string
 	extras    []contracts.PostExtras
 	// The agent's memory (#2385): every op served, and what each answers.
 	memoryCalls   []OpCall
@@ -60,6 +63,8 @@ type ToolCall struct {
 	RequestID string
 	Name      string
 	Arguments json.RawMessage
+	// RerunOf is the URN a re-run named (#2454); empty for a first call.
+	RerunOf string
 }
 
 type conversation struct {
@@ -82,6 +87,7 @@ func New() *Host {
 		rung:          map[string]string{},
 		tools:         map[string][]contracts.Tool{},
 		answers:       map[string]contracts.ToolResult{},
+		callNames:     map[string]string{},
 	}
 }
 
@@ -236,10 +242,38 @@ func (h *Host) CallTool(_ context.Context, requestID, name string, arguments jso
 		return contracts.ToolResult{}, contracts.ErrUnknownRequest
 	}
 	h.toolCalls = append(h.toolCalls, ToolCall{RequestID: requestID, Name: name, Arguments: arguments})
-	if answer, ok := h.answers[name]; ok {
-		return answer, nil
+	return h.answerLocked(name), nil
+}
+
+// RerunTool records a re-run on a rung request and answers the original tool's
+// configured result (#2454). A URN no call here was answered with is an error,
+// as the platform's `not_found` is; a request no ring delivered is refused
+// before anything is recorded.
+func (h *Host) RerunTool(_ context.Context, requestID, call string) (contracts.ToolResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, known := h.rung[requestID]; !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
 	}
-	return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}, nil
+	name, made := h.callNames[call]
+	if !made {
+		return contracts.ToolResult{}, fmt.Errorf("memory: no call %s was made", call)
+	}
+	h.toolCalls = append(h.toolCalls, ToolCall{RequestID: requestID, Name: name, RerunOf: call})
+	return h.answerLocked(name), nil
+}
+
+// answerLocked is one tool's configured answer — `{"ok":true}` and no URN when
+// none was set — remembering the URN it carries for a later re-run.
+func (h *Host) answerLocked(name string) contracts.ToolResult {
+	answer, ok := h.answers[name]
+	if !ok {
+		return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}
+	}
+	if answer.CallURN != "" {
+		h.callNames[answer.CallURN] = name
+	}
+	return answer
 }
 
 // OpCall is one memory op the in-memory host served (#2385).

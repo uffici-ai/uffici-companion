@@ -263,6 +263,11 @@ const FeatureRedelivery = "redelivery"
 // may carry `citations` and `activity` (#2349).
 const FeatureTools = "tools"
 
+// FeatureToolsRerun says the plugin may call `tools.rerun` (#2454): re-run a call
+// the platform recorded, from its `tool_call` URN. Announced only beside `tools`,
+// so a plugin told so never meets `unknown_op` mid-turn.
+const FeatureToolsRerun = "rerun"
+
 // FeatureMemory says the plugin may call the four `memory.*` ops (#2385): recall,
 // remember, forget and unfold. Announced only when all four are served, so a plugin
 // told so never meets `unknown_op` mid-turn — and an older companion's silence tells

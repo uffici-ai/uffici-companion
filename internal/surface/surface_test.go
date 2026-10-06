@@ -831,3 +831,37 @@ func TestMemoryIsAdvertisedOnlyWhenAllFourOpsAreServed(t *testing.T) {
 		})
 	}
 }
+
+// 🔴 #2454: `rerun` is advertised only beside `tools`, and only when `tools.rerun`
+// is served — a plugin told so offers its model the re-run tool, and a re-run
+// answered `unknown_op` would fail a turn that need not have.
+func TestRerunIsAdvertisedOnlyBesideToolsWhenServed(t *testing.T) {
+	serve := func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage("{}"), nil }
+	for name, tc := range map[string]struct {
+		calls      map[string]CallHandler
+		tools, ran bool
+	}{
+		"tools and rerun":     {map[string]CallHandler{wire.OpToolsList: serve, wire.OpToolsCall: serve, wire.OpToolsRerun: serve}, true, true},
+		"tools only":          {map[string]CallHandler{wire.OpToolsList: serve, wire.OpToolsCall: serve}, true, false},
+		"rerun without tools": {map[string]CallHandler{wire.OpToolsCall: serve, wire.OpToolsRerun: serve}, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, Options{Calls: tc.calls})
+			conn := r.dial(t, testToken, true)
+			hello := receive(t, conn)
+			features, _ := hello["features"].([]any)
+			tools, rerun := false, false
+			for _, feature := range features {
+				tools = tools || feature == wire.FeatureTools
+				rerun = rerun || feature == wire.FeatureToolsRerun
+			}
+			if tools != tc.tools || rerun != tc.ran {
+				t.Fatalf("features %v: tools = %v, rerun = %v; want %v, %v", features, tools, rerun, tc.tools, tc.ran)
+			}
+			raw, _ := json.Marshal(hello)
+			if err := wire.Validate(raw); err != nil {
+				t.Fatalf("the hello fails its own schema: %v", err)
+			}
+		})
+	}
+}
