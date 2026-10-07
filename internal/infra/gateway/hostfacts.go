@@ -76,7 +76,7 @@ func clipFact(value string) string { return clipTo(value, hostFactMaxChars) }
 
 // clipTo bounds a fact to limit UTF-16 units — what the gateway's schema counts —
 // with control and format characters removed (a bidi override or a zero-width
-// space on the Connect tab reverses a line or makes two facts look alike).
+// space on the General tab reverses a line or makes two facts look alike).
 //
 // 🔴 Not runes: an emoji is one rune and two units, so a release name clipped to
 // 64 runes can still be over the gateway's 64 and refused — and the ticket that

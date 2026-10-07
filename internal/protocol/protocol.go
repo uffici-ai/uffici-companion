@@ -130,7 +130,7 @@ type ConnectTicketRequest struct {
 	Client     ClientFacts  `json:"client"`
 	Harness    HarnessFacts `json:"harness"`
 	// Plugin and Host are optional (#2236): the attached plugin's version and
-	// the machine's kind, for the Connect tab — never authority.
+	// the machine's kind, for the General tab — never authority.
 	Plugin *PluginFacts `json:"plugin,omitempty"`
 	Host   *HostFacts   `json:"host,omitempty"`
 }

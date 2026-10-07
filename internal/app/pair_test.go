@@ -366,7 +366,7 @@ func TestARefusedPortalCodeWritesNoKeyAndSaysToGetANewCommand(t *testing.T) {
 	if code != ExitConfig {
 		t.Fatalf("exit %d, want ExitConfig:\n%s", code, out.String())
 	}
-	if !strings.Contains(out.String(), "get a new command from the agent's Connect tab") {
+	if !strings.Contains(out.String(), "get a new command from the agent's page in the portal") {
 		t.Fatalf("output:\n%s", out.String())
 	}
 	if _, err := os.Stat(filepath.Join(config.Home, AgentKeyFile)); !os.IsNotExist(err) {

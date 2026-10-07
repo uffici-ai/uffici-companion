@@ -485,7 +485,7 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
   never shown to a plugin, and is revoked and reissued from the portal.
 - Outbound only: one WebSocket and HTTPS calls to your agents host. No inbound port.
 - On each connection it tells Uffici what is answering, for your administrators to see on the
-  agent's Connect tab: its own version, the plugin's and the harness's versions, and the
+  agent's General tab: its own version, the plugin's and the harness's versions, and the
   machine's kind — operating system, architecture and OS release (for example
   `Debian GNU/Linux 13 (trixie)`, `linux/amd64`). Never the machine's name, a user name or a
   path.
