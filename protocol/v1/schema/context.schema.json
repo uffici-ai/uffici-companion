@@ -87,7 +87,8 @@
 							"context_trimmed",
 							"card_unavailable",
 							"invalid_citation",
-							"forget_refused"
+							"forget_refused",
+							"archived"
 						]
 					},
 					"instruction": {
