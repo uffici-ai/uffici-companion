@@ -93,6 +93,17 @@ func (r *rig) attach(t *testing.T, token string) *memtransport.Conn {
 	t.Helper()
 	conn := r.dial(t, token, true)
 	send(t, conn, map[string]any{"v": 1, "type": "ready", "harnessVersion": "0.21.3"})
+	// 🔴 `send` only queues `ready`; the surface attaches the plugin when it
+	// PROCESSES the frame, after its hello is already on the wire. A test that
+	// acts on the manager before then races it — a release is dropped, a ring is
+	// held — so return only once the attach is observed (#2571, ledger class 24).
+	deadline := time.Now().Add(2 * time.Second)
+	for !r.manager.Attached() {
+		if time.Now().After(deadline) {
+			t.Fatal("the surface never attached the plugin after its ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	return conn
 }
 
