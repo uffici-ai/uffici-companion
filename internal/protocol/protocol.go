@@ -271,6 +271,10 @@ type ReadResponse struct {
 	// Context is the composed context (#2331) — on the entries read only, and
 	// optional, so an older gateway's read still decodes.
 	Context *Context `json:"context,omitempty"`
+	// ContextChanged names the context levels a person changed since this agent
+	// last answered in the conversation (2026-10-12) — beside Context, never
+	// inside it, so an older companion's strict context check is untouched.
+	ContextChanged []ContextChange `json:"contextChanged,omitempty"`
 	// Card is the card a card conversation's read is about (#2354). The companion
 	// forwards the context's Card block — the platform composed it — and never
 	// reads this; it is decoded so the struct matches the contract.
@@ -347,6 +351,12 @@ type Context struct {
 	Tokens  int              `json:"tokens"`
 	Bounded bool             `json:"bounded"`
 	Missing []ContextMissing `json:"missing,omitempty"`
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string `json:"name"`
+	Scope string `json:"scope"`
 }
 
 // ContextBlock is one composed level; Depth is absent on the identity block.

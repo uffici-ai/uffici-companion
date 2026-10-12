@@ -124,6 +124,15 @@ type Read struct {
 	Entries []Entry
 	Bounded bool
 	Context *Context
+	// ContextChanged names the levels a person changed since the agent last
+	// answered here (2026-10-12); empty when nothing changed or none was sent.
+	ContextChanged []ContextChange
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string
+	Scope string
 }
 
 // Author is who wrote an entry.

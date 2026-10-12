@@ -147,6 +147,7 @@ Opens one request on one conversation: `requestId`, `conversationId`, `reason`
 - `resetSession` is the platform forcing a fresh harness session; the plugin must not resume.
 - The plugin renders the `cause`'s author as the inbound sender and the `reason` as one line.
 - `context` is what the agent is told before the conversation — see [the context](#the-context). A companion that predates it sends none, and the plugin keeps its static hint.
+- `contextChanged`, optional, names the context levels a person changed since the agent last answered in this conversation — see [the context](#the-context). Absent when nothing changed, before the agent's first answer there, and from a companion that predates it.
 
 ### `ack` — plugin → companion
 
@@ -351,6 +352,7 @@ one and composes nothing.
 - `bounded` is true when the budget left some of the context out.
 - `missing` names a part the brief should have had and does not — `part`, `class` and the `instruction` the agent relays to the person. The plugin renders each instruction inside the context; it never drops one, because a silent gap would let the agent answer as if it had been told everything. A context the companion receives but cannot read arrives the same way: no blocks, and the context named missing with the platform's own sentence.
 - The plugin places the context on the **system** side of every turn, fresh or resumed, so an edit reaches the next answer — never on the user side, and the opener never on the system side.
+- `contextChanged` is a list of `{name, scope}` beside `context`, never inside it: the levels whose context changed since the agent's last answer here. The agent's earlier messages may contradict the new text, so the plugin says so on the **user** side of the turn, beside the reason it was woken — the current context wins, and the earlier answers were right when they were given. The system side is untouched, so a harness's prompt cache sees nothing new beyond the edit itself.
 
 ## The per-request state machine
 

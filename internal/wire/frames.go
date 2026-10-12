@@ -296,6 +296,16 @@ type Brief struct {
 	// the platform composed it. Optional: an older companion sends none, and
 	// the plugin then keeps its static hint.
 	Context *Context `json:"context,omitempty"`
+	// ContextChanged names the context levels a person changed since the agent
+	// last answered here (2026-10-12). Optional: absent when nothing changed and
+	// from an older companion; the plugin then says nothing.
+	ContextChanged []ContextChange `json:"contextChanged,omitempty"`
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string `json:"name"`
+	Scope string `json:"scope"`
 }
 
 // Context is the platform's composed context: the identity block first, then

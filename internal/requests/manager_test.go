@@ -3,6 +3,7 @@ package requests
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -1453,5 +1454,21 @@ func TestTheOpenerReportsHowManySummariesItCarried(t *testing.T) {
 	}
 	if observer.summaries[0] != 2 {
 		t.Fatalf("the opener reported %d summary entries, want 2", observer.summaries[0])
+	}
+}
+
+// The levels a person changed since the agent's last answer (2026-10-12) ride the
+// read into the brief one to one — the companion decides nothing about them.
+func TestTheBriefCarriesTheReadsChangedLevels(t *testing.T) {
+	r := newRig(t, Options{})
+	r.manager.Attach("conn-1", r.sink, 4000)
+	changed := []contracts.ContextChange{{Name: "Development", Scope: "folder"}}
+	r.host.SetContextChanged("conv_1", changed)
+	r.ring(t, "req_1", "c0001", "c0003")
+	if err := r.manager.OnAck(context.Background(), "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	if len(r.sink.briefs) != 1 || !reflect.DeepEqual(r.sink.briefs[0].ContextChanged, changed) {
+		t.Fatalf("the brief carried %+v, want %+v", r.sink.briefs, changed)
 	}
 }

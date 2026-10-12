@@ -71,6 +71,7 @@ type conversation struct {
 	offset  string
 	entries []contracts.Entry
 	context *contracts.Context
+	changed []contracts.ContextChange
 }
 
 type openRequest struct {
@@ -105,6 +106,16 @@ func (h *Host) SetContext(conversationID string, context *contracts.Context) {
 	defer h.mu.Unlock()
 	if state, ok := h.conversations[conversationID]; ok {
 		state.context = context
+	}
+}
+
+// SetContextChanged gives a seeded conversation the levels its delta read names
+// as changed since the agent's last answer (2026-10-12).
+func (h *Host) SetContextChanged(conversationID string, changed []contracts.ContextChange) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if state, ok := h.conversations[conversationID]; ok {
+		state.changed = changed
 	}
 }
 
@@ -167,7 +178,7 @@ func (h *Host) ReadSince(_ context.Context, conversationID, since, through strin
 		}
 		out = append(out, entry)
 	}
-	return contracts.Read{Entries: out, Context: state.context}, nil
+	return contracts.Read{Entries: out, Context: state.context, ContextChanged: state.changed}, nil
 }
 
 // ReadOpener returns the tail through `through`, including the agent's own.

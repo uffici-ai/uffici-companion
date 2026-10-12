@@ -62,6 +62,9 @@ type Conversation struct {
 	// Context is what the entries read carries (#2331); nil sends none, as an
 	// older gateway does. The opener never carries one.
 	Context *protocol.Context
+	// ContextChanged is the levels the read names as changed since the agent's
+	// last answer (2026-10-12); nil sends none.
+	ContextChanged []protocol.ContextChange
 	// Tools is the conversation's tool catalog (#2349); nil lists none.
 	Tools []protocol.ToolDescriptor
 	// ToolResults is each tool's scripted answer, by name; a listed tool with
@@ -652,6 +655,7 @@ func (d *Double) read(w http.ResponseWriter, r *http.Request, conversationID, ro
 	}
 	if route == "entries" {
 		answer.Context = conversation.Context
+		answer.ContextChanged = conversation.ContextChanged
 	}
 	_ = json.NewEncoder(w).Encode(answer)
 }

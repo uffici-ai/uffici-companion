@@ -266,6 +266,29 @@
 			],
 			"additionalProperties": false
 		},
+		"contextChanged": {
+			"maxItems": 16,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"name": {
+						"type": "string",
+						"minLength": 1,
+						"maxLength": 128
+					},
+					"scope": {
+						"type": "string",
+						"pattern": "^[a-z][a-z_]{0,31}$"
+					}
+				},
+				"required": [
+					"name",
+					"scope"
+				],
+				"additionalProperties": false
+			}
+		},
 		"card": {
 			"oneOf": [
 				{

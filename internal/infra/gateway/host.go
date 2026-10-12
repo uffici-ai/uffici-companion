@@ -24,9 +24,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
@@ -377,9 +379,10 @@ func (h *Host) ReadSince(ctx context.Context, conversationID, since, through str
 		return contracts.Read{}, localError(ClassPlatformError, http.StatusOK)
 	}
 	return contracts.Read{
-		Entries: toEntries(answer.Entries),
-		Bounded: answer.Bounded,
-		Context: h.decodeContext(answer.Context),
+		Entries:        toEntries(answer.Entries),
+		Bounded:        answer.Bounded,
+		Context:        h.decodeContext(answer.Context),
+		ContextChanged: toContextChanged(answer.ContextChanged),
 	}, nil
 }
 
@@ -422,6 +425,31 @@ func (h *Host) decodeContext(raw json.RawMessage) *contracts.Context {
 		return unreadableContext()
 	}
 	return toContext(&decoded)
+}
+
+// maxContextChanged is the wire's bound on a change list (the protocol's
+// CONTEXT_CHANGES_MAX); a longer list is cut, never refused — it only informs.
+const maxContextChanged = 16
+
+// contextScope is the protocol's scope grammar.
+var contextScope = regexp.MustCompile(`^[a-z][a-z_]{0,31}$`)
+
+// toContextChanged maps the levels a person changed since the agent's last
+// answer (2026-10-12) one to one, dropping an entry the wire could not carry.
+func toContextChanged(in []protocol.ContextChange) []contracts.ContextChange {
+	var out []contracts.ContextChange
+	for _, c := range in {
+		// Characters, never bytes: the protocol counts a name's characters, and an
+		// accented folder name is longer in bytes than the 128 it is allowed.
+		if c.Name == "" || utf8.RuneCountInString(c.Name) > 128 || !contextScope.MatchString(c.Scope) {
+			continue
+		}
+		out = append(out, contracts.ContextChange{Name: c.Name, Scope: c.Scope})
+		if len(out) == maxContextChanged {
+			break
+		}
+	}
+	return out
 }
 
 // toContext maps the platform's context one to one — the companion composes

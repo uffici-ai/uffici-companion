@@ -659,6 +659,15 @@ func (f *frameSink) SendBrief(ctx context.Context, brief requests.Brief) error {
 	if brief.Context != nil {
 		frame["context"] = wireContext(brief.Context)
 	}
+	// Absent, never empty, when nothing changed (2026-10-12): an older plugin
+	// never sees the key, and a newer one tells the model only when it is here.
+	if len(brief.ContextChanged) > 0 {
+		changed := make([]wire.ContextChange, 0, len(brief.ContextChanged))
+		for _, c := range brief.ContextChanged {
+			changed = append(changed, wire.ContextChange{Name: c.Name, Scope: c.Scope})
+		}
+		frame["contextChanged"] = changed
+	}
 	return f.send(ctx, frame)
 }
 

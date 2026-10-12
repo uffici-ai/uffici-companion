@@ -24,6 +24,9 @@ type Brief struct {
 	// Context is what the agent is told before the conversation (#2331), as the
 	// platform composed it; nil when it sent none.
 	Context *contracts.Context
+	// ContextChanged names the levels a person changed since the agent last
+	// answered here (2026-10-12); empty when nothing changed.
+	ContextChanged []contracts.ContextChange
 }
 
 // PluginSink is the attached plugin, as the manager sees it.
@@ -384,6 +387,7 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		ResetSession:   request.ResetSession,
 		Delta:          read.Entries,
 		Context:        read.Context,
+		ContextChanged: read.ContextChanged,
 	}
 	if err := sink.SendBrief(ctx, brief); err != nil {
 		// 🔴 A send that failed because ANOTHER connection replaced this one keeps
