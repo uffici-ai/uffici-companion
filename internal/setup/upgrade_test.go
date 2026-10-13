@@ -857,3 +857,203 @@ func TestUpgradeNeverHandsTheRestartFlagsToABinaryThatLacksThem(t *testing.T) {
 		t.Fatalf("the dropped choice was not said:\n%s", r.out)
 	}
 }
+
+// 🔴 #2688: the question is asked even where the companion cannot restart the
+// harness itself. A yes there never runs the restart command — it would start
+// a second gateway in the foreground — but tells the person what to run and
+// waits for them to say it is done.
+func TestUpgradeAsksAboutAHarnessRunByHandAndGuidesTheRestart(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		done   bool
+		line   string
+		paused int
+	}{
+		{"restarted by the person", true, "hermes     restarted by you", 1},
+		{"no answer while waiting", false, "hermes     not restarted — restart it yourself", 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newUpgradeRig(t, "0.5.0", "0.4.0")
+			r.publishBoth(t, "0.5.0", true)
+			var asked, prompts []string
+			r.opts.Confirm = func(q string) (bool, bool) { asked = append(asked, q); return true, true }
+			r.opts.Pause = func(lead []string, p string) bool {
+				prompts = append(prompts, p)
+				for _, line := range lead {
+					r.out.WriteString(line + "\n")
+				}
+				return tc.done
+			}
+			if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			if len(asked) != 1 || !strings.Contains(asked[0], "Restart hermes now to load the plugin? [Y/n]") {
+				t.Fatalf("asked %q, want the one restart question", asked)
+			}
+			if r.runner.ran("hermes gateway restart") {
+				t.Fatal("the restart command ran for a harness run by hand")
+			}
+			if len(prompts) != tc.paused || !strings.Contains(r.out.String(), "Restart the Hermes gateway") {
+				t.Fatalf("waited %d times (want %d), or never said what to run:\n%s", len(prompts), tc.paused, r.out)
+			}
+			if !strings.Contains(r.out.String(), tc.line) {
+				t.Fatalf("the summary lacks %q:\n%s", tc.line, r.out)
+			}
+			if pending := strings.Contains(r.out.String(), "Until hermes restarts"); pending == tc.done {
+				t.Fatalf("pending paragraph shown = %v, want %v:\n%s", pending, !tc.done, r.out)
+			}
+		})
+	}
+}
+
+// 🔴 #2688: every path that leaves the harness running the old plugin says what
+// that means until it restarts — the versions, the settings, and how to check.
+func TestUpgradeSaysWhatIsPendingUntilTheHarnessRestarts(t *testing.T) {
+	no := func(string) (bool, bool) { return false, true }
+	for _, tc := range []struct {
+		name    string
+		service bool
+		choice  RestartChoice
+		confirm func(string) (bool, bool)
+	}{
+		{"a service, no terminal", true, RestartAsk, nil},
+		{"a service, asked, no", true, RestartAsk, no},
+		{"a service, --no-restart-harness", true, RestartNo, nil},
+		{"run by hand, no terminal", false, RestartAsk, nil},
+		{"run by hand, asked, no", false, RestartAsk, no},
+		{"run by hand, --restart-harness, no terminal", false, RestartYes, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newUpgradeRig(t, "0.5.0", "0.4.0")
+			r.publishBoth(t, "0.5.0", true)
+			if tc.service {
+				r.withHarnessService(t)
+			}
+			r.opts.RestartHarness, r.opts.Confirm = tc.choice, tc.confirm
+			if tc.choice != RestartYes {
+				r.opts.Pause = func([]string, string) bool { t.Fatal("waited for a restart nobody agreed to"); return false }
+			}
+			if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			out := r.out.String()
+			for _, want := range []string{
+				"Until hermes restarts it keeps running plugin 0.4.0, not 0.5.0",
+				"the settings this run wrote",
+				"Restart the Hermes gateway",
+				"uffici doctor",
+			} {
+				if !strings.Contains(out, want) {
+					t.Fatalf("lacks %q:\n%s", want, out)
+				}
+			}
+			if r.runner.ran("hermes gateway restart") {
+				t.Fatal("the harness was restarted")
+			}
+		})
+	}
+}
+
+// A restart that happened says nothing is pending.
+func TestUpgradeARestartedHarnessHasNothingPending(t *testing.T) {
+	r := newUpgradeRig(t, "0.5.0", "0.4.0")
+	r.publishBoth(t, "0.5.0", true)
+	r.withHarnessService(t)
+	r.opts.RestartHarness = RestartYes
+	if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if strings.Contains(r.out.String(), "Until hermes restarts") {
+		t.Fatalf("a restarted harness was said to be pending:\n%s", r.out)
+	}
+}
+
+func TestRestartPendingPerPreviousPlugin(t *testing.T) {
+	for _, tc := range []struct{ previous, target, want string }{
+		{"", "0.5.0", "Until hermes restarts it has not loaded the plugin"},
+		{"0.5.0", "0.5.0", "Until hermes restarts it keeps the plugin as it loaded it"},
+		{"0.4.0", "0.5.0", "Until hermes restarts it keeps running plugin 0.4.0, not 0.5.0"},
+		{"0.4.0", "", "Until hermes restarts it keeps running plugin 0.4.0, not the new one"},
+	} {
+		if got := restartPending("hermes", tc.previous, tc.target); !strings.HasPrefix(got, tc.want) {
+			t.Fatalf("previous %q: %q, want it to start %q", tc.previous, got, tc.want)
+		}
+	}
+}
+
+// Enter is a done; an input that ends first is nobody there (#2688).
+func TestWaitForEnter(t *testing.T) {
+	var out strings.Builder
+	if !WaitForEnter(strings.NewReader("\n"), &out, []string{"Restart it."}, "Press Enter… ") || out.String() != "Restart it.\nPress Enter… " {
+		t.Fatalf("Enter was not read, or the prompt not printed: %q", out.String())
+	}
+	if WaitForEnter(strings.NewReader(""), &out, nil, "") {
+		t.Fatal("an ended input counted as done")
+	}
+}
+
+// 🔴 #2688 review: a dry run says what it would leave pending and never claims
+// settings were written.
+func TestUpgradeDryRunNeverClaimsWrittenSettings(t *testing.T) {
+	for _, choice := range []RestartChoice{RestartNo, RestartYes} {
+		r := newUpgradeRig(t, "0.5.0", "0.4.0")
+		r.publishBoth(t, "0.5.0", true)
+		r.opts.DryRun, r.opts.RestartHarness = true, choice
+		if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+			t.Fatalf("exit %d:\n%s", code, r.out)
+		}
+		if strings.Contains(r.out.String(), "this run wrote") || !strings.Contains(r.out.String(), "would leave hermes running") {
+			t.Fatalf("choice %d: a dry run claimed written settings, or did not say what it would leave:\n%s", choice, r.out)
+		}
+	}
+}
+
+// 🔴 #2688 review: --restart-harness on a harness run by hand gets the same help
+// as a typed yes when a terminal is there to wait on.
+func TestUpgradeRestartFlagGuidesAHarnessRunByHand(t *testing.T) {
+	r := newUpgradeRig(t, "0.5.0", "0.4.0")
+	r.publishBoth(t, "0.5.0", true)
+	r.opts.RestartHarness = RestartYes
+	r.opts.Confirm = func(string) (bool, bool) { t.Fatal("asked although the flag said yes"); return false, false }
+	waited := 0
+	r.opts.Pause = func([]string, string) bool { waited++; return true }
+	if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if waited != 1 || r.runner.ran("hermes gateway restart") || !strings.Contains(r.out.String(), "hermes     restarted by you") {
+		t.Fatalf("waited %d times; want one guided restart:\n%s", waited, r.out)
+	}
+}
+
+// 🔴 #2688 review: a manifest with no restart command is never told it lacks a
+// service — the reason given is the reason that holds.
+func TestUpgradeRestartFlagGivesTheRightReason(t *testing.T) {
+	r := newUpgradeRig(t, "0.5.0", "0.4.0")
+	r.publishBoth(t, "0.5.0", false)
+	r.opts.RestartHarness = RestartYes
+	if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if strings.Contains(r.out.String(), "does not run as its own service") || !strings.Contains(r.out.String(), "names no command to restart it") {
+		t.Fatalf("the wrong reason was given:\n%s", r.out)
+	}
+}
+
+// 🔴 #2688 re-review: --restart-harness with no terminal on a harness run by hand
+// says the restart sentence once, and never "now" with nothing to wait on.
+func TestUpgradeRestartFlagWithNoTerminalSaysTheSentenceOnce(t *testing.T) {
+	r := newUpgradeRig(t, "0.5.0", "0.4.0")
+	r.publishBoth(t, "0.5.0", true)
+	r.opts.RestartHarness = RestartYes
+	r.opts.Pause = func([]string, string) bool { return false } // no /dev/tty: prints nothing
+	if code := Upgrade(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	out := r.out.String()
+	if n := strings.Count(out, "Restart the Hermes gateway"); n != 1 || strings.Contains(out, "Restart it yourself now") {
+		t.Fatalf("the restart sentence appears %d times, or a dangling \"now\":\n%s", n, out)
+	}
+	if !strings.Contains(out, "Until hermes restarts it keeps running plugin 0.4.0") {
+		t.Fatalf("the pending paragraph is missing:\n%s", out)
+	}
+}

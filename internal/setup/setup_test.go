@@ -1091,3 +1091,55 @@ func TestRunAsksBeforeRestartingTheHarness(t *testing.T) {
 		})
 	}
 }
+
+// 🔴 #2688: a first install that leaves the harness alone says the plugin is
+// not loaded yet, and how to load it.
+func TestRunSaysThePluginIsNotLoadedUntilTheHarnessRestarts(t *testing.T) {
+	r := restartableRig(t)
+	r.opts.RestartHarness = RestartNo
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if !strings.Contains(r.out.String(), "Until hermes restarts it has not loaded the plugin") || !strings.Contains(r.out.String(), "uffici doctor") {
+		t.Fatalf("the pending plugin was not explained:\n%s", r.out)
+	}
+}
+
+// 🔴 #2688 review: a re-run of setup over an older plugin names the version the
+// harness keeps — read BEFORE the install replaces it, and only from a record of
+// the same harness in the same home.
+func TestRunNamesThePluginTheHarnessKeepsOnARerun(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		prior Record
+		want  string
+	}{
+		{"same harness, same home", Record{Harness: "hermes"}, "Until hermes restarts it keeps running plugin 0.0.9, not 0.1.2"},
+		{"another harness", Record{Harness: "openclaw"}, "Until hermes restarts it has not loaded the plugin"},
+		{"another home", Record{Harness: "hermes", HarnessHome: "elsewhere"}, "Until hermes restarts it has not loaded the plugin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := restartableRig(t)
+			r.opts.RestartHarness = RestartNo
+			old := goodManifest()
+			old["version"] = "0.0.9"
+			home := r.home
+			if tc.prior.HarnessHome == "elsewhere" {
+				home = filepath.Join(r.opts.UserHome, "other-hermes")
+			}
+			dir := filepath.Join(home, "plugins", "uffici-for-hermes")
+			must(t, os.MkdirAll(dir, 0o755))
+			must(t, os.WriteFile(filepath.Join(dir, ManifestFile), mustJSON(t, old), 0o644))
+			prior := tc.prior
+			prior.HarnessHome, prior.PluginDir = home, "plugins/uffici-for-hermes"
+			must(t, os.MkdirAll(r.opts.CompanionHome, 0o700))
+			must(t, WriteRecord(r.opts.CompanionHome, prior))
+			if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			if !strings.Contains(r.out.String(), tc.want) {
+				t.Fatalf("lacks %q:\n%s", tc.want, r.out)
+			}
+		})
+	}
+}

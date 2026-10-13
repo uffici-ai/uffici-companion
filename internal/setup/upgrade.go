@@ -69,6 +69,9 @@ type UpgradeOptions struct {
 	// terminal: the harness is not restarted.
 	RestartHarness RestartChoice
 	Confirm        func(question string) (yes, answered bool)
+	// Pause waits at the terminal while the person restarts a harness the
+	// companion cannot restart itself (#2688); false when nobody answered.
+	Pause func(lead []string, prompt string) bool
 }
 
 // Upgrade moves the companion and the attached harness's plugin to their latest
@@ -278,7 +281,8 @@ func Upgrade(ctx context.Context, opts UpgradeOptions, out io.Writer) int {
 	if plugin.move {
 		harnessLine = restartHarness(ctx, harnessRestart{
 			GOOS: opts.GOOS, UserHome: opts.UserHome, UID: opts.UID, Env: opts.Env, Runner: opts.Runner,
-			Timeout: opts.RestartTimeout, Choice: opts.RestartHarness, Confirm: opts.Confirm, DryRun: opts.DryRun,
+			Timeout: opts.RestartTimeout, Choice: opts.RestartHarness, Confirm: opts.Confirm, Pause: opts.Pause,
+			Previous: plugin.installed, DryRun: opts.DryRun,
 		}, installed, do, say)
 	}
 
@@ -521,6 +525,18 @@ func AskRestart(in io.Reader, out io.Writer, question string) (yes, answered boo
 	}
 }
 
+// WaitForEnter prints the lead lines and prompt, then waits for one line from
+// in; false when in ends first, which is nobody there to say the harness
+// restarted (#2688).
+func WaitForEnter(in io.Reader, out io.Writer, lead []string, prompt string) bool {
+	for _, line := range lead {
+		_, _ = fmt.Fprintln(out, line)
+	}
+	_, _ = fmt.Fprint(out, prompt)
+	_, err := bufio.NewReader(in).ReadString('\n')
+	return err == nil
+}
+
 // harnessRestart is what restarting the harness decides from, for setup and
 // upgrade alike.
 type harnessRestart struct {
@@ -530,39 +546,82 @@ type harnessRestart struct {
 	Timeout             time.Duration
 	Choice              RestartChoice
 	Confirm             func(question string) (yes, answered bool)
-	DryRun              bool
+	Pause               func(lead []string, prompt string) bool
+	// Previous is the plugin version the harness runs until it restarts; empty
+	// when it ran none.
+	Previous string
+	DryRun   bool
 }
 
-// restartHarness restarts the harness with the manifest's command when that is
-// safe AND the person said so, and otherwise tells the person how. It returns
-// the summary line.
-//
-// 🔴 Safe means: the manifest declares both the command and the service it
-// restarts, that service's definition exists for this user, and the plugin went
-// into the harness's DEFAULT home. A harness run by hand has no service to
-// restart, and its restart command may then start it in the foreground — Hermes's
-// does — which would hang this run; a non-default home is served by a
-// differently named service the manifest cannot know. Safety is checked FIRST:
-// the person is never asked a question whose yes could not be carried out.
+// restartHarness restarts the harness when the person says so, and otherwise
+// says what stays pending until it restarts. It returns the summary line.
 //
 // 🔴 Said so means a flag, `--yes`, or a yes at the terminal (#2278): a
 // person's harness is never restarted without their say, so a run with none of
 // the three — a scheduled upgrade, a pipe with no terminal — leaves it alone.
+// With no flag the question is ALWAYS asked, defaulting to yes (#2688).
+//
+// 🔴 The companion RUNS the manifest's restart command only where that is safe:
+// the manifest declares both the command and the service it restarts, that
+// service is installed AND running for this user, and the plugin went into the
+// harness's DEFAULT home. A harness run by hand has no service to restart, and
+// its restart command may then start it in the foreground — Hermes's does —
+// which would hang this run; a non-default home is served by a differently
+// named service the manifest cannot know. There, a yes prints what to run and
+// waits for the person to say it is done.
 func restartHarness(ctx context.Context, r harnessRestart, installed installedPlugin, do func(string, func() error) error, say func(string, ...any)) string {
 	manifest := installed.manifest
-	if len(manifest.RestartCommand) == 0 || manifest.RestartService == nil {
+	pending := func(line string) string {
+		// A dry run wrote nothing, so it claims nothing pending either.
+		if r.DryRun {
+			say("would leave %s running as it is: %s", manifest.Harness, manifest.Restart)
+			return "would not restart"
+		}
+		say("%s", restartPending(manifest.Harness, r.Previous, manifest.Version))
 		say("%s", manifest.Restart)
-		return "restart it yourself to load the new plugin"
+		say("Run `uffici doctor` once %s has restarted to confirm it loaded the plugin.", manifest.Harness)
+		return line
 	}
-	if !harnessServiceRunning(ctx, r, *manifest.RestartService) ||
-		installed.home != expandHome(manifest.DefaultHome, r.UserHome) {
-		say("%s", manifest.Restart)
-		return "not run as a service here — restart it yourself to load the new plugin"
+	safe := len(manifest.RestartCommand) > 0 && manifest.RestartService != nil &&
+		harnessServiceRunning(ctx, r, *manifest.RestartService) &&
+		installed.home == expandHome(manifest.DefaultHome, r.UserHome)
+	noCommand := len(manifest.RestartCommand) == 0 || manifest.RestartService == nil
+	notService := "not run as a service here — restart it yourself to load the new plugin"
+	why := fmt.Sprintf("%s cannot be restarted from here: it does not run as its own service, or not from its default home.", manifest.Harness)
+	if noCommand {
+		notService = "restart it yourself to load the new plugin"
+		why = fmt.Sprintf("%s cannot be restarted from here: its plugin names no command to restart it.", manifest.Harness)
 	}
+	// guide is a yes where the companion cannot restart the harness: never the
+	// restart command — it would start a second harness in the foreground — but
+	// the sentence to restart it by, and a wait for the person to say it is done.
+	guide := func() string {
+		say("%s", why)
+		// The lead is printed only where a terminal will wait, so a run with
+		// none never reads "now" with no prompt after it, nor the sentence twice.
+		lead := []string{"Restart it yourself now, where it runs:", manifest.Restart}
+		if r.Pause == nil || !r.Pause(lead, fmt.Sprintf("Press Enter once %s has restarted… ", manifest.Harness)) {
+			return pending("not restarted — restart it yourself to load the new plugin")
+		}
+		return "restarted by you"
+	}
+
 	switch r.Choice {
 	case RestartNo:
-		say("%s", manifest.Restart)
-		return "not restarted — you said no; restart it yourself to load the new plugin"
+		return pending("not restarted — you said no; restart it yourself to load the new plugin")
+	case RestartYes:
+		switch {
+		case !safe && r.DryRun:
+			say("%s", why)
+			return pending(notService)
+		case !safe && r.Pause != nil:
+			// The flag's yes gets the help a typed yes gets (#2688 review); with no
+			// terminal to wait on, the pending paragraph says what holds.
+			return guide()
+		case !safe:
+			say("%s", why)
+			return pending(notService)
+		}
 	case RestartAsk:
 		if r.DryRun {
 			say("would ask whether to restart %s now to load the plugin", manifest.Harness)
@@ -573,12 +632,14 @@ func restartHarness(ctx context.Context, r harnessRestart, installed installedPl
 			yes, answered = r.Confirm(fmt.Sprintf("Restart %s now to load the plugin? [Y/n] ", manifest.Harness))
 		}
 		switch {
+		case !answered && safe:
+			return pending("not restarted — no terminal to ask (--restart-harness restarts it); restart it yourself to load the new plugin")
 		case !answered:
-			say("%s", manifest.Restart)
-			return "not restarted — no terminal to ask (--restart-harness restarts it); restart it yourself to load the new plugin"
+			return pending(notService)
 		case !yes:
-			say("%s", manifest.Restart)
-			return "not restarted — you said no; restart it yourself to load the new plugin"
+			return pending("not restarted — you said no; restart it yourself to load the new plugin")
+		case !safe:
+			return guide()
 		}
 	}
 	timeout := r.Timeout
@@ -592,13 +653,29 @@ func restartHarness(ctx context.Context, r harnessRestart, installed installedPl
 		_, err := r.Runner.Run(restartCtx, argv[0], argv[1:]...)
 		return err
 	}); err != nil {
-		say("The harness restart failed (%v). %s", err, manifest.Restart)
-		return "restart failed — restart it yourself to load the new plugin"
+		say("The harness restart failed (%v).", err)
+		return pending("restart failed — restart it yourself to load the new plugin")
 	}
 	if r.DryRun {
 		return "would restart"
 	}
 	return "restarted"
+}
+
+// restartPending says what holds until the harness restarts (#2688). Generic:
+// a harness loads its plugin and reads its settings when it starts, and
+// nothing more is assumed about any one harness.
+func restartPending(harness, previous, target string) string {
+	switch {
+	case previous == "":
+		return fmt.Sprintf("Until %s restarts it has not loaded the plugin, so nothing from Uffici reaches the agent through it.", harness)
+	case strings.TrimPrefix(previous, "v") == strings.TrimPrefix(target, "v"):
+		return fmt.Sprintf("Until %s restarts it keeps the plugin as it loaded it, without the settings this run wrote.", harness)
+	}
+	if target == "" {
+		return fmt.Sprintf("Until %s restarts it keeps running plugin %s, not the new one: what the new one changes is not in effect yet, nor are the settings this run wrote.", harness, previous)
+	}
+	return fmt.Sprintf("Until %s restarts it keeps running plugin %s, not %s: what %s changes is not in effect yet, nor are the settings this run wrote.", harness, previous, target, target)
 }
 
 // harnessServiceRunning reports whether the harness runs as its own user

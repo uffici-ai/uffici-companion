@@ -75,12 +75,15 @@ It does, in order:
 4. Downloads the plugin for your harness from the same release of that plugin, checks it, installs
    it into the harness, switches the Uffici platform on in the harness's configuration, and
    points the plugin at the companion.
-5. Asks whether to restart the harness so it loads the plugin, and restarts it on a yes —
-   only when the harness runs as its own user service; otherwise it tells you how. Under a
-   pipe the question is read from your terminal; with no terminal the harness is left alone.
-   `--restart-harness` restarts without asking, `--no-restart-harness` never does, and
-   `--yes` counts as a yes. Once the harness is restarted, the agent shows **Online** in
-   the portal.
+5. Asks whether to restart the harness so it loads the plugin — *Restart hermes now to load
+   the plugin? [Y/n]*, where Enter is a yes. When the harness runs as its own user service,
+   a yes restarts it. When you run it yourself, a yes prints the command to restart it with
+   and waits for you to press Enter once you have. A no, or no terminal to ask on, leaves the
+   harness alone and says what that means until it restarts: it keeps the plugin it loaded
+   (or none, on a first install), without the settings this run wrote. Under a pipe the
+   question is read from your terminal. `--restart-harness` restarts without asking,
+   `--no-restart-harness` never does, and `--yes` counts as a yes. Once the harness is
+   restarted, the agent shows **Online** in the portal.
 6. Runs `uffici doctor`.
 
 Every step is announced before it runs. Add `--dry-run` to be told and nothing else: the
@@ -105,13 +108,16 @@ uffici upgrade           # the companion and the plugin, to the release your gat
 uffici upgrade --check   # only say what is installed and what is released
 ```
 
+`uffici update` is the same command, under the name harnesses use for theirs.
+
 `uffici upgrade` needs no flags: `uffici setup` remembers the harness, its home and your agents
 host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the companion release
 your agents gateway names (see [Which version you get](#which-version-you-get)) for this machine, verifies it against the release's checksum list and swaps it in beside the
 old one, so a failed download or check leaves the installed binary untouched. The new binary
 then installs the plugin from the same release, sets the harness's configuration again,
-restarts the companion's service, asks whether to restart the harness (as setup does, and
-only when it runs as a service; otherwise it tells you how), runs the doctor, and prints
+restarts the companion's service, asks whether to restart the harness (as setup does: it
+restarts a harness that runs as a service, and walks you through restarting one you run
+yourself), runs the doctor, and prints
 what moved from which version to which. It keeps the agent key and never pairs.
 
 - `--check` changes nothing: it names the gateway, the channel and the version that gateway

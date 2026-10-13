@@ -62,6 +62,9 @@ type Options struct {
 	// harness alone.
 	RestartHarness RestartChoice
 	Confirm        func(question string) (yes, answered bool)
+	// Pause waits at the terminal while the person restarts a harness the
+	// companion cannot restart itself (#2688); false when nobody answered.
+	Pause func(lead []string, prompt string) bool
 
 	// Facts about the machine.
 	GOOS, UserHome, CompanionHome, Binary, UID string
@@ -167,10 +170,20 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		LogShipping: opts.Logs.shipping(), HarnessLogLevel: opts.Logs.harnessLevel(),
 	}
 	if opts.Harness != "" {
+		// The plugin the harness runs until it restarts, read BEFORE the install
+		// replaces it, for what the person is told is pending (#2688).
+		previous, previousHome := "", ""
+		if prior, err := ReadRecord(opts.CompanionHome); err == nil && prior.Harness == opts.Harness {
+			previous, previousHome = installedPluginVersion(prior), prior.HarnessHome
+		}
 		installed, err := installPlugin(ctx, opts, out, do)
 		if err != nil {
 			_, _ = fmt.Fprintf(out, "uffici setup: %v\n", err)
 			return ExitFailed
+		}
+		// A plugin in another harness home is not the one this harness keeps.
+		if previousHome != installed.home {
+			previous = ""
 		}
 		// AFTER the companion's service: the plugin the restarted harness loads
 		// says hello to the companion that will serve it.
@@ -180,7 +193,7 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		}
 		line := restartHarness(ctx, harnessRestart{
 			GOOS: opts.GOOS, UserHome: opts.UserHome, UID: opts.UID, Env: opts.Env, Runner: opts.Runner,
-			Choice: choice, Confirm: opts.Confirm, DryRun: opts.DryRun,
+			Choice: choice, Confirm: opts.Confirm, Pause: opts.Pause, Previous: previous, DryRun: opts.DryRun,
 		}, installed, do, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format+"\n", args...) })
 		_, _ = fmt.Fprintf(out, "%s: %s\n", opts.Harness, line)
 		record.HarnessHome, record.PluginDir = installed.home, installed.manifest.PluginDir
