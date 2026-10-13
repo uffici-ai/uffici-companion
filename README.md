@@ -22,13 +22,18 @@ works in.
   your organization gave the agent — boards, tables, files and the rest — and call them
   through the companion. Uffici runs every call, under the request the agent is answering,
   and records it; a tool that needs a person's approval asks for it in the conversation.
+- **Moves files.** A person's attachment reaches your harness as a local file, and a file
+  your harness makes reaches the person as an attachment on the agent's reply or as a file in
+  your organization's Files. The bytes go straight between this machine and Uffici, pick up
+  where they stopped after a dropped connection, and stay inside one directory — the
+  [workspace](#the-workspace).
 - **Shows presence.** While the companion is connected, the agent shows online in the portal,
   with last seen and last interaction. When it disconnects, administrators can be alerted.
 - **Diagnoses itself.** `uffici doctor` proves, from your machine, that the key is readable,
   the connection opens and Uffici answers.
 
 It never calls a model and never executes a tool. It keeps nothing durable beyond its key, its
-instance id and its wire token. What the agent reads from a Uffici conversation and posts to
+instance id, its wire token and the files it downloaded into the workspace. What the agent reads from a Uffici conversation and posts to
 it goes through Uffici, where it is authorized and recorded; what your harness does on its own
 — its local tools, its local memory — stays local, and this release does not route it through
 Uffici. The one exception is its **log lines**, which it sends to Uffici so your organization
@@ -345,6 +350,17 @@ The image is built from [Dockerfile](Dockerfile) in this repository, from `scrat
 shell, no package manager, one binary, for linux/amd64 and linux/arm64. It sets
 `UFFICI_WIRE_TRANSPORT=tcp` and listens on loopback port `7411`.
 
+For files, give both containers one shared volume — an `emptyDir` is enough — mounted at the
+same path in each, and set `UFFICI_WORKSPACE` to that path on the companion:
+
+```yaml
+      env:
+        - name: UFFICI_WORKSPACE
+          value: /workspace
+      volumeMounts:
+        - { name: workspace, mountPath: /workspace }   # the same mount on the harness's container
+```
+
 An environment value is visible to `docker inspect`, to `/proc`, and to every child process,
 which is why the key and the wire token come from a Secret here and from files everywhere
 else. Several replicas of one agent work once **Allow multiple connections** is switched on
@@ -404,6 +420,38 @@ The companion reads its environment once, at start.
 | `UFFICI_LOG_SHIPPING_LEVEL` | The lowest level of the companion's and the plugin's own lines that are sent: `debug`, `info` (default), `warn` or `error`. Independent of `UFFICI_LOG_LEVEL`. |
 | `UFFICI_LOG_LEVEL_HARNESS` | The lowest level of the **harness's** own lines that may leave this machine: `debug`, `info`, `warn` (default) or `error`. Set with `uffici setup --harness-log-level`. The stricter of this and the agent's level in Uffici applies. |
 | `UFFICI_GITHUB_TOKEN` | Read by the installer and by `uffici setup` to download from a private repository. Never printed. |
+| `UFFICI_WORKSPACE` | The [workspace](#the-workspace): the one directory files are moved in and out of. An absolute path. Default: the directory your harness's plugin names, as `uffici setup` recorded it, else `$UFFICI_HOME/workspace`. |
+| `UFFICI_WORKSPACE_ALLOW_DOTFILES` | `1` lets a path inside the workspace name a hidden file or directory (`.env`, `.cache/…`). Unset, they are refused. |
+| `UFFICI_UPLOAD_CHUNK_BYTES` | How much of a file one upload request carries. Default 16 MiB (`16777216`), at most 32 MiB. A dropped connection sends at most one chunk again. |
+| `UFFICI_PREFETCH_MAX_BYTES` | The most this machine downloads ahead of one turn, for a plugin that asks for attachments in advance. Default 50 MiB (`52428800`); the plugin can ask for less, never more. |
+
+### The workspace
+
+Every file the companion moves lives in one directory, the workspace:
+
+- `conversations/<conversation>/` holds attachments people sent, as
+  `<attachment>-<name>`; `files/` holds files downloaded from your organization's Files, at
+  their path there. Anything else in it is your harness's own, and it can ask the companion to
+  upload any file in it.
+- 🔴 **Nothing outside it is ever read or written.** A path that leads out of it — through a
+  parent-directory segment, a path elsewhere on the machine, a link pointing out of the
+  workspace — is refused, and so is a
+  hidden name such as `.env` or `.ssh` unless you set `UFFICI_WORKSPACE_ALLOW_DOTFILES=1`. The
+  refusal reaches the agent as a sentence it relays; nothing is sent to Uffici. The check holds
+  when the file is actually opened, too: a directory replaced by a link after the check leads
+  nowhere, a link inside the workspace is followed only when its target is relative, and a
+  FIFO, a device or a hard-linked file is never uploaded.
+- The workspace may not be `$UFFICI_HOME` itself or a directory above it — the agent key would
+  be inside it. The companion then serves no files and says so in its log.
+- A download is written to `.uffici/partial/` first and moved into place only after its size
+  and checksum match Uffici's; a mismatch is deleted. A dropped connection resumes where it
+  stopped. When the request ends — a person stops the agent, a newer message replaces it, the
+  deadline passes — its transfers stop and nothing half-written is kept.
+- `uffici doctor` prints where the workspace is, where that came from, and whether the
+  companion can write to it.
+- Downloaded files stay until you remove them: they are your organization's files on your
+  machine. Remove what you no longer need, or point `UFFICI_WORKSPACE` at a volume that is
+  cleared with the harness.
 
 ### Staying connected
 
@@ -470,9 +518,11 @@ does nothing and the agent shows offline.
 `uffici setup --harness <kind>` fetches the plugin from `uffici-for-<kind>`'s latest release,
 verifies it against that release's checksum list, and follows the install manifest the
 release carries (`uffici-plugin.json`: where the harness keeps plugins, how to enable one,
-which configuration keys to set, which environment the plugin reads). The companion holds no
-per-harness code of its own, and refuses a manifest with a field it does not know rather than
-skipping a step.
+which configuration keys to set, which environment the plugin reads, and where its workspace
+is). The companion holds no per-harness code of its own, and refuses a manifest with a field
+it does not know rather than skipping a step. The same holds for files: the companion moves
+them the same way for every harness, and how a harness shows an image or sends a document is
+its plugin's business.
 
 Plugin authors: the wire is specified in [docs/local-wire.md](docs/local-wire.md), the
 manifest's schema is [internal/setup/manifest.schema.json](internal/setup/manifest.schema.json),
@@ -497,6 +547,10 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
   Your harness's own tools and memory are not routed through Uffici in this release and are not
   recorded by it; a post may name them, by tool name and a one-line summary, never their
   arguments or results.
+- A file crosses only for a request the agent is answering, authorized by Uffici for that one
+  file and recorded there, under a short-lived grant that never reaches a log line. The
+  companion reads and writes only inside the [workspace](#the-workspace). A download copies
+  your organization's file onto this machine, which is yours.
 - The companion runs inside your perimeter with your key, which is why it is open source: you
   can read what it does with the key and where it connects, and build it yourself.
 - Each release is built in this repository by its own workflow, from the tag, and ships with

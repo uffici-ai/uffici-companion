@@ -17,6 +17,9 @@ toolchain go1.27.1
 
 require (
 	github.com/coder/websocket v1.8.15
+	// The tus upload client. It publishes no tagged release, so it is pinned by
+	// pseudo-version: the commit of 2025-06-12, its latest.
+	github.com/eventials/go-tus v0.0.0-20250612203642-7827b129cd4c
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 )
 

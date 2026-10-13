@@ -1,0 +1,9 @@
+{
+	"reason": "an upload lands in the conversation OR in Files",
+	"value": {
+		"id": "1",
+		"name": "a",
+		"ref": "conversations/x/a",
+		"path": "/a"
+	}
+}

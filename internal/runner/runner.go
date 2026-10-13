@@ -120,6 +120,11 @@ type Counts struct {
 	ToolReruns int
 	// MemoryOps is how many of each memory op reached the host (#2386).
 	MemoryOps map[string]int
+	// Uploads is how many uploads the host recorded, UploadsResumed how many of
+	// them resumed after a dropped connection, Downloads how many downloads were
+	// served to their last byte, and AttachmentsPosted how many attachments the
+	// posts carried (#2679).
+	Uploads, UploadsResumed, Downloads, AttachmentsPosted int
 }
 
 // events is everything the runner saw, in order.
@@ -410,6 +415,11 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return r.expectToolRerun(ctx, step)
 	case "expectMemory":
 		return r.expectMemory(ctx, step)
+	case "interruptNextUpload":
+		r.host.InterruptNextUpload(int64(step.AfterBytes))
+		return ""
+	case "expectUpload":
+		return r.expectUpload(ctx, step)
 	default:
 		// Unreachable: Validate refuses unknown steps at load. Stated rather than
 		// ignored, because a silently skipped step is a removed assertion.
@@ -492,6 +502,9 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 			if sent.RequestID != current {
 				continue
 			}
+			if step.Attachments != nil && !r.attachedIntact(sent, *step.Attachments) {
+				continue
+			}
 			switch matcher {
 			case "contains":
 				if strings.Contains(sent.Text, step.Value) {
@@ -514,8 +527,59 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 		}
 		return false
 	}
+	miss := fmt.Sprintf("no post satisfying %s %q", matcher, step.Value)
+	if step.Attachments != nil {
+		miss += fmt.Sprintf(" carrying %d intact attachment(s)", *step.Attachments)
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, miss)
+}
+
+// attachedIntact is whether a post carries exactly `want` attachments, each an
+// upload of its own request that arrived with the CRC32C its grant was minted
+// for — what the person downloads is what the harness made (#2679).
+func (r *Runner) attachedIntact(sent fixture.PostRecord, want int) bool {
+	if len(sent.Attachments) != want {
+		return false
+	}
+	intact := map[string]bool{}
+	for _, upload := range r.host.Uploads() {
+		if upload.RequestID == sent.RequestID && upload.ID != "" && upload.Intact {
+			intact[upload.ID] = true
+		}
+	}
+	for _, attachment := range sent.Attachments {
+		if !intact[attachment.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+// expectUpload waits for an upload on the CURRENT request that arrived intact:
+// saved at `to` when the step names one, else attached to the reply, and
+// carrying `contains` when given (#2679).
+func (r *Runner) expectUpload(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, upload := range r.host.Uploads() {
+			if upload.RequestID != current || !upload.Intact {
+				continue
+			}
+			if strings.TrimLeft(upload.To, "/") != strings.TrimLeft(step.To, "/") {
+				continue
+			}
+			if step.Contains == "" || strings.Contains(string(upload.Data), step.Contains) {
+				return true
+			}
+		}
+		return false
+	}
+	where := "attached to the reply"
+	if step.To != "" {
+		where = "saved at " + step.To
+	}
 	return r.waitFor(ctx, step.WithinMs, matched,
-		fmt.Sprintf("no post satisfying %s %q", matcher, step.Value))
+		fmt.Sprintf("no intact upload %s carrying %q", where, step.Contains))
 }
 
 // expectToolCall waits for a tool call on the CURRENT request naming the tool,
@@ -821,6 +885,16 @@ func (r *Runner) result(unmet []string) Result {
 	for _, call := range r.host.MemoryCalls() {
 		counts.MemoryOps[string(call.Op)]++
 	}
+	for _, upload := range r.host.Uploads() {
+		counts.Uploads++
+		if upload.Resumed {
+			counts.UploadsResumed++
+		}
+	}
+	counts.Downloads = r.host.Downloads()
+	for _, sent := range r.host.Posts() {
+		counts.AttachmentsPosted += len(sent.Attachments)
+	}
 	for _, ack := range r.events.acks {
 		counts.Acks[string(ack.outcome)]++
 		counts.Sessions[string(ack.session)]++
@@ -855,11 +929,20 @@ func (r *Runner) checkTally(result *Result, note func(string, ...any)) {
 	if want.ToolReruns != nil && result.Counts.ToolReruns != *want.ToolReruns {
 		note("assert: %d tool re-run(s), want %d", result.Counts.ToolReruns, *want.ToolReruns)
 	}
+	exactly("upload(s)", want.Uploads, result.Counts.Uploads, note)
+	exactly("download(s)", want.Downloads, result.Counts.Downloads, note)
+	exactly("resumed upload(s)", want.UploadsResumed, result.Counts.UploadsResumed, note)
 	compare("ack", want.Acks, result.Counts.Acks, note)
 	compare("session", want.Sessions, result.Counts.Sessions, note)
 	compare("close", want.Closes, result.Counts.Closes, note)
 	compare("cancel", want.Cancels, result.Counts.Cancels, note)
 	compare("memory op", want.MemoryOps, result.Counts.MemoryOps, note)
+}
+
+func exactly(label string, want *int, got int, note func(string, ...any)) {
+	if want != nil && got != *want {
+		note("assert: %d %s, want %d", got, label, *want)
+	}
 }
 
 func compare(label string, want, got map[string]int, note func(string, ...any)) {

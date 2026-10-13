@@ -40,7 +40,10 @@
 		"tool-call-request",
 		"tool-call-response",
 		"tool-catalog-response",
-		"tool-rerun-request"
+		"tool-rerun-request",
+		"transfer-complete-response",
+		"transfer-request",
+		"transfer-response"
 	],
 	"reserved": [],
 	"errorClasses": [
@@ -70,7 +73,19 @@
 		"card_unavailable",
 		"invalid_citation",
 		"forget_refused",
-		"archived"
+		"archived",
+		"attachment_unknown",
+		"transfer_denied",
+		"needs_approval",
+		"ask_unavailable",
+		"file_too_large",
+		"file_exists",
+		"transfer_incomplete",
+		"grant_expired",
+		"destination_refused",
+		"grant_refused",
+		"file_changed",
+		"checksum_mismatch"
 	],
 	"cancelReasons": [
 		"stop",
@@ -119,7 +134,7 @@
 		"pairing-poll-response": 2,
 		"pairing-request": 2,
 		"pairing-response": 1,
-		"post-request": 3,
+		"post-request": 4,
 		"post-response": 1,
 		"read-response": 7,
 		"release": 3,
@@ -129,7 +144,10 @@
 		"tool-call-request": 2,
 		"tool-call-response": 2,
 		"tool-catalog-response": 2,
-		"tool-rerun-request": 1
+		"tool-rerun-request": 1,
+		"transfer-complete-response": 2,
+		"transfer-request": 4,
+		"transfer-response": 2
 	},
 	"invalidGoldens": {
 		"ack": 2,
@@ -152,6 +170,8 @@
 		"ring": 2,
 		"tool-call-response": 1,
 		"tool-catalog-response": 1,
-		"tool-rerun-request": 1
+		"tool-rerun-request": 1,
+		"transfer-complete-response": 1,
+		"transfer-request": 3
 	}
 }

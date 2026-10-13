@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -76,17 +75,6 @@ func TestRefusalShutdownAndANamedDelay(t *testing.T) {
 	}
 	if d := b.next(endTransient, 90*time.Second); d != 90*time.Second {
 		t.Fatalf("a named 90s delay was cut to %v", d)
-	}
-}
-
-func TestSleepContextReturnsEarlyOnCancel(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := sleepContext(ctx, time.Hour); !errors.Is(err, context.Canceled) {
-		t.Fatalf("a cancelled sleep returned %v", err)
-	}
-	if err := sleepContext(context.Background(), time.Millisecond); err != nil {
-		t.Fatalf("a short sleep returned %v", err)
 	}
 }
 

@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
 	"github.com/uffici-ai/uffici-companion/internal/textsafe"
+	"github.com/uffici-ai/uffici-companion/internal/transfer"
 )
 
 // doctorTimeout bounds the whole probe.
@@ -54,6 +57,30 @@ type DoctorOptions struct {
 	Release func(ctx context.Context) string
 }
 
+// describeWorkspace is the doctor's workspace line (#2673): where it is, where
+// that came from, and whether the companion can write to it. A terminal line
+// for the person at the machine — never a log line.
+func describeWorkspace(config Config) string {
+	root := config.Workspace
+	if root == "" {
+		root = filepath.Join(config.Home, "workspace")
+	}
+	from := config.WorkspaceFrom
+	if from == "" {
+		from = "the default"
+	}
+	line := root + " (from " + from + ")"
+	err := transfer.Writable(root)
+	switch {
+	case err == nil:
+		return line + " — writable"
+	case errors.Is(err, os.ErrNotExist):
+		return line + " — not created yet; the companion creates it when it starts"
+	default:
+		return line + " — NOT writable (" + errorKind(err) + "): files cannot be transferred until it is"
+	}
+}
+
 // Doctor is DoctorWith and no options: what `uffici doctor` runs by hand.
 func Doctor(ctx context.Context, config Config, out io.Writer) int {
 	return DoctorWith(ctx, config, out, DoctorOptions{})
@@ -80,6 +107,7 @@ func DoctorWith(ctx context.Context, config Config, out io.Writer, options Docto
 	say := func(label, value string) { _, _ = fmt.Fprintf(out, "  %-12s %s\n", label, value) }
 	_, _ = fmt.Fprintln(out, "uffici doctor")
 	say("agents host", config.GatewayURL)
+	say("workspace", describeWorkspace(config))
 
 	if options.Release != nil {
 		releaseCtx, cancelRelease := context.WithTimeout(ctx, releaseLineTimeout)

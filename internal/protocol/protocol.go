@@ -578,6 +578,54 @@ type ToolCallResponse struct {
 	Result  json.RawMessage `json:"result"`
 }
 
+// ── Files (#2671) ───────────────────────────────────────────────────────────
+
+// TransferRequest is `POST /v1/requests/:id/transfers`' body: a download names
+// an entry's attachment (AttachmentID, `<messageId>.<index>`) or a Path; an
+// upload names the file's name, size, CRC32C and type, and To to save it into
+// Files instead of attaching it. One struct decodes every arm of the union.
+// 🔴 The bytes never ride it — they cross the files routes under the grant.
+type TransferRequest struct {
+	Op           string `json:"op"`
+	AttachmentID string `json:"attachmentId,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	Size         *int64 `json:"size,omitempty"`
+	CRC32C       string `json:"crc32c,omitempty"`
+	ContentType  string `json:"contentType,omitempty"`
+	To           string `json:"to,omitempty"`
+	Overwrite    bool   `json:"overwrite,omitempty"`
+}
+
+// TransferFile is what the platform knows of a transferred file.
+type TransferFile struct {
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"contentType,omitempty"`
+	CRC32C      string `json:"crc32c,omitempty"`
+}
+
+// TransferResponse is the grant. 🔴 Grant is secret-class — never logged; JTI
+// may be.
+type TransferResponse struct {
+	Op        string       `json:"op"`
+	JTI       string       `json:"jti"`
+	Grant     string       `json:"grant"`
+	ExpiresAt time.Time    `json:"expiresAt"`
+	CallURN   string       `json:"callUrn"`
+	File      TransferFile `json:"file"`
+}
+
+// TransferCompleteResponse answers an upload's completion: the attachment a
+// post carries (ID, Name, Ref) for an upload into the conversation, or Path for
+// one into Files.
+type TransferCompleteResponse struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	Ref  string `json:"ref,omitempty"`
+	Path string `json:"path,omitempty"`
+}
+
 // ── Errors ──────────────────────────────────────────────────────────────────
 
 // ErrorEnvelope is every non-2xx body the gateway answers.

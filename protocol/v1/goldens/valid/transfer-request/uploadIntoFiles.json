@@ -1,0 +1,9 @@
+{
+	"op": "upload",
+	"filename": "q3.pdf",
+	"size": 1048576,
+	"crc32c": "4waSgw==",
+	"contentType": "application/pdf",
+	"to": "/reports/",
+	"overwrite": true
+}

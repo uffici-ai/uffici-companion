@@ -94,6 +94,12 @@ func newFor(t *testing.T, schema string) any {
 		return &ToolCatalogResponse{}
 	case "tool-rerun-request":
 		return &ToolRerunRequest{}
+	case "transfer-request":
+		return &TransferRequest{}
+	case "transfer-response":
+		return &TransferResponse{}
+	case "transfer-complete-response":
+		return &TransferCompleteResponse{}
 	}
 	t.Fatalf("no struct for schema %q", schema)
 	return nil
@@ -111,6 +117,8 @@ var clientBodies = map[string]bool{
 	"memory-forget-request": true, "memory-unfold-request": true,
 	// A re-run of a recorded call (#2454).
 	"tool-rerun-request": true,
+	// A transfer's grant request (#2671).
+	"transfer-request": true,
 }
 
 type golden struct{ schema, name string }

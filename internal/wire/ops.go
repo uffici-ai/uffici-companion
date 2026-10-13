@@ -36,6 +36,14 @@ const (
 	OpMemoryUnfold   = "memory.unfold"
 )
 
+// Files between Uffici and the workspace (#2673): two call ops, served only
+// together, each bound to a request this companion delivered. The same two for
+// every plugin — a harness's own conventions are its plugin's.
+const (
+	OpFilesDownload = "files.download"
+	OpFilesUpload   = "files.upload"
+)
+
 // Op payload directions.
 const (
 	OpRequest = "request"

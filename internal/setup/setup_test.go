@@ -96,6 +96,46 @@ func TestParseManifestRefusesWhatItDoesNotKnow(t *testing.T) {
 	}
 }
 
+// The workspace is the PLUGIN's to name (#2673): an optional path inside the
+// harness home, never one leaving it or hidden.
+func TestParseManifestReadsAnOptionalWorkspace(t *testing.T) {
+	m := goodManifest()
+	m["workspace"] = "uffici/workspace"
+	parsed, err := ParseManifest(mustJSON(t, m))
+	if err != nil || parsed.Workspace != "uffici/workspace" {
+		t.Fatalf("a workspace was not read: %+v, %v", parsed, err)
+	}
+	for _, bad := range []string{"../out", "/abs/path", ".hidden", "a/../b", "a//b", "a/./b", "", "a/"} {
+		m["workspace"] = bad
+		if _, err := ParseManifest(mustJSON(t, m)); err == nil {
+			t.Errorf("the workspace %q was accepted", bad)
+		}
+	}
+}
+
+func TestSetupRecordsThePluginsWorkspace(t *testing.T) {
+	m := goodManifest()
+	m["workspace"] = "uffici-workspace"
+	r := newRig(t, m, false)
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	record, err := ReadRecord(r.opts.CompanionHome)
+	if want := filepath.Join(r.home, "uffici-workspace"); err != nil || record.Workspace != want {
+		t.Fatalf("recorded %q, %v; want %q", record.Workspace, err, want)
+	}
+	if !strings.Contains(r.out.String(), "workspace: "+record.Workspace) {
+		t.Fatalf("the workspace was not printed:\n%s", r.out)
+	}
+	// A record naming a relative workspace is not one setup wrote.
+	if err := WriteRecord(r.opts.CompanionHome, Record{Harness: "hermes", Workspace: "relative"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRecord(r.opts.CompanionHome); err == nil {
+		t.Fatal("a relative workspace was read back")
+	}
+}
+
 func TestParseManifestDotSegmentIsRefused(t *testing.T) {
 	m := goodManifest()
 	m["pluginDir"] = "plugins/./uffici-for-hermes"

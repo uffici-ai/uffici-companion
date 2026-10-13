@@ -168,6 +168,17 @@ type Attachment struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Ref  string `json:"ref"`
+	// LocalPath is where the companion prefetched the file, relative to the
+	// workspace (#2673) — only when the plugin's hello asked for prefetch.
+	LocalPath string `json:"localPath,omitempty"`
+	// PrefetchError says why an asked-for prefetch did not happen.
+	PrefetchError *PrefetchError `json:"prefetchError,omitempty"`
+}
+
+// PrefetchError is an attachment the companion was asked to prefetch and did
+// not: a class, never a sentence — the plugin can still download it.
+type PrefetchError struct {
+	Class string `json:"class"`
 }
 
 // Entry is one transcript entry, mapped one to one from the platform's read.
@@ -207,6 +218,22 @@ type PluginHello struct {
 	// plugin omits it. Never a refusal: the companion never parses a harness
 	// version, it only carries the plugin's word to `uffici doctor`.
 	HarnessSupport *HarnessSupport `json:"harnessSupport,omitempty"`
+	// Capabilities is what the plugin asks the companion to do for it (#2673):
+	// the PLUGIN's choice, because a harness's needs are its plugin's to know.
+	// Optional — an older plugin asks nothing.
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+}
+
+// Capabilities is what a plugin asks of the companion beyond every v1 plugin.
+type Capabilities struct {
+	// PrefetchAttachments asks for a brief's attachments to be downloaded into
+	// the workspace before the brief is handed over.
+	PrefetchAttachments *PrefetchAttachments `json:"prefetchAttachments,omitempty"`
+}
+
+// PrefetchAttachments is the plugin's prefetch budget, in bytes per brief.
+type PrefetchAttachments struct {
+	MaxBytes int64 `json:"maxBytes"`
 }
 
 // HarnessSupport is a plugin's statement of the harness versions it supports
@@ -248,6 +275,10 @@ type CompanionHello struct {
 	// Features is what this companion can carry beyond every v1 companion
 	// (#2232): `question`, `redelivery` and `tools`. Optional, so an older plugin reads nothing new.
 	Features []string `json:"features,omitempty"`
+	// Workspace is the workspace's absolute path as the companion sees it
+	// (#2673): every `localPath` on the wire is relative to it. Sent beside the
+	// `files` feature.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // FeatureQuestion says a post may carry a question (#2232).
@@ -273,6 +304,11 @@ const FeatureToolsRerun = "rerun"
 // told so never meets `unknown_op` mid-turn — and an older companion's silence tells
 // the plugin to render "memory unavailable" instead of an empty recall.
 const FeatureMemory = "memory"
+
+// FeatureFiles says the plugin may call `files.download` and `files.upload`
+// (#2673), and that the companion's hello names its `workspace`. Announced only
+// when both are served.
+const FeatureFiles = "files"
 
 // Cause is the recorded human cause a request answers.
 type Cause struct {
@@ -380,6 +416,16 @@ type Post struct {
 	// Activity is what the agent did with its harness's own tools, by name and a
 	// summary — never arguments or results.
 	Activity []Activity `json:"activity,omitempty"`
+	// Attachments are files this post carries, as `files.upload` answered them
+	// (#2673); sent only to a companion whose hello lists `files`.
+	Attachments []PostAttachment `json:"attachments,omitempty"`
+}
+
+// PostAttachment is an uploaded file a post carries, by reference.
+type PostAttachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Ref  string `json:"ref"`
 }
 
 // Activity is one harness-tool use a post reports.

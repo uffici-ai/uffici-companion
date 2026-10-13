@@ -259,17 +259,6 @@ func TestPairRefusesAConfigItCannotUse(t *testing.T) {
 	}
 }
 
-func TestSleepForWaitsOrStops(t *testing.T) {
-	if err := sleepFor(context.Background(), time.Millisecond); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := sleepFor(ctx, time.Hour); err == nil {
-		t.Fatal("a stopped wait reported success")
-	}
-}
-
 // 🔴 #1966 review: a code someone else learned can be approved by an admin of another
 // org. The person who ran `uffici pair` sees the agent and org and can refuse.
 func TestAPairingThePersonRefusesWritesNothing(t *testing.T) {

@@ -156,6 +156,11 @@ type ScriptAttachment struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Ref  string `json:"ref"`
+	// ContentType and Data are the platform's copy of the file (#2679), served to
+	// a download granted for it — never on the wire's entry. Data is base64 in the
+	// script. An attachment without Data cannot be downloaded (`not_found`).
+	ContentType string `json:"contentType,omitempty"`
+	Data        []byte `json:"data,omitempty"`
 }
 
 // Step is one timeline entry. `Step` names which kind; the rest are that kind's
@@ -191,6 +196,19 @@ type Step struct {
 
 	// expectMemory: the memory op (`recall`, `remember`, `forget`, `unfold`).
 	Op string `json:"op,omitempty"`
+
+	// expectPost: when set, a matching post carries exactly this many attachments,
+	// each one an upload of this request that arrived intact (#2679).
+	Attachments *int `json:"attachments,omitempty"`
+
+	// expectUpload (#2679): `to` is the Files path it was saved at (absent: attached
+	// to the reply); `contains` a string its bytes must carry.
+	To       string `json:"to,omitempty"`
+	Contains string `json:"contains,omitempty"`
+
+	// interruptNextUpload (#2679): the next upload's connection drops after this
+	// many bytes of a PATCH, once.
+	AfterBytes int `json:"afterBytes,omitempty"`
 
 	// injectCancel
 	AfterFirstPost bool `json:"afterFirstPost,omitempty"`
@@ -228,6 +246,12 @@ type Assertions struct {
 	// MemoryOps is how many of each memory op reached the host, for the ops it
 	// names; an op it does not name is not asserted.
 	MemoryOps map[string]int `json:"memoryOps,omitempty"`
+	// Uploads, Downloads and UploadsResumed, when present, are exactly how many
+	// uploads were recorded, downloads served to their last byte, and uploads
+	// that resumed after a dropped connection (#2679).
+	Uploads        *int `json:"uploads,omitempty"`
+	Downloads      *int `json:"downloads,omitempty"`
+	UploadsResumed *int `json:"uploadsResumed,omitempty"`
 	// 🔴 There is deliberately no `unmetExpectations`. It existed, pinned to 0
 	// by the schema and read by nothing — and wiring it into the tally produced
 	// a SECOND note for every miss, restating the list of misses that is already
@@ -250,6 +274,7 @@ var knownSteps = map[string]bool{
 	"secondConnection": true, "wait": true,
 	"refuseNextQuestion": true, "restartHarness": true, "endHarnessSession": true,
 	"expectToolCall": true, "expectToolRerun": true, "expectMemory": true,
+	"interruptNextUpload": true, "expectUpload": true,
 }
 
 var knownMatchers = map[string]bool{"nonEmpty": true, "contains": true, "matches": true, "question": true}
@@ -413,6 +438,10 @@ func (s *Script) Validate() error {
 		case "expectMemory":
 			if !knownMemoryOp(step.Op) {
 				return fmt.Errorf("fixture: step %d expects memory op %q, which is not one of the four", i, step.Op)
+			}
+		case "interruptNextUpload":
+			if step.AfterBytes <= 0 {
+				return fmt.Errorf("fixture: step %d interrupts an upload after %d bytes; it must be after at least one, or nothing is resumed", i, step.AfterBytes)
 			}
 		case "expectToolCall":
 			if step.Name == "" {

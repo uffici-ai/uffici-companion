@@ -242,7 +242,19 @@
 									"card_unavailable",
 									"invalid_citation",
 									"forget_refused",
-									"archived"
+									"archived",
+									"attachment_unknown",
+									"transfer_denied",
+									"needs_approval",
+									"ask_unavailable",
+									"file_too_large",
+									"file_exists",
+									"transfer_incomplete",
+									"grant_expired",
+									"destination_refused",
+									"grant_refused",
+									"file_changed",
+									"checksum_mismatch"
 								]
 							},
 							"instruction": {

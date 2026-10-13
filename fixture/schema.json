@@ -164,7 +164,17 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string" },
-        "ref": { "type": "string" }
+        "ref": { "type": "string" },
+        "contentType": {
+          "type": "string",
+          "description": "The file's type, served on a download (#2679)."
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "maxLength": 1048576,
+          "description": "The platform's copy of the file, base64 (#2679): what a download granted for this attachment serves. Never on the wire's entry. Absent: the attachment cannot be downloaded."
+        }
       }
     },
     "step": {
@@ -193,6 +203,8 @@
             "expectToolCall",
             "expectToolRerun",
             "expectMemory",
+            "interruptNextUpload",
+            "expectUpload",
             "wait"
           ]
         },
@@ -211,6 +223,27 @@
         "name": { "type": "string", "minLength": 1 },
         "argumentsContain": { "type": "string", "minLength": 1 },
         "op": { "enum": ["recall", "remember", "forget", "unfold"] },
+        "attachments": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "expectPost (#2679): a matching post carries exactly this many attachments, each an upload of the request that arrived intact."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "description": "expectUpload (#2679): the Files path the upload was saved at. Absent: an upload attached to the reply."
+        },
+        "contains": {
+          "type": "string",
+          "minLength": 1,
+          "description": "expectUpload (#2679): a string the uploaded bytes carry."
+        },
+        "afterBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "interruptNextUpload (#2679): the next upload's connection drops after this many bytes of a PATCH, once; the companion must resume from the server's offset."
+        },
         "afterFirstPost": { "type": "boolean" },
         "afterMs": { "type": "integer", "minimum": 0 },
         "withinMs": { "type": "integer", "minimum": 0 },
@@ -249,6 +282,21 @@
           "type": "integer",
           "minimum": 0,
           "description": "When present, exactly how many of those tool calls were re-runs of a recorded call — zero included."
+        },
+        "uploads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many uploads were recorded (#2679)."
+        },
+        "downloads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many downloads were served to their last byte (#2679)."
+        },
+        "uploadsResumed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many recorded uploads resumed after a dropped connection (#2679)."
         },
         "memoryOps": {
           "$ref": "#/$defs/counts",

@@ -214,6 +214,9 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"tool-call-response":           ToolCallResponse{},
 		"tool-catalog-response":        ToolCatalogResponse{},
 		"tool-rerun-request":           ToolRerunRequest{},
+		"transfer-complete-response":   TransferCompleteResponse{},
+		"transfer-request":             TransferRequest{},
+		"transfer-response":            TransferResponse{},
 	}
 	manifest, err := contract.LoadManifest()
 	if err != nil {

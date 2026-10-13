@@ -86,13 +86,24 @@ because only it knows the interfaces it was written against and how its harness
 numbers releases; the companion never parses a harness version. A plugin
 that omits it is one that predates it.
 
+`capabilities`, optional, is what the plugin asks the companion to do for it —
+**the plugin's choice, never the companion's**, because only the plugin knows
+what its harness needs. Today one: `prefetchAttachments` `{maxBytes}` asks the
+companion to download a brief's attachments into the [workspace](#the-workspace)
+before handing the brief over, up to `maxBytes` per brief (the companion's own
+cap may be lower). A plugin that omits it is asked nothing and gets nothing
+prefetched; an unknown capability is ignored.
+
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
 `orgSlug`. `features`, optional, lists what this companion can carry beyond what
 every v1 companion does, so a newer plugin never sends an older companion a field
 it would drop: `question` means a `post` may carry a question; `redelivery` means
 a restarted harness process is handed again every request its predecessor had
 accepted; `tools` means the plugin may call [`tools.list`](#toolslist) and
-[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `rerun`, only ever beside `tools`, means the plugin may call [`tools.rerun`](#toolsrerun). `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. An
+[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `rerun`, only ever beside `tools`, means the plugin may call [`tools.rerun`](#toolsrerun). `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. `files` means the plugin may call
+[`files.download` and `files.upload`](#filesdownload-filesupload), and the hello
+then also carries `workspace`: the workspace's absolute path **as the companion
+sees it**, which every `localPath` on this wire is relative to. An
 absent list means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
@@ -191,6 +202,13 @@ harness's account of itself, and is never treated as a Uffici tool call. Never a
 tool's arguments or its result.
 
 Both are sent only to a companion whose `hello` lists the `tools` feature.
+
+`attachments`, optional, are files the post carries — at most twenty, each
+`{id, name, ref}` exactly as a [`files.upload`](#filesdownload-filesupload)
+without `to` answered it on the same request. The bytes were uploaded before
+the post; Uffici refuses an attachment it did not record for the request, and
+the post then fails like any refused post. Sent only to a companion whose
+`hello` lists the `files` feature.
 
 ### `done` — plugin → companion
 
@@ -298,6 +316,25 @@ refused with `not_permitted` and nothing is sent — and each is sent at most on
 - Facts, queries and hits never reach a log line. The companion logs one line per op: the op, the request and the class.
 - Sent only to a companion whose `hello` lists the `memory` feature, which it announces only when it serves all four.
 
+#### `files.download`, `files.upload`
+
+Files between the organization in Uffici and the [workspace](#the-workspace) on
+this machine, for the request the plugin is answering. The same two ops for every
+plugin: how a harness shows an image or sends a document is its plugin's
+business, never the companion's. **The bytes never ride this wire** — a call
+carries paths, sizes and ids; the companion moves the file itself, and resumes it
+after a dropped connection.
+
+- **`files.download`** `{requestId, attachmentId | path}` → `{localPath, size, contentType}`. Exactly one of `attachmentId` (an entry attachment's `id`, as a brief or an opener carried it) and `path` (a path in the organization's Files). The file lands at `conversations/<conversationId>/<attachmentId>-<name>` or `files/<path>`; `localPath` says which, relative to the workspace. An attachment never changes once posted, so one already in the workspace is answered from disk with nothing sent to Uffici.
+- **`files.upload`** `{requestId, localPath, to?, overwrite?}` → `{ref, id, name, size}` or `{path, size}`. `localPath` is relative to the workspace, or absolute and inside it. Without `to`, the file is attached to the request's reply: the next `post` carries it, and `{ref, id, name}` is that attachment. With `to`, it is saved into Files at that path and the answer is the `path` it got; `overwrite: true` replaces a file already there, which asks a person first.
+- A `requestId` the companion did not deliver is `not_permitted`, and nothing is sent.
+- 🔴 **A path the workspace fence refuses** — a `..`, a path outside the workspace, a link leading out of it, a hidden name such as `.env` or `.ssh` — is `not_permitted` with `upstream` `{"class": "path_refused"}` and a sentence. A `localPath` naming no regular file is `malformed_payload` with `{"class": "local_file_missing"}`. Neither ever reaches Uffici.
+- A refusal or failure from Uffici is `upstream_failed`, with Uffici's class in `upstream` (`transfer_denied`, `needs_approval`, `file_exists`, `file_too_large`, `destination_refused`, …) and its sentence as the `instruction`. A download whose bytes do not match Uffici's size or checksum is discarded and answered `{"class": "checksum_mismatch"}` or `{"class": "size_mismatch"}`.
+- A transfer dropped mid-file resumes from where it stopped, inside the same call: an upload from the offset Uffici holds, a download from the bytes already written. The call's `deadlineMs` bounds the whole transfer, so a plugin moving a large file gives the call a long deadline.
+- A request that is stopped, superseded, expires or closes takes its transfers with it, and nothing half-written is left in the workspace.
+- Neither paths, file names nor anything Uffici granted reach a log line. The companion logs one line per transfer: the op, the request, a transfer id, the byte count and the class.
+- Sent only to a companion whose `hello` lists the `files` feature.
+
 ### `result` — companion → plugin
 
 The one answer to a `call`. Fields: `callId`, then **exactly one** of `payload` (success) or `error`.
@@ -338,6 +375,59 @@ one**: it maps the platform's bounded read one to one.
 - `author`: `type` (`member`, `agent`, `correspondent`, `system`), `id`, `label`, optional `handle` — the agent's `@slug`, so the model can address it — and `self`, true for the answering agent's own entries.
 - `kind`: `message`, `tool_line`, `tombstone`, `summary` — **and anything else**, see forward compatibility. A `summary` arrives on an opener, authored by the platform (`system`): its text stands for earlier messages — a header line saying what it covers and how to read them, then the summary — or is one sentence saying earlier messages are not shown. A reader renders it as written, with no author label.
 - `attachments`: `id`, `name`, `ref`. By reference; bytes never ride this wire.
+  When the plugin's hello asked for `prefetchAttachments`, each attachment of a
+  brief's `delta` also carries either `localPath` — the file is in the workspace,
+  at that path relative to it — or `prefetchError` `{class}`: it is not, because it
+  was over the budget (`over_budget`), Uffici refused it, or the transfer failed.
+  Such an attachment can still be fetched with `files.download`. An opener's
+  entries are never prefetched.
+
+## The workspace
+
+The one directory the companion reads and writes for the harness: every file a
+call names, and every file it downloads, is inside it.
+
+- **Where it is.** `$UFFICI_WORKSPACE` when set; else the `workspace` the
+  plugin's install manifest names (a path inside the harness's home, recorded by
+  `uffici setup`); else `$UFFICI_HOME/workspace`. In a pod, a volume both
+  containers mount at the same path. `uffici doctor` prints it and whether the
+  companion can write to it, and the companion's `hello` names it.
+- **Its layout**: `conversations/<conversationId>/` for attachments,
+  `files/<path>` for files downloaded from Files, and anything the harness writes
+  there itself. `.uffici/` is the companion's own and is refused to every call.
+- 🔴 **The fence.** Every path a call names is resolved through the
+  filesystem's own links to inside the workspace, or refused: a `..` segment, a
+  path outside it, a link that leads out of it, and any hidden name — a segment
+  starting with `.`, so `.env` or `~/.ssh/id_ed25519` — unless the machine's owner
+  set `UFFICI_WORKSPACE_ALLOW_DOTFILES=1`. `.uffici` is refused in any letter
+  case, dotfiles allowed or not. A refusal is a call result, never a crash.
+- 🔴 **The fence holds at the act, not only at the check.** Every open, file
+  created, directory made, rename and removal goes through the workspace opened
+  once as a root, never through a path string: a directory swapped for a link
+  after the path was checked leads nowhere outside the workspace. So a link
+  inside the workspace is followed only when its target is RELATIVE and stays
+  inside; a link with an absolute target is refused even when it points inside.
+  A file is uploaded only when it is a regular file with one name — a FIFO, a
+  device or a hard link is refused. A downloaded file's mode is set on the open
+  file before it is moved into place.
+- **Where it may not be.** The workspace may not be `$UFFICI_HOME` or a
+  directory containing it — that would put the agent key inside the fence; the
+  companion then serves no file op. Inside it, the default, is fine.
+- **Resuming.** A download dropped mid-file resumes only when Uffici named both
+  an `ETag` (so `If-Range` can refuse a changed file) and a CRC32C (so the result
+  is checked whole); otherwise it starts again from zero. A server that goes
+  silent — no headers for 30 seconds, or no bytes for 60 — fails the attempt,
+  which is retried.
+- **Prefetch.** A brief's prefetch runs for at most 15 seconds, or a quarter of
+  the time left to the request when that is less, and never holds the
+  companion's other work: a stop for the request reaches the plugin at once and
+  ends the prefetch, and no brief follows it.
+- **Attachment ids** become part of a file name (`<attachmentId>-<name>`), so an
+  `attachmentId` carrying a `-` is refused with `path_refused`.
+- **Settings**: `UFFICI_UPLOAD_CHUNK_BYTES` (an upload's chunk, 16 MiB by default
+  and at most 32 MiB) and `UFFICI_PREFETCH_MAX_BYTES` (the companion's own cap on
+  a brief's prefetch, 50 MiB by default; the plugin's `maxBytes` can only lower
+  it).
 
 ## The context
 

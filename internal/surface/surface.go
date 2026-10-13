@@ -62,6 +62,23 @@ type Surface struct {
 	// support is the ATTACHED plugin's statement of the harness versions it
 	// supports (#2414), nil while none is connected or when it predates it.
 	support *wire.HarnessSupport
+	// prefetch is the ATTACHED plugin's ask for attachment prefetch (#2673), nil
+	// while none is connected or when it asked for none.
+	prefetch *wire.PrefetchAttachments
+	// workspace is the workspace's path, named in the hello beside `files`.
+	workspace string
+}
+
+// PrefetchAsked reports the connected plugin's prefetch budget and whether it
+// asked for prefetch at all (#2673) — 🔴 the plugin's choice: a plugin that did
+// not ask gets nothing prefetched.
+func (s *Surface) PrefetchAsked() (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prefetch == nil {
+		return 0, false
+	}
+	return s.prefetch.MaxBytes, true
 }
 
 // HarnessFacts reports the harness the last plugin said it translates for, or
@@ -131,6 +148,9 @@ type Options struct {
 	// Calls maps a `call` op to its handler (#2028). An op missing here is
 	// answered `unknown_op`, never a close.
 	Calls map[string]CallHandler
+	// Workspace is the workspace's path as this companion sees it (#2673), named
+	// in the hello beside the `files` feature; empty serves no files feature.
+	Workspace string
 }
 
 // New builds a Surface over a listener and a request manager.
@@ -155,7 +175,10 @@ func New(listener contracts.Listener, manager *requests.Manager, options Options
 	if version == "" {
 		version = "0.0.0-dev"
 	}
-	return &Surface{listener: listener, manager: manager, token: options.Token, log: logger, version: version, calls: options.Calls}, nil
+	return &Surface{
+		listener: listener, manager: manager, token: options.Token, log: logger, version: version,
+		calls: options.Calls, workspace: options.Workspace,
+	}, nil
 }
 
 // Serve accepts connections until the context ends or the listener closes.
@@ -210,6 +233,11 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 	s.pluginVersion = hello.PluginVersion
 	s.drift = hello.Drift
 	s.support = hello.HarnessSupport
+	s.prefetch = nil
+	if hello.Capabilities != nil && hello.Capabilities.PrefetchAttachments != nil {
+		asked := *hello.Capabilities.PrefetchAttachments
+		s.prefetch = &asked
+	}
 	s.mu.Unlock()
 	s.log.Info("plugin connected",
 		slog.String("conn", connID),
@@ -220,9 +248,15 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
 		slog.Bool("driftReported", hello.Drift != nil),
 		slog.String("harnessInRange", supportVerdict(hello.HarnessSupport)),
+		slog.Bool("prefetchAsked", hello.Capabilities != nil && hello.Capabilities.PrefetchAttachments != nil),
 	)
 
-	if err := sink.sendCompanionHello(ctx, s.version, s.features()); err != nil {
+	features := s.features()
+	workspace := ""
+	if slices.Contains(features, wire.FeatureFiles) {
+		workspace = s.workspace
+	}
+	if err := sink.sendCompanionHello(ctx, s.version, features, workspace); err != nil {
 		s.closeWith(conn, string(wire.ReasonShuttingDown), connID, "could not answer hello")
 		return
 	}
@@ -518,6 +552,7 @@ func (s *Surface) release(connID string) {
 	s.attachedConn = nil
 	s.drift = nil
 	s.support = nil
+	s.prefetch = nil
 	s.mu.Unlock()
 	s.manager.Detach(connID)
 }
@@ -605,8 +640,8 @@ func (f *frameSink) sendRaw(ctx context.Context, raw []byte) error {
 	return f.conn.Send(bounded, raw)
 }
 
-func (f *frameSink) sendCompanionHello(ctx context.Context, version string, features []string) error {
-	return f.send(ctx, map[string]any{
+func (f *frameSink) sendCompanionHello(ctx context.Context, version string, features []string, workspace string) error {
+	hello := map[string]any{
 		"v": wire.Version, "type": "hello", "companionVersion": version,
 		// 🔴 What this companion carries beyond every v1 companion: a plugin sends a
 		// question only to a companion that says it can relay one (#2232), and leaves
@@ -614,7 +649,12 @@ func (f *frameSink) sendCompanionHello(ctx context.Context, version string, feat
 		// (#2273), and calls the agent's tools only through a companion that serves
 		// them (#2349).
 		"features": features,
-	})
+	}
+	// Beside `files` only (#2673): every localPath on the wire is relative to it.
+	if workspace != "" {
+		hello["workspace"] = workspace
+	}
+	return f.send(ctx, hello)
 }
 
 // features is what this companion's hello advertises. 🔴 `tools` only when both
@@ -637,6 +677,12 @@ func (s *Surface) features() []string {
 	if s.calls[wire.OpMemoryRecall] != nil && s.calls[wire.OpMemoryRemember] != nil &&
 		s.calls[wire.OpMemoryForget] != nil && s.calls[wire.OpMemoryUnfold] != nil {
 		features = append(features, wire.FeatureMemory)
+	}
+	// 🔴 `files` only when BOTH file ops are served and the workspace is known
+	// (#2673): a plugin told so registers its file tools and resolves every
+	// localPath against the workspace the hello names.
+	if s.calls[wire.OpFilesDownload] != nil && s.calls[wire.OpFilesUpload] != nil && s.workspace != "" {
+		features = append(features, wire.FeatureFiles)
 	}
 	return features
 }
@@ -738,9 +784,15 @@ func wireEntries(entries []contracts.Entry) []map[string]any {
 		if len(entry.Attachments) > 0 {
 			attachments := make([]map[string]any, 0, len(entry.Attachments))
 			for _, attachment := range entry.Attachments {
-				attachments = append(attachments, map[string]any{
-					"id": attachment.ID, "name": attachment.Name, "ref": attachment.Ref,
-				})
+				mapped := map[string]any{"id": attachment.ID, "name": attachment.Name, "ref": attachment.Ref}
+				// The companion's own facts, present only when the plugin asked for
+				// prefetch (#2673): where the file is, or why it is not there.
+				if attachment.LocalPath != "" {
+					mapped["localPath"] = attachment.LocalPath
+				} else if attachment.PrefetchClass != "" {
+					mapped["prefetchError"] = map[string]any{"class": attachment.PrefetchClass}
+				}
+				attachments = append(attachments, mapped)
 			}
 			mapped["attachments"] = attachments
 		}
@@ -775,12 +827,16 @@ func questionOf(question *wire.Question) *contracts.Question {
 // host: the question (#2232), the citations and the activity (#2349). Nil when
 // the post carries none of them.
 func postExtrasOf(post *wire.Post) *contracts.PostExtras {
-	if post.Question == nil && len(post.Citations) == 0 && len(post.Activity) == 0 {
+	if post.Question == nil && len(post.Citations) == 0 && len(post.Activity) == 0 && len(post.Attachments) == 0 {
 		return nil
 	}
 	extras := &contracts.PostExtras{Question: questionOf(post.Question), Citations: post.Citations}
 	for _, a := range post.Activity {
 		extras.Activity = append(extras.Activity, contracts.Activity{Tool: a.Tool, Summary: a.Summary})
+	}
+	// The uploads this reply carries (#2673), by reference.
+	for _, a := range post.Attachments {
+		extras.Attachments = append(extras.Attachments, contracts.Attachment{ID: a.ID, Name: a.Name, Ref: a.Ref})
 	}
 	return extras
 }

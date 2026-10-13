@@ -103,6 +103,8 @@ type Post struct {
 	// Citations and Activity are what the post reported (#2349).
 	Citations []string
 	Activity  []protocol.PostActivity
+	// Attachments are the uploads the post carried (#2673).
+	Attachments []protocol.Attachment
 }
 
 // Close is one recorded close.
@@ -163,6 +165,8 @@ type Double struct {
 	// memoryCalls and facts are the agent's memory (#2385).
 	memoryCalls []MemoryCall
 	facts       map[string][]*doubleFact
+	// files is the file side (#2673): grants, the tus uploads, the downloads.
+	files *transferState
 }
 
 type ringed struct {
@@ -322,6 +326,12 @@ func (d *Double) serve(w http.ResponseWriter, r *http.Request) {
 		d.control(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/requests/") && strings.HasSuffix(path, "/close"):
 		d.closeRoute(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/requests/") && strings.Contains(path, "/transfers"):
+		d.transferRoute(w, r)
+	case path == "/v1/files/download":
+		d.download(w, r)
+	case strings.HasPrefix(path, "/v1/files/uploads"):
+		d.uploads(w, r)
 	case r.Method == http.MethodPost && path == "/v1/tool-calls":
 		d.toolCall(w, r)
 	case r.Method == http.MethodPost && path == "/v1/tool-calls/rerun":
@@ -678,7 +688,7 @@ func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID str
 		d.postsByID[body.PostID] = messageID
 		d.posts = append(d.posts, Post{
 			MessageID: messageID, PostID: body.PostID, RequestID: body.RequestID, Text: body.Text,
-			Question: body.Question, Citations: body.Citations, Activity: body.Activity,
+			Question: body.Question, Citations: body.Citations, Activity: body.Activity, Attachments: body.Attachments,
 		})
 	}
 	d.mu.Unlock()

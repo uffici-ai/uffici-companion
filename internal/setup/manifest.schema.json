@@ -39,6 +39,12 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*/([A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*$"
     },
+    "workspace": {
+      "description": "Optional. The directory the companion moves files in and out of for this harness, relative to the harness home: one or more segments, none starting with a dot. `uffici setup` records it, and the companion uses it unless UFFICI_WORKSPACE is set; absent, the companion's own home holds the workspace. A harness that must be told to read files there is told through `config`, like any other setting.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*$"
+    },
     "homeEnv": {
       "description": "The environment variable naming the harness home (`HERMES_HOME`).",
       "type": "string",

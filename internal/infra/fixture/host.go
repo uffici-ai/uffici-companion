@@ -48,6 +48,9 @@ type Host struct {
 	// rung is every request a ring delivered, by id, to its conversation — never
 	// forgotten at close, as the gateway host's memory is not (#2349).
 	rung map[string]string
+	// files is the file side (#2679): the scripted attachments' bytes, the grants
+	// minted, and the uploads received.
+	files *filesState
 }
 
 // ToolCallRecord is one tool call that reached the host (#2349). The arguments
@@ -83,6 +86,8 @@ type PostRecord struct {
 	// Citations and Activity are what the post reported (#2349).
 	Citations []string
 	Activity  []contracts.Activity
+	// Attachments are the uploads the post carried, by reference (#2679).
+	Attachments []contracts.Attachment
 }
 
 // CloseRecord is one closed request.
@@ -118,9 +123,15 @@ func New(script *Script) (*Host, error) {
 	if script.Logs != nil && script.Logs.HarnessLevel != "" {
 		recorder.SetShipping(true, script.Logs.HarnessLevel)
 	}
+	files := newFilesState()
+	for _, name := range script.sortedConversationNames() {
+		conversation := script.Conversations[name]
+		files.holdAttachments(conversation.ID, conversation.Entries)
+	}
 	return &Host{
 		Recorder: recorder,
 		script:   script, store: built, requests: map[string]openRequest{}, rung: map[string]string{},
+		files: files,
 	}, nil
 }
 
@@ -199,6 +210,7 @@ func (h *Host) Post(_ context.Context, requestID, conversationID, text string, e
 	h.posts = append(h.posts, PostRecord{
 		RequestID: requestID, ConversationID: conversationID, Text: text, At: time.Now(),
 		Question: extras.Question, Citations: extras.Citations, Activity: extras.Activity,
+		Attachments: append([]contracts.Attachment(nil), extras.Attachments...),
 	})
 	return fmt.Sprintf("msg_%03d", len(h.posts)), nil
 }
@@ -415,6 +427,7 @@ func (h *Host) Close() error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.open = false
+	h.closeFiles()
 	return nil
 }
 
@@ -461,5 +474,13 @@ func (h *Host) ReadCounts() (readSince, readOpener int) { return h.store.counts(
 // AppendEntries adds entries to a conversation mid-run, which is how a script
 // makes a message arrive while the agent is answering.
 func (h *Host) AppendEntries(conversation string, entries []ScriptEntry) error {
-	return h.store.appendEntries(conversation, entries)
+	if err := h.store.appendEntries(conversation, entries); err != nil {
+		return err
+	}
+	if scripted, ok := h.script.Conversations[conversation]; ok {
+		h.mu.Lock()
+		h.files.holdAttachments(scripted.ID, entries)
+		h.mu.Unlock()
+	}
+	return nil
 }

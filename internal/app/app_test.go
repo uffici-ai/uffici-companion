@@ -195,6 +195,8 @@ func TestRunNeedsAScript(t *testing.T) {
 // RESUMED one afterwards, which is what a real harness does.
 type testPlugin struct {
 	conn *ws.Conn
+	// hello is the companion's answer to this plugin's hello.
+	hello map[string]any
 
 	mu   sync.Mutex
 	seen map[string]bool
@@ -301,7 +303,7 @@ func attachOnce(ctx context.Context, client *http.Client, token string, extra ma
 		_ = conn.CloseNow()
 		return nil, err
 	}
-	return &testPlugin{conn: conn, seen: map[string]bool{}}, nil
+	return &testPlugin{conn: conn, hello: frame, seen: map[string]bool{}}, nil
 }
 
 func (p *testPlugin) send(t *testing.T, frame map[string]any) {

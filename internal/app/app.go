@@ -34,8 +34,10 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/registry"
 	"github.com/uffici-ai/uffici-companion/internal/requests"
 	"github.com/uffici-ai/uffici-companion/internal/runner"
+	"github.com/uffici-ai/uffici-companion/internal/setup"
 	"github.com/uffici-ai/uffici-companion/internal/surface"
 	"github.com/uffici-ai/uffici-companion/internal/tools"
+	"github.com/uffici-ai/uffici-companion/internal/transfer"
 	wirepkg "github.com/uffici-ai/uffici-companion/internal/wire"
 )
 
@@ -104,6 +106,19 @@ type Config struct {
 	// AgentKey is `UFFICI_AGENT_KEY`, the pod shape's Secret mount. The file in
 	// $UFFICI_HOME wins when both exist. 🔴 SECRET-CLASS.
 	AgentKey string
+	// Workspace is the one directory files are moved in and out of (#2673):
+	// `UFFICI_WORKSPACE`, else the workspace `uffici setup` recorded from the
+	// plugin's manifest, else `$UFFICI_HOME/workspace`. WorkspaceFrom says which.
+	Workspace     string
+	WorkspaceFrom string
+	// WorkspaceAllowDotfiles is `UFFICI_WORKSPACE_ALLOW_DOTFILES=1`: the fence
+	// then admits hidden names inside the workspace.
+	WorkspaceAllowDotfiles bool
+	// UploadChunkBytes is an upload's tus chunk (`UFFICI_UPLOAD_CHUNK_BYTES`).
+	UploadChunkBytes int64
+	// PrefetchMaxBytes caps a brief's attachment prefetch
+	// (`UFFICI_PREFETCH_MAX_BYTES`); the plugin's ask can only lower it.
+	PrefetchMaxBytes int64
 }
 
 // Env is the environment, injected so tests need no process state.
@@ -204,7 +219,63 @@ func LoadConfig(env Env, flags Config) (Config, error) {
 	default:
 		return config, fmt.Errorf("UFFICI_LOG_LEVEL_HARNESS is %q; use debug, info, warn or error", env("UFFICI_LOG_LEVEL_HARNESS"))
 	}
+	if err := loadTransferConfig(env, &config); err != nil {
+		return config, err
+	}
 	return config, nil
+}
+
+// loadTransferConfig reads the workspace and the transfer settings (#2673).
+//
+// 🔴 The workspace's default is the PLUGIN's, through its manifest as `uffici
+// setup` recorded it — this program names no harness's directory of its own.
+func loadTransferConfig(env Env, config *Config) error {
+	if config.Workspace == "" {
+		config.Workspace, config.WorkspaceFrom = strings.TrimSpace(env("UFFICI_WORKSPACE")), "UFFICI_WORKSPACE"
+	}
+	if config.Workspace == "" {
+		if record, err := setup.ReadRecord(config.Home); err == nil && record.Workspace != "" {
+			config.Workspace, config.WorkspaceFrom = record.Workspace, "the plugin's manifest, recorded by uffici setup"
+		}
+	}
+	if config.Workspace == "" {
+		config.Workspace, config.WorkspaceFrom = filepath.Join(config.Home, "workspace"), "the default"
+	}
+	if !filepath.IsAbs(config.Workspace) {
+		return fmt.Errorf("UFFICI_WORKSPACE is %q; it must be an absolute path", config.Workspace)
+	}
+	config.Workspace = filepath.Clean(config.Workspace)
+	switch value := strings.TrimSpace(env("UFFICI_WORKSPACE_ALLOW_DOTFILES")); value {
+	case "", "0":
+	case "1":
+		config.WorkspaceAllowDotfiles = true
+	default:
+		return fmt.Errorf("UFFICI_WORKSPACE_ALLOW_DOTFILES is %q; use 1 or leave it unset", value)
+	}
+	chunk, err := byteSetting(env, "UFFICI_UPLOAD_CHUNK_BYTES", transfer.DefaultChunkBytes, 1, transfer.MaxChunkBytes)
+	if err != nil {
+		return err
+	}
+	config.UploadChunkBytes = chunk
+	prefetch, err := byteSetting(env, "UFFICI_PREFETCH_MAX_BYTES", transfer.DefaultPrefetchMaxBytes, 1, 1<<53)
+	if err != nil {
+		return err
+	}
+	config.PrefetchMaxBytes = prefetch
+	return nil
+}
+
+// byteSetting reads a byte count from the environment, bounded.
+func byteSetting(env Env, name string, fallback, lowest, highest int64) (int64, error) {
+	raw := strings.TrimSpace(env(name))
+	if raw == "" {
+		return fallback, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || value < lowest || value > highest {
+		return 0, fmt.Errorf("%s is %q; use a number of bytes from %d to %d", name, raw, lowest, highest)
+	}
+	return value, nil
 }
 
 // loadGatewayConfig reads what only the gateway kind needs, and refuses what it
@@ -312,15 +383,34 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 		// state machine, which takes one observer.
 		observer = observe.Fanout(scriptRunner.Observer(), observer)
 	}
-	manager := requests.New(host, requests.Options{Observer: observer})
+	// The surface, for /healthz (#2406) and the prefetch ask (#2673): published
+	// once built, read atomically, because both read before it exists.
+	var served atomic.Pointer[surface.Surface]
+
+	// Files between Uffici and the workspace (#2673): only over a host that moves
+	// them. The engine aborts a request's transfers when the request ends, so it
+	// watches the state machine beside everything else.
+	files, workspace := buildTransfers(config, host, logger, func() (int64, bool) {
+		if wire := served.Load(); wire != nil {
+			return wire.PrefetchAsked()
+		}
+		return 0, false
+	})
+	options := requests.Options{Observer: observer}
+	if files != nil {
+		options.Observer = observe.Fanout(files.Observer(), observer)
+		options.Prefetch = files.Prefetch
+		// A brief with attachments is delivered off the doorbell's goroutine
+		// (#2673): its failure is heard here, as OnRing's would be.
+		options.Report = func(requestID string, _ error) {
+			logger.Error("handling a ring", slog.String("request", requestID))
+		}
+	}
+	manager := requests.New(host, options)
 	control.manager = manager
 	// Filled in below, once the surface exists; /healthz reads it through
 	// logging.shipper, which is atomic, never through this variable.
 	var shipper *logship.Shipper
-
-	// The surface, for /healthz (#2406): published once built, read atomically,
-	// because the health handler serves before the surface exists.
-	var served atomic.Pointer[surface.Surface]
 
 	// The agent's Uffici tools (#2349), over whichever host is running. Built
 	// before the listener: /healthz reports the last catalog's size.
@@ -373,7 +463,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 	})
 	pushes := &logship.PushHandler{Shipper: shipper, Ring: logging.ring, Redactor: logging.redactor}
 	wire, err = surface.New(listener, manager, surface.Options{
-		Token: token, Logger: logger, Version: config.Version,
+		Token: token, Logger: logger, Version: config.Version, Workspace: workspace,
 		Calls: callHandlers(map[string]surface.CallHandler{
 			wireOpLogsPush:      pushes.Handle,
 			wirepkg.OpToolsList: toolCalls.List,
@@ -381,7 +471,7 @@ func Run(ctx context.Context, config Config, out io.Writer) (int, error) {
 			// A re-run of a recorded call (#2454): served beside the tool ops, so the
 			// hello advertises `rerun` with `tools`.
 			wirepkg.OpToolsRerun: toolCalls.Rerun,
-		}, (&memoryops.Handler{Host: host, Logger: logger.With("component", "memory")}).Handlers()),
+		}, (&memoryops.Handler{Host: host, Logger: logger.With("component", "memory")}).Handlers(), files.Handlers()),
 	})
 	if err != nil {
 		return ExitConfig, err
@@ -677,6 +767,11 @@ func report(logger *slog.Logger, result runner.Result) {
 		slog.Int("posts", result.Counts.Posts),
 		slog.Int("toolCalls", result.Counts.ToolCalls),
 		slog.Int("toolReruns", result.Counts.ToolReruns),
+		// The files (#2679): read by both e2e judges, pinned from the platform's root.
+		slog.Int("uploads", result.Counts.Uploads),
+		slog.Int("uploadsResumed", result.Counts.UploadsResumed),
+		slog.Int("downloads", result.Counts.Downloads),
+		slog.Int("attachmentsPosted", result.Counts.AttachmentsPosted),
 		slog.Int("redeliveries", result.Counts.Redeliveries),
 		slog.Int("unmet", len(result.Unmet)),
 	)
@@ -834,9 +929,17 @@ func buildGatewayHost(config Config, logger *slog.Logger, harness func() (string
 	if err != nil {
 		return nil, err
 	}
+	// A third pool, for a transfer's bytes (#2673) — and no whole-request
+	// timeout on it: a file takes as long as it takes, and the call's or the
+	// request's deadline bounds it instead.
+	filesClient, err := HTTPClient(config.CAFile)
+	if err != nil {
+		return nil, err
+	}
+	filesClient.Timeout = 0
 	reg, err := registry.New(registry.Config{AgentsHost: registry.KindGateway, Gateway: gateway.Options{
 		BaseURL: config.GatewayURL, Key: key, InstanceID: instanceID, Version: config.Version,
-		Harness: harness, Plugin: plugin, HTTPClient: httpClient, LogsHTTPClient: logsClient,
+		Harness: harness, Plugin: plugin, HTTPClient: httpClient, LogsHTTPClient: logsClient, FilesHTTPClient: filesClient,
 		Logger: logger.With(slog.String("component", "gateway")),
 	}})
 	if err != nil {
@@ -886,7 +989,55 @@ func loadFixture(path string) (*fixture.Script, *fixture.Host, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	// 🔴 The scripted host's bytes cross the gateway host's OWN client (#2679), so a
+	// fixture run proves the tus resume and the ranged download a companion runs.
+	host.UseBytesClient(func(baseURL string) fixture.BytesClient {
+		return &gateway.FilesClient{BaseURL: baseURL, UserAgent: gateway.ClientName + "/fixture"}
+	})
 	return script, host, nil
+}
+
+// buildTransfers builds the file transfer engine over a host that moves files,
+// and returns it with the workspace's real path — or nil and "" when the host
+// moves none or the workspace cannot be opened, which serves no file op and
+// announces no `files` feature rather than stopping the companion: a machine
+// whose disk refuses the workspace still answers in text.
+func buildTransfers(config Config, host contracts.AgentsHost, logger *slog.Logger, asked func() (int64, bool)) (*transfer.Engine, string) {
+	transferHost, ok := host.(contracts.TransferHost)
+	if !ok {
+		return nil, ""
+	}
+	root := config.Workspace
+	if root == "" {
+		root = filepath.Join(config.Home, "workspace")
+	}
+	ws, err := transfer.OpenWorkspace(root, config.WorkspaceAllowDotfiles, config.Home)
+	if err == nil {
+		var engine *transfer.Engine
+		engine, err = transfer.New(transfer.Options{
+			Host: transferHost, Workspace: ws, ChunkBytes: config.UploadChunkBytes,
+			PrefetchMaxBytes: config.PrefetchMaxBytes, Backoff: gateway.RetryDelay, PrefetchAsked: asked,
+			Logger: logger.With(slog.String("component", "files")),
+		})
+		if err == nil {
+			return engine, ws.Root()
+		}
+	}
+	// 🔴 Never the path or the error's text: both name the person's directories.
+	logger.Warn("the workspace could not be opened; files are not served", slog.String("error", errorKind(err)))
+	return nil, ""
+}
+
+// errorKind reduces a filesystem error to a closed word for a log line.
+func errorKind(err error) string {
+	switch {
+	case errors.Is(err, os.ErrPermission):
+		return "permission"
+	case errors.Is(err, os.ErrNotExist):
+		return "not_found"
+	default:
+		return "unavailable"
+	}
 }
 
 // callHandlers merges the call-op tables: the agent's memory (#2385) is four ops

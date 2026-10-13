@@ -13,6 +13,7 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	"github.com/uffici-ai/uffici-companion/internal/pairing"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/waits"
 )
 
 // pairer is what `uffici pair` asks of the agents host.
@@ -83,7 +84,7 @@ func Pair(ctx context.Context, config Config, out io.Writer, options PairOptions
 	}
 	sleep := options.Sleep
 	if sleep == nil {
-		sleep = sleepFor
+		sleep = waits.Sleep
 	}
 	harness := options.Harness
 	// The request's schema needs both facts; an unstated one is `unknown`, never "".
@@ -288,16 +289,4 @@ func instructionOf(err error) string {
 		return classified.Instruction
 	}
 	return "the agents host could not be reached; check the network and UFFICI_GATEWAY_URL."
-}
-
-// sleepFor waits `d`, or less when the context ends first.
-func sleepFor(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }

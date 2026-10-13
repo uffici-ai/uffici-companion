@@ -64,6 +64,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 - **`offset`** is the companion's agent's **committed** position when the run starts: the exclusive lower bound of the first delta. It advances only when a request closes as `answered` or `empty`, and **every ring starts at the offset committed so far**, as the platform's would. Cancelled, superseded, expired and errored leave it, so the next brief covers the union — entries nobody answered stay in range.
 - **`entries`** are in cursor order, strictly increasing. They are already bounded: the platform bounds, the fixture serves.
 - An entry's `author.self` marks the answering agent's own. A **delta omits** them; an **opener includes** them.
+- An entry's **`attachments`** are references (`id`, `name`, `ref`) as the wire carries them; an attachment may also carry **`contentType`** and **`data`** (base64) — the platform's copy of the file, served to a download granted for it and never on the wire's entry. One without `data` cannot be downloaded (`not_found`).
 - **`context`** (optional) is what that conversation's delta read carries, written in the brief's context shape (`blocks`, `tokens`, `bounded`, optional `missing`). It is served as written and never sized to the budget — the platform composes and sizes it, the fixture only serves it. Leave it out to play a platform that sends none; the plugin then keeps its static hint.
 
 ### `steps`
@@ -74,7 +75,7 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `appendEntries` | Adds entries mid-run — a message arriving while the agent answers |
 | `expectAck` | Waits for an ack on the current request: `outcome`, `session`, `withinMs` |
 | `expectOpener` / `expectNoOpener` | Whether **this** request earned an opener |
-| `expectPost` | Waits for a post: `matcher` (`nonEmpty`, `contains`, `matches`, `question`), `value`. `question` is met only by a post that carried a question — the question card, never a question asked in plain text |
+| `expectPost` | Waits for a post: `matcher` (`nonEmpty`, `contains`, `matches`, `question`), `value`. `question` is met only by a post that carried a question — the question card, never a question asked in plain text. With `attachments`, the post must carry exactly that many, each an upload of its request that arrived with the CRC32C its grant was minted for |
 | `expectNoPost` | Asserts no post arrives for this request within `forMs` |
 | `expectClose` | Waits for the close: `outcome` |
 | `expectOffset` | Reads the store: `conversation`, `cursor` |
@@ -85,6 +86,8 @@ Keyed by a name the steps use; `id` is what travels the wire.
 | `expectToolCall` | Waits for a tool call on the current request: `name`, optional `argumentsContain` (a substring of the call's arguments as JSON), `withinMs` |
 | `expectToolRerun` | Waits for a re-run of a recorded tool call (`tools.rerun`) on the current request: `withinMs` |
 | `expectMemory` | Waits for a memory op on the current request: `op` (`recall`, `remember`, `forget` or `unfold`), `withinMs` |
+| `expectUpload` | Waits for an upload on the current request that arrived intact: saved into Files at `to` when given, else attached to the reply; `contains` is a string its bytes must carry |
+| `interruptNextUpload` | The next upload's connection drops `afterBytes` into a PATCH, once — the bytes written so far kept, the answer lost. The companion must resume from the offset a `HEAD` reports |
 | `restartHarness` | Logs `restart the harness` and waits, `withinMs`, until a new harness process has had the open request redelivered. The run's outer driver restarts the harness on that line — `scripts/hermes-e2e.mjs` and the plugin's `dev/e2e.py` both do; a run with no driver fails the step |
 | `endHarnessSession` | Logs `end the harness session` with the conversation's wire id as `conversation`, then waits `withinMs` for the run's outer driver to end that conversation's session inside the real harness — both drivers run the plugin's `dev/end_session.py` in the harness's container, which ends Hermes's live rows for it in `state.db`. The step asserts nothing itself: the script's next ring must ack `fresh` and earn an opener. A run with no driver fails the step |
 | `wait` | `ms` |
@@ -97,11 +100,27 @@ would pass instantly while asserting nothing.
 ### `assert`
 
 The terminal tally: `ringsDelivered`, `acks`, `sessions`, `openersSent`,
-`posts`, `closes`, `cancels`, `toolCalls`, `toolReruns`, `memoryOps`. `toolCalls`, when present, is exactly
+`posts`, `closes`, `cancels`, `toolCalls`, `toolReruns`, `memoryOps`, `uploads`, `downloads`,
+`uploadsResumed`. `uploads`, `downloads` and `uploadsResumed`, when present, are exactly how many
+uploads were recorded, downloads served to their last byte, and recorded uploads that resumed
+after a dropped connection. `toolCalls`, when present, is exactly
 how many tool calls reached the scripted host — zero included, so a script can
 assert that none did. A re-run is a tool call and counts there too; `toolReruns`,
 when present, is exactly how many of them were re-runs. `memoryOps` counts each memory op it names, and only those. It is a **second, independent** check — a run can
 pass every step and still have done more than the script intended.
+
+## Files
+
+The scripted host moves files, so a run proves both file use cases with a real
+harness and no platform: it grants a download of a scripted attachment and an
+upload of any size and CRC32C, and records an upload only when every byte arrived
+with the checksum its grant names — attached to the request's next post, or saved
+at `to`. 🔴 The bytes cross a real HTTP hop: the host serves tus and ranged
+downloads on a loopback port, and the companion carries them with the gateway
+host's own client (`gateway.FilesClient`), resume included — never an in-memory
+hand-over that would prove the engine and not the client. The verdict line adds
+`uploads`, `uploadsResumed`, `downloads` and `attachmentsPosted`, which both e2e
+judges read.
 
 ## The verdict
 
@@ -171,6 +190,7 @@ asserting less than its author believed:
 - an `expectToolCall` with no `name`, which matches every call;
 - an `expectMemory` naming an op that is not one of the four, which nothing could meet;
 - memory taken down in a conversation the script does not declare;
+- an `interruptNextUpload` after no bytes, which would resume nothing;
 - a scripted result for a tool the script's `tools` do not list, or a tool listed twice;
 - cursors that do not strictly increase, which makes a delta range ambiguous;
 - **a script with no `ring` at all**, which could only ever prove the daemon starts.

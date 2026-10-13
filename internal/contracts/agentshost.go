@@ -151,6 +151,13 @@ type Attachment struct {
 	ID   string
 	Name string
 	Ref  string
+	// LocalPath is where the companion prefetched the file, relative to the
+	// workspace (#2673) — the companion's own fact, never the platform's. Empty
+	// when it was not prefetched.
+	LocalPath string
+	// PrefetchClass says why a prefetch the plugin asked for did not happen
+	// (`over_budget`, a platform class, …); empty when it did or was not asked.
+	PrefetchClass string
 }
 
 // Outcome is how a request closed.
@@ -328,6 +335,9 @@ type PostExtras struct {
 	Citations []string
 	// Activity is what the agent did with its harness's own tools, by name.
 	Activity []Activity
+	// Attachments are files uploaded on the same request, which the post
+	// carries by reference (#2673).
+	Attachments []Attachment
 }
 
 // Activity is one harness-tool use a post reports: a name and a summary, never

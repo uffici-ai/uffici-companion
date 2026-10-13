@@ -1,0 +1,11 @@
+{
+	"reason": "bytes never ride a JSON frame — they cross the files routes (#2667 decision 3)",
+	"value": {
+		"op": "upload",
+		"filename": "a.txt",
+		"size": 3,
+		"crc32c": "yZRlqg==",
+		"contentType": "text/plain",
+		"contentBase64": "YWJj"
+	}
+}

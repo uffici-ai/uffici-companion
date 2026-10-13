@@ -104,6 +104,11 @@ type Manager struct {
 	limits   Limits
 	observer Observer
 	now      func() time.Time
+	prefetch PrefetchFunc
+	report   func(requestID string, err error)
+	// background counts the deliveries running off their caller's goroutine
+	// (a brief with attachments to prefetch); tests wait on it.
+	background sync.WaitGroup
 
 	mu sync.Mutex
 	// byID and byConversation are two views of the same requests. The second is
@@ -143,7 +148,33 @@ type Options struct {
 	Observer Observer
 	// Now is the clock, injected so deadline and timeout tests do not sleep.
 	Now func() time.Time
+	// Prefetch, optional, is handed a brief's delta before the brief is sent
+	// (#2673) and returns it with what it fetched marked on the attachments. It
+	// runs for at most PrefetchWindow, OFF the goroutine that delivered the ring;
+	// a request withdrawn while it ran is not briefed.
+	Prefetch PrefetchFunc
+	// Report, optional, hears a delivery that failed off its caller's goroutine
+	// — what OnRing would otherwise have returned.
+	Report func(requestID string, err error)
 }
+
+// PrefetchMaxWindow bounds a brief's prefetch, whatever the request's deadline.
+const PrefetchMaxWindow = 15 * time.Second
+
+// PrefetchWindow is how long a brief's prefetch may run: a quarter of what is
+// left of the request, and never more than PrefetchMaxWindow — an attachment
+// that takes longer is handed over without its local path, never a brief that
+// misses its turn.
+func PrefetchWindow(now, deadline time.Time) time.Duration {
+	window := PrefetchMaxWindow
+	if !deadline.IsZero() {
+		window = min(window, deadline.Sub(now)/4)
+	}
+	return max(window, 0)
+}
+
+// PrefetchFunc prepares a brief's entries — the file transfer engine's prefetch.
+type PrefetchFunc func(ctx context.Context, requestID string, entries []contracts.Entry) []contracts.Entry
 
 // New builds a Manager over an AgentsHost.
 func New(host contracts.AgentsHost, options Options) *Manager {
@@ -159,6 +190,8 @@ func New(host contracts.AgentsHost, options Options) *Manager {
 		host:           host,
 		limits:         options.Limits.withDefaults(),
 		observer:       observer,
+		prefetch:       options.Prefetch,
+		report:         options.Report,
 		now:            now,
 		byID:           map[string]*Request{},
 		closed:         map[string]struct{}{},
@@ -376,6 +409,68 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		return nil
 	}
 
+	if m.prefetch != nil && hasAttachments(read.Entries) {
+		// 🔴 OFF the caller's goroutine (#2673 self-review H4). A ring is
+		// delivered on the doorbell's one dispatch goroutine, which also carries
+		// every other ring and the platform's cancel — a person's stop (Art. 14).
+		// A prefetch held there would hold the stop behind a slow download. The
+		// request keeps its `briefing` mark meanwhile, so nothing else briefs it.
+		m.background.Add(1)
+		go func() {
+			defer m.background.Done()
+			if err := m.prefetchThenBrief(ctx, request, read, sink, connID); err != nil && m.report != nil {
+				m.report(request.RequestID, err)
+			}
+		}()
+		return nil
+	}
+	return m.brief(ctx, request, read, sink, connID, read.Entries)
+}
+
+// prefetchThenBrief fetches a brief's attachments for at most PrefetchWindow,
+// then sends the brief — unless the request was withdrawn meanwhile.
+func (m *Manager) prefetchThenBrief(ctx context.Context, request *Request, read contracts.Read, sink PluginSink, connID string) error {
+	prefetchCtx, cancel := context.WithTimeout(ctx, PrefetchWindow(m.now(), request.Deadline))
+	defer cancel()
+	m.mu.Lock()
+	if request.State.Terminal() {
+		// Withdrawn before the prefetch began: nothing to fetch for.
+		request.briefing = false
+		m.mu.Unlock()
+		return nil
+	}
+	request.stopPrefetch = cancel
+	m.mu.Unlock()
+	entries := m.prefetch(prefetchCtx, request.RequestID, read.Entries)
+	m.mu.Lock()
+	request.stopPrefetch = nil
+	withdrawn := request.State.Terminal()
+	if withdrawn {
+		request.briefing = false
+	}
+	m.mu.Unlock()
+	if withdrawn {
+		// Cancelled while its attachments were fetched: the cancel reached the
+		// plugin, and the transfers were aborted with it.
+		return nil
+	}
+	return m.brief(ctx, request, read, sink, connID, entries)
+}
+
+// hasAttachments reports whether a delta carries an attachment to prefetch.
+func hasAttachments(entries []contracts.Entry) bool {
+	for _, entry := range entries {
+		for _, attachment := range entry.Attachments {
+			if attachment.ID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// brief sends a brief over the sink chosen at delivery.
+func (m *Manager) brief(ctx context.Context, request *Request, read contracts.Read, sink PluginSink, connID string, entries []contracts.Entry) error {
 	brief := Brief{
 		RequestID:      request.RequestID,
 		ConversationID: request.ConversationID,
@@ -385,7 +480,7 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		SinceCursor:    request.SinceCursor,
 		ThroughCursor:  request.ThroughCursor,
 		ResetSession:   request.ResetSession,
-		Delta:          read.Entries,
+		Delta:          entries,
 		Context:        read.Context,
 		ContextChanged: read.ContextChanged,
 	}
@@ -928,6 +1023,10 @@ func (m *Manager) remember(requestID string) {
 // newer request — the next ring would not supersede it, and the conversation
 // would hold two open requests.
 func (m *Manager) release(request *Request) {
+	if request.stopPrefetch != nil {
+		request.stopPrefetch()
+		request.stopPrefetch = nil
+	}
 	if m.byConversation[request.ConversationID] == request {
 		delete(m.byConversation, request.ConversationID)
 	}

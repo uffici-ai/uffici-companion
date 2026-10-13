@@ -184,6 +184,12 @@ func Run(ctx context.Context, opts Options, out io.Writer) int {
 		}, installed, do, func(format string, args ...any) { _, _ = fmt.Fprintf(out, format+"\n", args...) })
 		_, _ = fmt.Fprintf(out, "%s: %s\n", opts.Harness, line)
 		record.HarnessHome, record.PluginDir = installed.home, installed.manifest.PluginDir
+		// The workspace is the PLUGIN's to name (#2673): the companion carries no
+		// harness's directory of its own.
+		if installed.manifest.Workspace != "" {
+			record.Workspace = filepath.Join(installed.home, filepath.FromSlash(installed.manifest.Workspace))
+			_, _ = fmt.Fprintf(out, "workspace: %s\n", record.Workspace)
+		}
 	}
 
 	// What `uffici upgrade` reads, so it needs no flags (#2250). Written after

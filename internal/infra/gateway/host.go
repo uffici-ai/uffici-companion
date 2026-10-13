@@ -34,6 +34,7 @@ import (
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/waits"
 )
 
 // ClientName is how the companion names itself to the platform.
@@ -68,6 +69,17 @@ type Options struct {
 	// push must not share a connection pool with a call a person is waiting on.
 	// Nil builds a second default client.
 	LogsHTTPClient *http.Client
+	// FilesHTTPClient carries a transfer's bytes (#2673). 🔴 Its own pool, and no
+	// whole-request timeout: a file takes as long as it takes, and the call's or
+	// the request's deadline bounds it instead. Nil builds one.
+	FilesHTTPClient *http.Client
+	// FilesHeaderTimeout bounds the wait for a transfer answer's headers, and
+	// FilesIdleTimeout the wait for each read of a download's body: a server
+	// that stops sending is a failed attempt, retried, never a hang until the
+	// request's deadline. Zero takes DefaultFilesHeaderTimeout and
+	// DefaultFilesIdleTimeout.
+	FilesHeaderTimeout time.Duration
+	FilesIdleTimeout   time.Duration
 	// Logger receives classified lines only. Nil discards.
 	Logger *slog.Logger
 	// Now and Sleep are the clock, injected so tests neither wait nor race it.
@@ -79,6 +91,8 @@ type Options struct {
 type Host struct {
 	api       *client
 	logsAPI   *client
+	filesHTTP *http.Client
+	filesIdle time.Duration
 	version   string
 	harnessOf func() (string, string)
 	pluginOf  func() string
@@ -132,7 +146,7 @@ func New(options Options) (*Host, error) {
 	}
 	sleep := options.Sleep
 	if sleep == nil {
-		sleep = sleepContext
+		sleep = waits.Sleep
 	}
 	version := options.Version
 	if version == "" {
@@ -146,7 +160,17 @@ func New(options Options) (*Host, error) {
 			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		}
 	}
+	headerTimeout := options.FilesHeaderTimeout
+	if headerTimeout <= 0 {
+		headerTimeout = DefaultFilesHeaderTimeout
+	}
+	filesIdle := options.FilesIdleTimeout
+	if filesIdle <= 0 {
+		filesIdle = DefaultFilesIdleTimeout
+	}
 	return &Host{
+		filesHTTP: withHeaderTimeout(options.FilesHTTPClient, headerTimeout),
+		filesIdle: filesIdle,
 		api: &client{
 			base: base, key: options.Key, instanceID: options.InstanceID,
 			userAgent: ClientName + "/" + version, http: httpClient, now: now,
@@ -508,6 +532,11 @@ func (h *Host) Post(ctx context.Context, requestID, conversationID, text string,
 		for _, a := range extras.Activity {
 			body.Activity = append(body.Activity, protocol.PostActivity{Tool: a.Tool, Summary: a.Summary})
 		}
+		// Uploads completed on this request (#2673): the platform refuses one it
+		// did not record for it.
+		for _, a := range extras.Attachments {
+			body.Attachments = append(body.Attachments, protocol.Attachment{ID: a.ID, Name: a.Name, Ref: a.Ref})
+		}
 	}
 	var answer protocol.PostResponse
 	err = h.api.ticketed(ctx, conversationID, http.MethodPost,
@@ -642,15 +671,22 @@ func (h *Host) Close() error {
 
 // logFailure logs one classified control-plane failure: the family and the
 // class, never a body.
-func (h *Host) logFailure(family string, err error) {
+func (h *Host) logFailure(family string, err error) { logPlatformFailure(h.log, family, err) }
+
+// logPlatformFailure is logFailure for a logger that may be nil (the bytes
+// client's): the family and the class, never a body.
+func logPlatformFailure(log *slog.Logger, family string, err error) {
+	if log == nil {
+		return
+	}
 	var classified *Error
 	if errors.As(err, &classified) {
-		h.log.Warn("a platform call failed",
+		log.Warn("a platform call failed",
 			slog.String("family", family), slog.String("class", classified.Class),
 			slog.Int("status", classified.Status), slog.Bool("retryable", classified.Retryable))
 		return
 	}
-	h.log.Warn("a platform call failed", slog.String("family", family), slog.String("class", "context_ended"))
+	log.Warn("a platform call failed", slog.String("family", family), slog.String("class", "context_ended"))
 }
 
 // PlatformCloseClasses is the conversations API's closed close vocabulary: it
