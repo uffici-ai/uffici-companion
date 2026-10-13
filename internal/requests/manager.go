@@ -510,17 +510,40 @@ func (m *Manager) brief(ctx context.Context, request *Request, read contracts.Re
 
 	m.mu.Lock()
 	request.briefing = false
-	if !m.advanceLocked(request, StateDelivered) {
+	if request.State.Terminal() {
 		// Withdrawn while the brief was on the wire: nothing more to do for it.
 		m.mu.Unlock()
 		return nil
 	}
+	// 🔴 #2694: a request is created `delivered`, and the plugin may have
+	// answered already — a local socket acks before this goroutine gets the
+	// lock back. Moving it to `delivered` here undid that ack, and the ack sweep
+	// then briefed the harness a second time. The state is left as it is.
 	request.DeliveredAt = m.now()
 	request.ContextTokens = contextTokens(read.Context)
-	m.connOf[request.RequestID] = connID
+	// 🔴 The owner only while it is still the attached connection (#2694
+	// review): Detach purged this connection's entries if it went during the
+	// send, and writing it back refused the reconnected plugin's frames as
+	// `wrong_connection`. A replaced send records its owner when it re-briefs.
+	if m.connID == connID {
+		m.connOf[request.RequestID] = connID
+	}
+	// 🔴 #2694: the connection was replaced while this send was in flight, and
+	// the request is still unanswered — un-acked, or reopened by BindProcess for
+	// a new harness process. The attach's RedeliverOpen skipped it as still
+	// briefing, so nothing else would brief the new connection: this send does.
+	// An acked request a same-process reconnect kept is not re-briefed.
+	// redeliver claims it under its own lock, so a RedeliverOpen racing this one
+	// still briefs it once.
+	replaced := m.sink != nil && m.connID != connID && request.State == StateDelivered
 	m.mu.Unlock()
 
+	// An ack that landed during the send is observed BEFORE this line, so the
+	// frame log may show the ack ahead of its brief (#2694 review); both happened.
 	m.observer.BriefSent(request.RequestID, request.ConversationID, len(read.Entries), charsOf(read.Entries))
+	if replaced {
+		return m.redeliver(ctx, request)
+	}
 	return nil
 }
 
@@ -624,31 +647,63 @@ func (m *Manager) OnAck(ctx context.Context, connID, requestID string, outcome A
 	m.observer.Acked(requestID, outcome, session)
 
 	if outcome == AckRejected {
+		// 🔴 Back to `delivered` first (#2694 review): the send no longer moves a
+		// request there, so a rejection left in `acked` hid the redelivered brief
+		// from the ack sweep and from RedeliverOpen — nobody acking it meant it
+		// sat until its deadline instead of reaching `redelivery_exhausted`.
+		// Only the rejection's own move re-briefs: a restart that reopened the
+		// request meanwhile has its new process briefed already.
+		m.mu.Lock()
+		terminal := request.State.Terminal()
+		moved := request.State == StateAcked && m.advanceLocked(request, StateDelivered)
+		m.mu.Unlock()
+		if terminal {
+			return ErrClosedRequest
+		}
+		if !moved {
+			return nil
+		}
 		return m.redeliver(ctx, request)
 	}
 	if outcome == AckDeferred || !session.EarnsOpener() {
 		// 🔴 A resumed session reads NOTHING here. The turn answers either way, so
 		// the only evidence of getting this wrong is an opener read per turn.
-		if !m.advance(request, StatePosting) {
-			return ErrClosedRequest
-		}
-		return nil
+		return m.advanceFrom(request, StateAcked, StatePosting)
 	}
 
 	m.mu.Lock()
-	if !m.advanceLocked(request, StateOpening) {
+	if request.State != StateAcked || !m.advanceLocked(request, StateOpening) {
+		terminal := request.State.Terminal()
 		m.mu.Unlock()
-		return ErrClosedRequest
+		if terminal {
+			return ErrClosedRequest
+		}
+		// Reopened for a new harness process since this ack (#2694): the new
+		// process is briefed afresh, and this ack has nothing left to do.
+		return nil
 	}
 	// 🔴 The context arrived with the brief, before this ack, and sits in the
 	// same system-side budget the plugin declared — so the opener gets what is
 	// left. The number is the platform's; the companion estimates nothing.
-	sink, budget := m.sink, openerBudget(m.budget, request.ContextTokens)
+	budget := openerBudget(m.budget, request.ContextTokens)
 	m.mu.Unlock()
 
 	entries, err := m.host.ReadOpener(ctx, request.ConversationID, request.ThroughCursor, budget)
 	if err != nil {
 		return m.fail(ctx, request, fmt.Errorf("reading the opener for %s: %w", requestID, err))
+	}
+	// 🔴 The sink is read AFTER the opener (#2698): a same-process reconnect
+	// during the read replaced it, and the harness on the new connection is still
+	// working on this brief. A request no longer `opening` was reopened for a new
+	// process, which is briefed afresh — no opener is owed to anyone.
+	m.mu.Lock()
+	terminal, opening, sink := request.State.Terminal(), request.State == StateOpening, m.sink
+	m.mu.Unlock()
+	if terminal {
+		return ErrClosedRequest
+	}
+	if !opening {
+		return nil
 	}
 	if sink != nil {
 		if err := sink.SendOpener(ctx, requestID, entries); err != nil {
@@ -657,9 +712,25 @@ func (m *Manager) OnAck(ctx context.Context, connID, requestID string, outcome A
 	}
 	m.observer.OpenerSent(requestID, len(entries), charsOf(entries), budget, summariesOf(entries))
 
-	if !m.advance(request, StatePosting) {
+	return m.advanceFrom(request, StateOpening, StatePosting)
+}
+
+// advanceFrom moves a request from the state its caller left it in, and only
+// from there (#2694). An ack's later moves run outside the lock; a harness
+// that restarted into a new process meanwhile reopened the request to
+// `delivered` for that process, and moving it on would hide it from the
+// redelivery that briefs the new one. That is no error: nil, nothing moved.
+// A withdrawn request is ErrClosedRequest, as `advance` reports it.
+func (m *Manager) advanceFrom(request *Request, from, to State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if request.State.Terminal() {
 		return ErrClosedRequest
 	}
+	if request.State != from {
+		return nil
+	}
+	m.advanceLocked(request, to)
 	return nil
 }
 

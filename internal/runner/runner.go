@@ -183,6 +183,11 @@ type Runner struct {
 	// it; AttachWait is the value every real run gets.
 	attachWait time.Duration
 
+	// noPostBaseline, when set, runs once an `expectNoPost` step has counted the
+	// posts it measures from. A test seam only (#2692): it lets a test order a
+	// post AFTER that count without a timer. Nil in every real run.
+	noPostBaseline func()
+
 	// lastRing is the request id the most recent `ring` step opened.
 	//
 	// 🔴 Tracked here rather than derived from delivered briefs. A ring that
@@ -381,8 +386,14 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 	case "expectNoPost":
 		current := r.latestRequestID()
 		before := r.postsFor(current)
-		r.sleep(ctx, r.within(step.ForMs))
-		if r.postsFor(current) > before {
+		if r.noPostBaseline != nil {
+			r.noPostBaseline()
+		}
+		// Fails the moment a post arrives rather than at the window's end
+		// (#2692): a long window costs nothing when the post comes. The last
+		// count after the window also covers a run cancelled mid-window.
+		arrived := func() bool { return r.postsFor(current) > before }
+		if r.waitFor(ctx, step.ForMs, arrived, "none arrived") == "" || arrived() {
 			return "a post arrived for " + current + " where none was expected"
 		}
 		return ""

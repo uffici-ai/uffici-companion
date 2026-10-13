@@ -334,18 +334,36 @@ func TestExpectNoPostBothWays(t *testing.T) {
 		t.Fatalf("a silent plugin should satisfy expectNoPost: %v", result.Unmet)
 	}
 
+	// 🔴 #2692: the post is released only once the step has counted its
+	// baseline, and the window is long so a loaded runner cannot push it past
+	// the end — either race made a post "not arrive" and failed the release's
+	// check. No timer orders the two: the runner's own seam does. The step fails
+	// the moment the post lands, so the long window costs nothing.
 	noisy := []fixture.Step{
 		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
-		{Step: "expectNoPost", ForMs: 200},
+		{Step: "expectNoPost", ForMs: 10_000},
 	}
-	r2 := newRig(t, script(noisy, fixture.Assertions{RingsDelivered: 1}),
-		&autoPlugin{session: requests.SessionFresh, answer: "but I did post"})
+	counted := make(chan struct{})
+	var released time.Time
+	held := &autoPlugin{session: requests.SessionFresh, answer: "but I did post",
+		beforePost: func(ctx context.Context, _ string) {
+			select {
+			case <-ctx.Done():
+			case <-counted:
+				released = time.Now()
+			}
+		}}
+	r2 := newRig(t, script(noisy, fixture.Assertions{RingsDelivered: 1}), held)
+	r2.runner.noPostBaseline = func() { close(counted) }
 	result2, err := r2.runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result2.OK() {
 		t.Fatal("a post arrived and expectNoPost still passed")
+	}
+	if waited := time.Since(released); released.IsZero() || waited > 5*time.Second {
+		t.Fatalf("expectNoPost ran on %v after the post was released; it must fail as soon as the post lands", waited)
 	}
 }
 
