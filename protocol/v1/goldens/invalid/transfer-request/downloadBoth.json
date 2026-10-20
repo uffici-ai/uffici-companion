@@ -1,0 +1,8 @@
+{
+	"reason": "a download names an attachment OR a path, never both",
+	"value": {
+		"op": "download",
+		"attachmentId": "1.0",
+		"path": "a.txt"
+	}
+}

@@ -220,8 +220,8 @@ func TestEverySchemaIsAFrameTypeOrTheEntry(t *testing.T) {
 }
 
 // 🔴 Forward compatibility is a REQUIREMENT of this wire, not a tolerance: the
-// summary entry kind of wave 4 must arrive with no version bump. These assert
-// the two shapes that must keep validating.
+// summary entry kind of wave 4 arrived with no version bump, and the next kind
+// must too. These assert the two shapes that must keep validating.
 func TestForwardCompatibility(t *testing.T) {
 	raw := read(t, "golden/valid/brief-forward-compatible.json")
 	if err := Validate(raw); err != nil {
@@ -242,7 +242,10 @@ func TestForwardCompatibility(t *testing.T) {
 	if probe.Priority == "" {
 		t.Fatal("the forward-compatibility golden no longer carries an unknown FIELD")
 	}
-	if len(probe.Delta) == 0 || probe.Delta[0].Kind == "message" {
+	// 🔴 Unknown to EVERY reader: `summary` is known since wave 4, so a golden
+	// still carrying it would prove nothing about a kind nobody has met yet.
+	known := map[string]bool{"message": true, "tool_line": true, "tombstone": true, "summary": true}
+	if len(probe.Delta) == 0 || known[probe.Delta[0].Kind] {
 		t.Fatal("the forward-compatibility golden no longer carries an unknown entry KIND")
 	}
 

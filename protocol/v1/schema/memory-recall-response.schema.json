@@ -1,0 +1,81 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/memory-recall-response.schema.json",
+	"title": "memory-recall-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"type": "object",
+	"properties": {
+		"hits": {
+			"maxItems": 20,
+			"type": "array",
+			"items": {
+				"type": "object",
+				"properties": {
+					"urn": {
+						"type": "string",
+						"pattern": "^urn:uffici:fact:[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+					},
+					"level": {
+						"type": "string",
+						"enum": [
+							"conversation",
+							"folder",
+							"organization"
+						]
+					},
+					"distance": {
+						"type": [
+							"number",
+							"null"
+						]
+					},
+					"text": {
+						"type": "string"
+					},
+					"at": {
+						"type": "string"
+					},
+					"source": {
+						"type": "object",
+						"properties": {
+							"kind": {
+								"type": "string",
+								"enum": [
+									"remembered",
+									"member_written"
+								]
+							}
+						},
+						"required": [
+							"kind"
+						]
+					}
+				},
+				"required": [
+					"urn",
+					"level",
+					"distance",
+					"text",
+					"at",
+					"source"
+				],
+				"additionalProperties": false
+			}
+		},
+		"degraded": {
+			"type": "boolean"
+		},
+		"missing": {
+			"type": "array",
+			"items": {
+				"type": "string",
+				"enum": [
+					"embeddings"
+				]
+			}
+		}
+	},
+	"required": [
+		"hits",
+		"degraded"
+	]
+}

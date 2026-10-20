@@ -1,0 +1,8 @@
+{
+	"reason": "an agent writes on its conversation only; there is no level argument (2026-09-20 record)",
+	"value": {
+		"requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21",
+		"text": "x",
+		"level": "organization"
+	}
+}

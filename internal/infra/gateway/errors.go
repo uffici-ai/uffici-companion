@@ -68,6 +68,9 @@ func (e *Error) ErrorClass() string { return e.Class }
 // ErrorInstruction is the sentence the agent relays.
 func (e *Error) ErrorInstruction() string { return e.Instruction }
 
+// CanRetry reports whether trying again could help (`contracts.RetryableError`).
+func (e *Error) CanRetry() bool { return e.Retryable }
+
 // RetryAfterDelay is the delay the platform named, or zero
 // (`contracts.RetryAfterError`).
 func (e *Error) RetryAfterDelay() time.Duration { return e.RetryAfter }

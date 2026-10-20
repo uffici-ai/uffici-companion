@@ -41,6 +41,21 @@
           "result": {}
         }
       }
+    },
+    "memory": {
+      "description": "The agent's memory (#2385). Absent: a working memory — what a request remembers in a conversation is recalled there, newest first, by a query sharing one of its words of four or more letters (a stand-in for the platform's search: the e2e asserts the round trip, not the ranking). `unavailable: true` answers every memory op `platform_unavailable`, the knowledge-api-down case.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "unavailable": {
+          "type": "boolean"
+        },
+        "unavailableIn": {
+          "description": "The conversations, by name, whose memory ops answer `platform_unavailable`: memory working in one conversation of a run and down in another.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
     }
   },
   "$defs": {
@@ -117,7 +132,11 @@
         "id": { "type": "string", "minLength": 1 },
         "cursor": { "type": "string", "minLength": 1 },
         "at": { "type": "string", "format": "date-time" },
-        "kind": { "type": "string", "minLength": 1 },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The platform's entry kind, served as written. A `summary` entry (the platform's fold, author `system`) is served on an opener only, never on a delta."
+        },
         "text": { "type": "string" },
         "author": { "$ref": "#/$defs/author" },
         "attachments": { "type": "array", "items": { "$ref": "#/$defs/attachment" } }
@@ -145,7 +164,17 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "name": { "type": "string" },
-        "ref": { "type": "string" }
+        "ref": { "type": "string" },
+        "contentType": {
+          "type": "string",
+          "description": "The file's type, served on a download (#2679)."
+        },
+        "data": {
+          "type": "string",
+          "contentEncoding": "base64",
+          "maxLength": 1048576,
+          "description": "The platform's copy of the file, base64 (#2679): what a download granted for this attachment serves. Never on the wire's entry. Absent: the attachment cannot be downloaded."
+        }
       }
     },
     "step": {
@@ -170,7 +199,12 @@
             "secondConnection",
             "refuseNextQuestion",
             "restartHarness",
+            "endHarnessSession",
             "expectToolCall",
+            "expectToolRerun",
+            "expectMemory",
+            "interruptNextUpload",
+            "expectUpload",
             "wait"
           ]
         },
@@ -188,6 +222,28 @@
         "cursor": { "type": "string" },
         "name": { "type": "string", "minLength": 1 },
         "argumentsContain": { "type": "string", "minLength": 1 },
+        "op": { "enum": ["recall", "remember", "forget", "unfold"] },
+        "attachments": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "expectPost (#2679): a matching post carries exactly this many attachments, each an upload of the request that arrived intact."
+        },
+        "to": {
+          "type": "string",
+          "minLength": 1,
+          "description": "expectUpload (#2679): the Files path the upload was saved at. Absent: an upload attached to the reply."
+        },
+        "contains": {
+          "type": "string",
+          "minLength": 1,
+          "description": "expectUpload (#2679): a string the uploaded bytes carry."
+        },
+        "afterBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "interruptNextUpload (#2679): the next upload's connection drops after this many bytes of a PATCH, once; the companion must resume from the server's offset."
+        },
         "afterFirstPost": { "type": "boolean" },
         "afterMs": { "type": "integer", "minimum": 0 },
         "withinMs": { "type": "integer", "minimum": 0 },
@@ -220,7 +276,31 @@
         "toolCalls": {
           "type": "integer",
           "minimum": 0,
-          "description": "When present, exactly how many tool calls reached the scripted host — zero included."
+          "description": "When present, exactly how many tool calls reached the scripted host — zero included. A re-run is a tool call and counts here."
+        },
+        "toolReruns": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many of those tool calls were re-runs of a recorded call — zero included."
+        },
+        "uploads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many uploads were recorded (#2679)."
+        },
+        "downloads": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many downloads were served to their last byte (#2679)."
+        },
+        "uploadsResumed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "When present, exactly how many recorded uploads resumed after a dropped connection (#2679)."
+        },
+        "memoryOps": {
+          "$ref": "#/$defs/counts",
+          "description": "How many of each memory op reached the scripted host, for the ops named; an op not named is not asserted."
         },
         "note": {
           "type": "string",

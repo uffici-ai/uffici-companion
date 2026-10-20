@@ -45,9 +45,9 @@ func (f fanout) BriefSent(requestID, conversationID string, entries, chars int) 
 	}
 }
 
-func (f fanout) OpenerSent(requestID string, entries, chars, budget int) {
+func (f fanout) OpenerSent(requestID string, entries, chars, budget, summaries int) {
 	for _, o := range f {
-		o.OpenerSent(requestID, entries, chars, budget)
+		o.OpenerSent(requestID, entries, chars, budget, summaries)
 	}
 }
 
@@ -164,7 +164,7 @@ func (l *logging) BriefSent(requestID, conversationID string, entries, chars int
 		slog.Int("deltaEntryCount", entries), slog.Int("deltaChars", chars))
 }
 
-func (l *logging) OpenerSent(requestID string, entries, chars, budget int) {
+func (l *logging) OpenerSent(requestID string, entries, chars, budget, summaries int) {
 	// 🔴 `budgetUsedChars`, not `budgetUsed`: nothing in the companion tokenizes,
 	// and the harness that declared the budget is the only party that knows its
 	// own tokenizer. Emitting characters — the fact this process actually has —
@@ -172,6 +172,9 @@ func (l *logging) OpenerSent(requestID string, entries, chars, budget int) {
 	l.line(requestID, directionOut, "opener",
 		slog.Int("openerEntryCount", entries),
 		slog.Int("openerChars", chars),
+		// 🔴 How many of the entries are the platform's summaries (#2451) — a
+		// count, never their text.
+		slog.Int("openerSummaryCount", summaries),
 		slog.Int("budgetDeclared", budget),
 		slog.Int("budgetUsedChars", chars))
 }

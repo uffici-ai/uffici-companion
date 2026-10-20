@@ -36,16 +36,27 @@ type schemaNode struct {
 	// arm, so it is walked as their merge: a property of ANY arm, required only when
 	// EVERY arm requires it.
 	OneOf []*schemaNode `json:"oneOf"`
+	// AnyOf is a plain union (`z.union`) — merged like OneOf.
+	AnyOf []*schemaNode `json:"anyOf"`
 }
 
 // merged folds a union's arms into the one shape a struct decoding all of them has.
 func (n *schemaNode) merged() *schemaNode {
-	if len(n.OneOf) == 0 || len(n.Properties) > 0 {
+	// A `z.union` emits anyOf, a discriminated one oneOf: both merge the same way. A
+	// `null` arm (a nullable union, memory's `supersededBy`, #2385) is an absent value,
+	// not a shape, and carries no properties to compare.
+	arms := make([]*schemaNode, 0, len(n.OneOf)+len(n.AnyOf))
+	for _, arm := range append(append([]*schemaNode{}, n.OneOf...), n.AnyOf...) {
+		if arm.Type != "null" {
+			arms = append(arms, arm)
+		}
+	}
+	if len(arms) == 0 || len(n.Properties) > 0 {
 		return n
 	}
 	out := &schemaNode{Type: "object", Properties: map[string]*schemaNode{}}
 	counts := map[string]int{}
-	for _, arm := range n.OneOf {
+	for _, arm := range arms {
 		for name, property := range arm.Properties {
 			if _, seen := out.Properties[name]; !seen {
 				out.Properties[name] = property
@@ -56,7 +67,7 @@ func (n *schemaNode) merged() *schemaNode {
 		}
 	}
 	for name, count := range counts {
-		if count == len(n.OneOf) {
+		if count == len(arms) {
 			out.Required = append(out.Required, name)
 		}
 	}
@@ -179,6 +190,14 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"identity":                     Identity{},
 		"log-batch":                    LogBatch{},
 		"log-batch-response":           LogBatchResponse{},
+		"memory-forget-request":        MemoryForgetRequest{},
+		"memory-forget-response":       MemoryForgetResponse{},
+		"memory-recall-request":        MemoryRecallRequest{},
+		"memory-recall-response":       MemoryRecallResponse{},
+		"memory-remember-request":      MemoryRememberRequest{},
+		"memory-remember-response":     MemoryRememberResponse{},
+		"memory-unfold-request":        MemoryUnfoldRequest{},
+		"memory-unfold-response":       MemoryUnfoldResponse{},
 		"logs-ticket-request":          LogsTicketRequest{},
 		"logs-ticket-response":         LogsTicketResponse{},
 		"pairing-poll-response":        PairingPollResponse{},
@@ -194,6 +213,10 @@ func TestEveryStructMatchesItsSchema(t *testing.T) {
 		"tool-call-request":            ToolCallRequest{},
 		"tool-call-response":           ToolCallResponse{},
 		"tool-catalog-response":        ToolCatalogResponse{},
+		"tool-rerun-request":           ToolRerunRequest{},
+		"transfer-complete-response":   TransferCompleteResponse{},
+		"transfer-request":             TransferRequest{},
+		"transfer-response":            TransferResponse{},
 	}
 	manifest, err := contract.LoadManifest()
 	if err != nil {

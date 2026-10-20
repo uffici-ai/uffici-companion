@@ -1,0 +1,13 @@
+{
+	"op": "download",
+	"jti": "8e7d6c5b-4a39-4281-9706-f5e4d3c2b1a0",
+	"grant": "eyJhbGciOiJIUzI1NiJ9.eyJ2IjoxfQ.c2lnbmF0dXJlLW5vdC1yZWFs",
+	"expiresAt": "2026-10-12T12:15:00.000Z",
+	"callUrn": "urn:uffici:tool_call:42",
+	"file": {
+		"name": "brief.pdf",
+		"size": 52011,
+		"contentType": "application/pdf",
+		"crc32c": "yZRlqg=="
+	}
+}

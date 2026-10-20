@@ -185,6 +185,48 @@ func TestNestedStructsMatchTheirSchemaDefs(t *testing.T) {
 	}
 }
 
+// The hello's inline objects on the plugin's shape: `drift` (#2406) and
+// `harnessSupport` (#2414).
+func TestHelloInlineObjectsMatchTheHelloSchema(t *testing.T) {
+	raw, err := fs.ReadFile(contract.FS(), "schema/hello.schema.json")
+	if err != nil {
+		t.Fatalf("reading the hello schema: %v", err)
+	}
+	var doc struct {
+		Defs struct {
+			PluginHello struct {
+				Properties map[string]struct {
+					Properties map[string]json.RawMessage `json:"properties"`
+				} `json:"properties"`
+			} `json:"pluginHello"`
+		} `json:"$defs"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parsing the hello schema: %v", err)
+	}
+	for _, testCase := range []struct {
+		property string
+		value    any
+	}{
+		{"drift", &Drift{}},
+		{"harnessSupport", &HarnessSupport{}},
+	} {
+		t.Run(testCase.property, func(t *testing.T) {
+			want := make([]string, 0, 3)
+			for property := range doc.Defs.PluginHello.Properties[testCase.property].Properties {
+				want = append(want, property)
+			}
+			sort.Strings(want)
+			if len(want) == 0 {
+				t.Fatalf("the plugin hello's %s declares no properties — the comparison would be empty", testCase.property)
+			}
+			if got := jsonFieldNames(t, testCase.value); !reflect.DeepEqual(got, want) {
+				t.Fatalf("struct and schema disagree.\n  struct: %v\n  schema: %v", got, want)
+			}
+		})
+	}
+}
+
 // The `cause` object lives inline on the brief rather than in `$defs`.
 func TestCauseMatchesTheBriefSchema(t *testing.T) {
 	raw, err := fs.ReadFile(contract.FS(), "schema/brief.schema.json")

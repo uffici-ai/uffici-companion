@@ -32,8 +32,11 @@ func goodManifest() map[string]any {
 		"defaultHome":     "~/.hermes",
 		"enable":          []string{"hermes", "plugins", "enable", "uffici-for-hermes"},
 		"configSet":       []string{"hermes", "config", "set"},
-		"config":          []map[string]string{{"key": "gateway.platforms.uffici.enabled", "value": "true"}},
-		"envPath":         []string{"hermes", "config", "env-path"},
+		"config": []map[string]string{
+			{"key": "gateway.platforms.uffici.enabled", "value": "true"},
+			{"key": "memory.memory_enabled", "value": "false", "note": "This Hermes's own memory is off on every platform it serves."},
+		},
+		"envPath": []string{"hermes", "config", "env-path"},
 		"env": map[string]string{
 			"UFFICI_WIRE_SOCKET":     "${wireSocket}",
 			"UFFICI_WIRE_TOKEN_FILE": "${wireTokenFile}",
@@ -63,7 +66,7 @@ func TestParseManifestAcceptsTheShapeAPluginReleaseShips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a valid manifest was refused: %v", err)
 	}
-	if m.Name != "uffici-for-hermes" || m.EnvFile != ".env" || len(m.Config) != 1 {
+	if m.Name != "uffici-for-hermes" || m.EnvFile != ".env" || len(m.Config) != 2 || m.Config[1].Note == "" {
 		t.Fatalf("manifest read wrong: %+v", m)
 	}
 }
@@ -90,6 +93,46 @@ func TestParseManifestRefusesWhatItDoesNotKnow(t *testing.T) {
 	}
 	if _, err := ParseManifest([]byte("{not json")); err == nil {
 		t.Fatal("malformed JSON was accepted")
+	}
+}
+
+// The workspace is the PLUGIN's to name (#2673): an optional path inside the
+// harness home, never one leaving it or hidden.
+func TestParseManifestReadsAnOptionalWorkspace(t *testing.T) {
+	m := goodManifest()
+	m["workspace"] = "uffici/workspace"
+	parsed, err := ParseManifest(mustJSON(t, m))
+	if err != nil || parsed.Workspace != "uffici/workspace" {
+		t.Fatalf("a workspace was not read: %+v, %v", parsed, err)
+	}
+	for _, bad := range []string{"../out", "/abs/path", ".hidden", "a/../b", "a//b", "a/./b", "", "a/"} {
+		m["workspace"] = bad
+		if _, err := ParseManifest(mustJSON(t, m)); err == nil {
+			t.Errorf("the workspace %q was accepted", bad)
+		}
+	}
+}
+
+func TestSetupRecordsThePluginsWorkspace(t *testing.T) {
+	m := goodManifest()
+	m["workspace"] = "uffici-workspace"
+	r := newRig(t, m, false)
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	record, err := ReadRecord(r.opts.CompanionHome)
+	if want := filepath.Join(r.home, "uffici-workspace"); err != nil || record.Workspace != want {
+		t.Fatalf("recorded %q, %v; want %q", record.Workspace, err, want)
+	}
+	if !strings.Contains(r.out.String(), "workspace: "+record.Workspace) {
+		t.Fatalf("the workspace was not printed:\n%s", r.out)
+	}
+	// A record naming a relative workspace is not one setup wrote.
+	if err := WriteRecord(r.opts.CompanionHome, Record{Harness: "hermes", Workspace: "relative"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadRecord(r.opts.CompanionHome); err == nil {
+		t.Fatal("a relative workspace was read back")
 	}
 }
 
@@ -534,6 +577,10 @@ func TestRunInstallsEverythingInOrder(t *testing.T) {
 	}
 	if !r.runner.ran("hermes config set gateway.platforms.uffici.enabled true") {
 		t.Fatal("the configuration key was not set")
+	}
+	// A key that is the whole harness's says so, after the step that set it (#2386).
+	if out := r.out.String(); !strings.Contains(out, "done: run hermes config set memory.memory_enabled false\nnote: This Hermes's own memory is off on every platform it serves.\n") {
+		t.Fatalf("the key's note was not printed after its step:\n%s", out)
 	}
 	env, err := os.ReadFile(filepath.Join(r.home, "custom.env"))
 	if err != nil || !strings.Contains(string(env), "UFFICI_WIRE_SOCKET="+filepath.Join(r.opts.CompanionHome, "wire.sock")) || !strings.Contains(string(env), "UFFICI_WIRE_TOKEN_FILE="+filepath.Join(r.opts.CompanionHome, "wire-token")) {
@@ -1040,6 +1087,58 @@ func TestRunAsksBeforeRestartingTheHarness(t *testing.T) {
 			}
 			if !strings.Contains(r.out.String(), tc.line) {
 				t.Fatalf("lacks %q:\n%s", tc.line, r.out)
+			}
+		})
+	}
+}
+
+// 🔴 #2688: a first install that leaves the harness alone says the plugin is
+// not loaded yet, and how to load it.
+func TestRunSaysThePluginIsNotLoadedUntilTheHarnessRestarts(t *testing.T) {
+	r := restartableRig(t)
+	r.opts.RestartHarness = RestartNo
+	if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+		t.Fatalf("exit %d:\n%s", code, r.out)
+	}
+	if !strings.Contains(r.out.String(), "Until hermes restarts it has not loaded the plugin") || !strings.Contains(r.out.String(), "uffici doctor") {
+		t.Fatalf("the pending plugin was not explained:\n%s", r.out)
+	}
+}
+
+// 🔴 #2688 review: a re-run of setup over an older plugin names the version the
+// harness keeps — read BEFORE the install replaces it, and only from a record of
+// the same harness in the same home.
+func TestRunNamesThePluginTheHarnessKeepsOnARerun(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		prior Record
+		want  string
+	}{
+		{"same harness, same home", Record{Harness: "hermes"}, "Until hermes restarts it keeps running plugin 0.0.9, not 0.1.2"},
+		{"another harness", Record{Harness: "openclaw"}, "Until hermes restarts it has not loaded the plugin"},
+		{"another home", Record{Harness: "hermes", HarnessHome: "elsewhere"}, "Until hermes restarts it has not loaded the plugin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := restartableRig(t)
+			r.opts.RestartHarness = RestartNo
+			old := goodManifest()
+			old["version"] = "0.0.9"
+			home := r.home
+			if tc.prior.HarnessHome == "elsewhere" {
+				home = filepath.Join(r.opts.UserHome, "other-hermes")
+			}
+			dir := filepath.Join(home, "plugins", "uffici-for-hermes")
+			must(t, os.MkdirAll(dir, 0o755))
+			must(t, os.WriteFile(filepath.Join(dir, ManifestFile), mustJSON(t, old), 0o644))
+			prior := tc.prior
+			prior.HarnessHome, prior.PluginDir = home, "plugins/uffici-for-hermes"
+			must(t, os.MkdirAll(r.opts.CompanionHome, 0o700))
+			must(t, WriteRecord(r.opts.CompanionHome, prior))
+			if code := Run(context.Background(), r.opts, r.out); code != ExitOK {
+				t.Fatalf("exit %d:\n%s", code, r.out)
+			}
+			if !strings.Contains(r.out.String(), tc.want) {
+				t.Fatalf("lacks %q:\n%s", tc.want, r.out)
 			}
 		})
 	}

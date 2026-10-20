@@ -48,7 +48,14 @@ type Host struct {
 	tools     map[string][]contracts.Tool
 	answers   map[string]contracts.ToolResult
 	toolCalls []ToolCall
+	// callNames maps each URN a call was answered with to its tool (#2454), so
+	// a re-run resolves the URN the way the platform does: by a call made.
+	callNames map[string]string
 	extras    []contracts.PostExtras
+	// The agent's memory (#2385): every op served, and what each answers.
+	memoryCalls   []OpCall
+	memoryAnswers map[contracts.MemoryOp]json.RawMessage
+	memoryErr     error
 }
 
 // ToolCall is one recorded tool call (#2349).
@@ -56,12 +63,15 @@ type ToolCall struct {
 	RequestID string
 	Name      string
 	Arguments json.RawMessage
+	// RerunOf is the URN a re-run named (#2454); empty for a first call.
+	RerunOf string
 }
 
 type conversation struct {
 	offset  string
 	entries []contracts.Entry
 	context *contracts.Context
+	changed []contracts.ContextChange
 }
 
 type openRequest struct {
@@ -78,6 +88,7 @@ func New() *Host {
 		rung:          map[string]string{},
 		tools:         map[string][]contracts.Tool{},
 		answers:       map[string]contracts.ToolResult{},
+		callNames:     map[string]string{},
 	}
 }
 
@@ -95,6 +106,16 @@ func (h *Host) SetContext(conversationID string, context *contracts.Context) {
 	defer h.mu.Unlock()
 	if state, ok := h.conversations[conversationID]; ok {
 		state.context = context
+	}
+}
+
+// SetContextChanged gives a seeded conversation the levels its delta read names
+// as changed since the agent's last answer (2026-10-12).
+func (h *Host) SetContextChanged(conversationID string, changed []contracts.ContextChange) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if state, ok := h.conversations[conversationID]; ok {
+		state.changed = changed
 	}
 }
 
@@ -157,7 +178,7 @@ func (h *Host) ReadSince(_ context.Context, conversationID, since, through strin
 		}
 		out = append(out, entry)
 	}
-	return contracts.Read{Entries: out, Context: state.context}, nil
+	return contracts.Read{Entries: out, Context: state.context, ContextChanged: state.changed}, nil
 }
 
 // ReadOpener returns the tail through `through`, including the agent's own.
@@ -232,10 +253,88 @@ func (h *Host) CallTool(_ context.Context, requestID, name string, arguments jso
 		return contracts.ToolResult{}, contracts.ErrUnknownRequest
 	}
 	h.toolCalls = append(h.toolCalls, ToolCall{RequestID: requestID, Name: name, Arguments: arguments})
-	if answer, ok := h.answers[name]; ok {
+	return h.answerLocked(name), nil
+}
+
+// RerunTool records a re-run on a rung request and answers the original tool's
+// configured result (#2454). A URN no call here was answered with is an error,
+// as the platform's `not_found` is; a request no ring delivered is refused
+// before anything is recorded.
+func (h *Host) RerunTool(_ context.Context, requestID, call string) (contracts.ToolResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, known := h.rung[requestID]; !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	name, made := h.callNames[call]
+	if !made {
+		return contracts.ToolResult{}, fmt.Errorf("memory: no call %s was made", call)
+	}
+	h.toolCalls = append(h.toolCalls, ToolCall{RequestID: requestID, Name: name, RerunOf: call})
+	return h.answerLocked(name), nil
+}
+
+// answerLocked is one tool's configured answer — `{"ok":true}` and no URN when
+// none was set — remembering the URN it carries for a later re-run.
+func (h *Host) answerLocked(name string) contracts.ToolResult {
+	answer, ok := h.answers[name]
+	if !ok {
+		return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}
+	}
+	if answer.CallURN != "" {
+		h.callNames[answer.CallURN] = name
+	}
+	return answer
+}
+
+// OpCall is one memory op the in-memory host served (#2385).
+type OpCall struct {
+	Op        contracts.MemoryOp
+	RequestID string
+	Body      json.RawMessage
+}
+
+// Memory records an op on a rung request and answers the op's configured answer —
+// `SetMemoryAnswer` — or the error set by `SetMemoryError`; a request no ring
+// delivered is refused before anything is recorded.
+func (h *Host) Memory(_ context.Context, op contracts.MemoryOp, requestID string, body json.RawMessage) (json.RawMessage, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, known := h.rung[requestID]; !known {
+		return nil, contracts.ErrUnknownRequest
+	}
+	h.memoryCalls = append(h.memoryCalls, OpCall{Op: op, RequestID: requestID, Body: append(json.RawMessage(nil), body...)})
+	if h.memoryErr != nil {
+		return nil, h.memoryErr
+	}
+	if answer, ok := h.memoryAnswers[op]; ok {
 		return answer, nil
 	}
-	return contracts.ToolResult{Result: json.RawMessage(`{"ok":true}`)}, nil
+	return nil, fmt.Errorf("memory: no answer configured for %q", op)
+}
+
+// SetMemoryAnswer configures what one memory op answers.
+func (h *Host) SetMemoryAnswer(op contracts.MemoryOp, answer json.RawMessage) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.memoryAnswers == nil {
+		h.memoryAnswers = map[contracts.MemoryOp]json.RawMessage{}
+	}
+	h.memoryAnswers[op] = answer
+}
+
+// SetMemoryError makes every memory op fail with err; nil clears it.
+func (h *Host) SetMemoryError(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.memoryErr = err
+}
+
+// MemoryCalls returns the recorded memory ops.
+func (h *Host) MemoryCalls() []OpCall {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]OpCall(nil), h.memoryCalls...)
 }
 
 // PostExtras returns every post's extras that carried any, in order.

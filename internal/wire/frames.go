@@ -168,6 +168,17 @@ type Attachment struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Ref  string `json:"ref"`
+	// LocalPath is where the companion prefetched the file, relative to the
+	// workspace (#2673) — only when the plugin's hello asked for prefetch.
+	LocalPath string `json:"localPath,omitempty"`
+	// PrefetchError says why an asked-for prefetch did not happen.
+	PrefetchError *PrefetchError `json:"prefetchError,omitempty"`
+}
+
+// PrefetchError is an attachment the companion was asked to prefetch and did
+// not: a class, never a sentence — the plugin can still download it.
+type PrefetchError struct {
+	Class string `json:"class"`
 }
 
 // Entry is one transcript entry, mapped one to one from the platform's read.
@@ -197,6 +208,56 @@ type PluginHello struct {
 	// reconnect is the same process, a different one is a restarted harness.
 	// Optional — an older plugin omits it. Not a secret.
 	ProcessID string `json:"processId,omitempty"`
+	// Drift is what in the harness's own configuration reaches past Uffici
+	// (#2406), as the plugin read it at this hello. Optional — an older plugin
+	// omits it, and `uffici doctor` then says the plugin did not report it.
+	// Never a refusal: nothing here closes a connection or holds a ring.
+	Drift *Drift `json:"drift,omitempty"`
+	// HarnessSupport is the harness versions this plugin release supports and
+	// its verdict on HarnessVersion against them (#2414). Optional — an older
+	// plugin omits it. Never a refusal: the companion never parses a harness
+	// version, it only carries the plugin's word to `uffici doctor`.
+	HarnessSupport *HarnessSupport `json:"harnessSupport,omitempty"`
+	// Capabilities is what the plugin asks the companion to do for it (#2673):
+	// the PLUGIN's choice, because a harness's needs are its plugin's to know.
+	// Optional — an older plugin asks nothing.
+	Capabilities *Capabilities `json:"capabilities,omitempty"`
+}
+
+// Capabilities is what a plugin asks of the companion beyond every v1 plugin.
+type Capabilities struct {
+	// PrefetchAttachments asks for a brief's attachments to be downloaded into
+	// the workspace before the brief is handed over.
+	PrefetchAttachments *PrefetchAttachments `json:"prefetchAttachments,omitempty"`
+}
+
+// PrefetchAttachments is the plugin's prefetch budget, in bytes per brief.
+type PrefetchAttachments struct {
+	MaxBytes int64 `json:"maxBytes"`
+}
+
+// HarnessSupport is a plugin's statement of the harness versions it supports
+// (#2414): client-reported, like Drift.
+type HarnessSupport struct {
+	// Range is the supported versions in the plugin's own words.
+	Range string `json:"range"`
+	// Supported is the plugin's verdict on the harness's version; nil when the
+	// plugin could not read that version.
+	Supported *bool `json:"supported,omitempty"`
+}
+
+// Drift is a plugin's report of its harness's drift from the plugin policy
+// (#1994 decision 13, #1958 decision 27): client-reported, names only.
+//
+// A kind the plugin could not read is nil; an empty list means it read the
+// source and found nothing.
+type Drift struct {
+	// MCPServers names the MCP servers the harness has configured and enabled.
+	MCPServers []string `json:"mcpServers"`
+	// Channels names the harness's other live channels, Uffici's own excluded.
+	Channels []string `json:"channels"`
+	// LocalMemory names the settings that keep a memory of the harness's own.
+	LocalMemory []string `json:"localMemory"`
 }
 
 // String redacts the token so the struct is safe to format.
@@ -214,6 +275,10 @@ type CompanionHello struct {
 	// Features is what this companion can carry beyond every v1 companion
 	// (#2232): `question`, `redelivery` and `tools`. Optional, so an older plugin reads nothing new.
 	Features []string `json:"features,omitempty"`
+	// Workspace is the workspace's absolute path as the companion sees it
+	// (#2673): every `localPath` on the wire is relative to it. Sent beside the
+	// `files` feature.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // FeatureQuestion says a post may carry a question (#2232).
@@ -228,6 +293,22 @@ const FeatureRedelivery = "redelivery"
 // FeatureTools says the plugin may call `tools.list` and `tools.call`, and a post
 // may carry `citations` and `activity` (#2349).
 const FeatureTools = "tools"
+
+// FeatureToolsRerun says the plugin may call `tools.rerun` (#2454): re-run a call
+// the platform recorded, from its `tool_call` URN. Announced only beside `tools`,
+// so a plugin told so never meets `unknown_op` mid-turn.
+const FeatureToolsRerun = "rerun"
+
+// FeatureMemory says the plugin may call the four `memory.*` ops (#2385): recall,
+// remember, forget and unfold. Announced only when all four are served, so a plugin
+// told so never meets `unknown_op` mid-turn — and an older companion's silence tells
+// the plugin to render "memory unavailable" instead of an empty recall.
+const FeatureMemory = "memory"
+
+// FeatureFiles says the plugin may call `files.download` and `files.upload`
+// (#2673), and that the companion's hello names its `workspace`. Announced only
+// when both are served.
+const FeatureFiles = "files"
 
 // Cause is the recorded human cause a request answers.
 type Cause struct {
@@ -251,6 +332,16 @@ type Brief struct {
 	// the platform composed it. Optional: an older companion sends none, and
 	// the plugin then keeps its static hint.
 	Context *Context `json:"context,omitempty"`
+	// ContextChanged names the context levels a person changed since the agent
+	// last answered here (2026-10-12). Optional: absent when nothing changed and
+	// from an older companion; the plugin then says nothing.
+	ContextChanged []ContextChange `json:"contextChanged,omitempty"`
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string `json:"name"`
+	Scope string `json:"scope"`
 }
 
 // Context is the platform's composed context: the identity block first, then
@@ -325,6 +416,16 @@ type Post struct {
 	// Activity is what the agent did with its harness's own tools, by name and a
 	// summary — never arguments or results.
 	Activity []Activity `json:"activity,omitempty"`
+	// Attachments are files this post carries, as `files.upload` answered them
+	// (#2673); sent only to a companion whose hello lists `files`.
+	Attachments []PostAttachment `json:"attachments,omitempty"`
+}
+
+// PostAttachment is an uploaded file a post carries, by reference.
+type PostAttachment struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Ref  string `json:"ref"`
 }
 
 // Activity is one harness-tool use a post reports.

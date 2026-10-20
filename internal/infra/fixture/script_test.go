@@ -112,6 +112,17 @@ func TestValidateRefusesTheWaysAScriptCanAssertNothing(t *testing.T) {
 			"would match any call",
 		},
 		{
+			// An op outside the four would wait for a call that cannot exist.
+			"an expectMemory naming no memory op",
+			func(s *Script) { s.Steps = append(s.Steps, Step{Step: "expectMemory", Op: "dream"}) },
+			"not one of the four",
+		},
+		{
+			"memory taken down in a conversation the script does not have",
+			func(s *Script) { s.Memory = &ScriptMemory{UnavailableIn: []string{"nowhere"}} },
+			"not a conversation of this script",
+		},
+		{
 			"a result for a tool the catalog does not list",
 			func(s *Script) {
 				s.Results = map[string]ScriptResult{"list_boards": {Result: json.RawMessage(`{}`)}}
@@ -131,6 +142,21 @@ func TestValidateRefusesTheWaysAScriptCanAssertNothing(t *testing.T) {
 				s.Steps = append(s.Steps, Step{Step: "appendEntries", Conversation: "invoices"})
 			},
 			"appends no entries",
+		},
+		{
+			// #2414: the driver ends the session of a conversation the script names.
+			"an endHarnessSession naming an undeclared conversation",
+			func(s *Script) {
+				s.Steps = append(s.Steps, Step{Step: "endHarnessSession", Conversation: "nowhere", WithinMs: 1000})
+			},
+			"ends the harness session of conversation",
+		},
+		{
+			"an endHarnessSession that gives the driver no time",
+			func(s *Script) {
+				s.Steps = append(s.Steps, Step{Step: "endHarnessSession", Conversation: "invoices"})
+			},
+			"no withinMs",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

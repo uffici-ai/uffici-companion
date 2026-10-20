@@ -92,6 +92,46 @@ func TestTheOpenerIncludesTheAgentsOwnEntries(t *testing.T) {
 	}
 }
 
+// 🔴 #2451: a script can put the platform's summary entries in an opener. They
+// ride the opener ONLY — the platform folds what a fresh session would read, and
+// a delta is what the agent has not seen, which a summary never is.
+func TestAScriptedSummaryRidesTheOpenerAndNeverADelta(t *testing.T) {
+	script := testScript()
+	conversation := script.Conversations["invoices"]
+	conversation.Offset = ""
+	conversation.Entries = append([]ScriptEntry{{
+		ID: "40", Cursor: "c0000", At: "2026-09-17T13:00:00Z", Kind: contracts.EntryKindSummary,
+		Text:   "Summary of 37 earlier messages.\n[summary-canary] The invoice was approved.",
+		Author: ScriptAuthor{Type: "system", ID: "platform"},
+	}}, conversation.Entries...)
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+
+	opener, err := host.ReadOpener(ctx, "conv_1", "c0004", 48000)
+	if err != nil {
+		t.Fatalf("ReadOpener: %v", err)
+	}
+	if len(opener) != 5 || opener[0].Kind != contracts.EntryKindSummary || opener[0].Author.Type != "system" {
+		t.Fatalf("the opener is %+v, want the summary first and then the four messages", opener)
+	}
+
+	read, err := host.ReadSince(ctx, "conv_1", "", "c0004", 0)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if len(read.Entries) == 0 {
+		t.Fatal("the delta is empty, so this guard proves nothing about what it leaves out")
+	}
+	for _, entry := range read.Entries {
+		if entry.Kind == contracts.EntryKindSummary {
+			t.Fatal("a delta carried a summary entry — the platform puts summaries on an opener only")
+		}
+	}
+}
+
 // 🔴 The bug worth the most: an offset advanced on a cancelled request means the
 // next brief starts after entries nobody answered, losing them for every agent.
 func TestOnlyAnsweredAndEmptyMoveTheOffset(t *testing.T) {
@@ -457,6 +497,180 @@ func TestTheAgentsCatalogIsServedInEveryConversation(t *testing.T) {
 		t.Fatalf("a call in the second conversation = %+v, %v", result, err)
 	}
 	if calls := host.ToolCalls(); len(calls) != 1 || calls[0].ConversationID != "conv_2" {
+		t.Fatalf("ToolCalls = %+v", calls)
+	}
+}
+
+// The scripted memory (#2385): a working stand-in for knowledge-api — remember,
+// recall by a shared word, forget, unfold — and, scripted `unavailable`, every op
+// the platform's `platform_unavailable` with the memory family's sentence.
+func TestTheHostServesAWorkingMemoryAndCanBeTakenDown(t *testing.T) {
+	ring := func(t *testing.T, host *Host) {
+		t.Helper()
+		claim, err := host.OpenDoorbell(context.Background(), contracts.Handlers{
+			OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = claim.Close() })
+		if err := host.DeliverRing(contracts.Ring{RingID: "ring_1", RequestID: "req_1", ConversationID: "conv_1"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	host, err := New(testScript())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{}`)); !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("memory before any ring = %v", err)
+	}
+	ring(t, host)
+	remembered, err := host.Memory(ctx, contracts.MemoryRemember, "req_1", json.RawMessage(`{"text":"The forklift needs a service."}`))
+	if err != nil {
+		t.Fatalf("remember: %v", err)
+	}
+	var fact struct {
+		URN string `json:"urn"`
+	}
+	_ = json.Unmarshal(remembered, &fact)
+	if _, err := host.Memory(ctx, contracts.MemoryRemember, "req_1", json.RawMessage(`{}`)); err == nil {
+		t.Fatal("a remember with no text was taken")
+	}
+	hit, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"when is the forklift serviced?","limit":3}`))
+	miss, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"coffee"}`))
+	if !strings.Contains(string(hit), "forklift") || strings.Contains(string(miss), "forklift") {
+		t.Fatalf("recall answered %s and %s", hit, miss)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryForget, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`)); err != nil {
+		t.Fatalf("forget: %v", err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryForget, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`)); err == nil {
+		t.Fatal("a fact was forgotten twice")
+	}
+	if after, _ := host.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"forklift"}`)); strings.Contains(string(after), "forklift") {
+		t.Fatalf("a forgotten fact was recalled: %s", after)
+	}
+	unfolded, err := host.Memory(ctx, contracts.MemoryUnfold, "req_1", json.RawMessage(`{"urn":"`+fact.URN+`"}`))
+	if err != nil || !strings.Contains(string(unfolded), `"rows":[]`) {
+		t.Fatalf("unfold = %s, %v", unfolded, err)
+	}
+	if _, err := host.Memory(ctx, contracts.MemoryOp("dream"), "req_1", nil); err == nil {
+		t.Fatal("an unknown op was served")
+	}
+	if calls := host.MemoryCalls(); len(calls) != 9 || calls[0].Op != contracts.MemoryRemember {
+		t.Fatalf("recorded %d memory calls: %+v", len(calls), calls)
+	}
+
+	down := testScript()
+	down.Memory = &ScriptMemory{Unavailable: true}
+	downHost, err := New(down)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ring(t, downHost)
+	_, err = downHost.Memory(ctx, contracts.MemoryRecall, "req_1", json.RawMessage(`{"query":"x"}`))
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "platform_unavailable" ||
+		!strings.Contains(classified.ErrorInstruction(), "could not check what was remembered") {
+		t.Fatalf("an unavailable memory answered %v", err)
+	}
+}
+
+// `unavailableIn` takes memory down in the conversations it names and nowhere else
+// (#2386): one run shows a working memory and an outage.
+func TestMemoryCanBeTakenDownInOneConversation(t *testing.T) {
+	s := testScript()
+	s.Conversations["onboarding"] = &Conversation{ID: "conv_2", Offset: "", Entries: s.Conversations["invoices"].Entries}
+	s.Memory = &ScriptMemory{UnavailableIn: []string{"onboarding"}}
+	host, err := New(s)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	claim, err := host.OpenDoorbell(context.Background(), contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = claim.Close() })
+	for _, ring := range []contracts.Ring{
+		{RingID: "ring_1", RequestID: "req_up", ConversationID: "conv_1"},
+		{RingID: "ring_2", RequestID: "req_down", ConversationID: "conv_2"},
+	} {
+		if err := host.DeliverRing(ring); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx := context.Background()
+	if _, err := host.Memory(ctx, contracts.MemoryRecall, "req_up", json.RawMessage(`{"query":"x"}`)); err != nil {
+		t.Fatalf("memory was down outside the named conversation: %v", err)
+	}
+	_, err = host.Memory(ctx, contracts.MemoryRecall, "req_down", json.RawMessage(`{"query":"x"}`))
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "platform_unavailable" {
+		t.Fatalf("memory in the named conversation answered %v", err)
+	}
+}
+
+// 🔴 #2454: a re-run resolves its URN against the calls made in the SAME
+// conversation — another conversation's, or one never made, is `not_found` —
+// answers the original tool's scripted result, and is recorded as a tool call
+// carrying RerunOf.
+func TestTheHostReRunsARecordedCallInItsConversation(t *testing.T) {
+	script := testScript()
+	script.Conversations["desk"] = &Conversation{ID: "conv_2", Entries: []ScriptEntry{
+		{ID: "d1", Cursor: "c0001", Kind: "message", Text: "hi", Author: ScriptAuthor{Type: "member", ID: "m2", Label: "Rui"}},
+	}}
+	script.Tools = []ScriptTool{{Name: "list_boards", Permission: "allow"}}
+	script.Results = map[string]ScriptResult{
+		"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[{"id":"b-1","name":"Support"}]}`)},
+	}
+	host, err := New(script)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	if _, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1"); !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("a re-run before any ring = %v, want ErrUnknownRequest", err)
+	}
+	claim, err := host.OpenDoorbell(ctx, contracts.Handlers{
+		OnRing: func(contracts.Ring) {}, OnCancel: func(string, contracts.CancelReason) {}, OnDisconnect: func(string) {},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = claim.Close() }()
+	for _, ring := range []contracts.Ring{
+		{RingID: "ring_1", RequestID: "req_1", ConversationID: "conv_1"},
+		{RingID: "ring_2", RequestID: "req_2", ConversationID: "conv_2"},
+	} {
+		if err := host.DeliverRing(ring); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notFound := func(err error) bool {
+		var classified contracts.ClassifiedError
+		return errors.As(err, &classified) && classified.ErrorClass() == "not_found" &&
+			classified.ErrorInstruction() != "" && err.Error() != ""
+	}
+	if _, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1"); !notFound(err) {
+		t.Fatalf("a re-run of a call never made = %v, want not_found", err)
+	}
+	if _, err := host.CallTool(ctx, "req_1", "list_boards", json.RawMessage(`{"q":"x"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := host.RerunTool(ctx, "req_2", "urn:uffici:tool_call:1"); !notFound(err) {
+		t.Fatalf("a re-run of another conversation's call = %v, want not_found", err)
+	}
+	result, err := host.RerunTool(ctx, "req_1", "urn:uffici:tool_call:1")
+	if err != nil || result.CallURN != "urn:uffici:tool_call:1" || !strings.Contains(string(result.Result), "Support") {
+		t.Fatalf("RerunTool = %+v, %v", result, err)
+	}
+	calls := host.ToolCalls()
+	if len(calls) != 2 || calls[1].RerunOf != "urn:uffici:tool_call:1" || calls[1].Name != "list_boards" ||
+		string(calls[1].Arguments) != `{"q":"x"}` || calls[0].RerunOf != "" || calls[0].CallURN != "urn:uffici:tool_call:1" {
 		t.Fatalf("ToolCalls = %+v", calls)
 	}
 }

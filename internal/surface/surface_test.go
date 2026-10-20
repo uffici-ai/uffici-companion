@@ -36,6 +36,13 @@ func newRig(t *testing.T) *rig {
 // always the rig's own.
 func newRigWith(t *testing.T, options Options) *rig {
 	t.Helper()
+	return newRigObserved(t, options, nil)
+}
+
+// newRigObserved builds the rig with an observer on the manager, for a test that
+// must wait for the manager to have HANDLED a frame rather than merely sent it.
+func newRigObserved(t *testing.T, options Options, observer requests.Observer) *rig {
+	t.Helper()
 	host := memory.New()
 	host.Seed("conv_1", "c0001", []contracts.Entry{
 		{ID: "e1", Cursor: "c0001", Kind: "message", Text: "first",
@@ -43,7 +50,7 @@ func newRigWith(t *testing.T, options Options) *rig {
 		{ID: "e2", Cursor: "c0002", Kind: "message", Text: "second",
 			Author: contracts.Author{Type: "member", ID: "m1", Label: "Ana"}},
 	})
-	manager := requests.New(host, requests.Options{})
+	manager := requests.New(host, requests.Options{Observer: observer})
 	listener := memtransport.NewListener("memory://surface")
 	options.Token, options.Version = testToken, "0.1.0"
 	surface, err := New(listener, manager, options)
@@ -86,6 +93,17 @@ func (r *rig) attach(t *testing.T, token string) *memtransport.Conn {
 	t.Helper()
 	conn := r.dial(t, token, true)
 	send(t, conn, map[string]any{"v": 1, "type": "ready", "harnessVersion": "0.21.3"})
+	// 🔴 `send` only queues `ready`; the surface attaches the plugin when it
+	// PROCESSES the frame, after its hello is already on the wire. A test that
+	// acts on the manager before then races it — a release is dropped, a ring is
+	// held — so return only once the attach is observed (#2571, ledger class 24).
+	deadline := time.Now().Add(2 * time.Second)
+	for !r.manager.Attached() {
+		if time.Now().After(deadline) {
+			t.Fatal("the surface never attached the plugin after its ready")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	return conn
 }
 
@@ -622,7 +640,8 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 		{"a reconnect of the same process", "proc-before-restart-0001", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t)
+			acks := &ackObserver{acked: make(chan string, 1)}
+			r := newRigObserved(t, Options{}, acks)
 			first := r.attachAs(t, "proc-before-restart-0001")
 			if err := r.manager.OnRing(context.Background(), contracts.Ring{
 				RequestID: "req_1", ConversationID: "conv_1", RingID: "ring_1",
@@ -636,6 +655,14 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 			send(t, first, map[string]any{
 				"v": 1, "type": "ack", "requestId": "req_1", "outcome": "accepted", "session": "resumed",
 			})
+			// 🔴 Wait for the manager to have HANDLED the ack (#2409): `send` only puts
+			// the frame on the wire, and a close processed first leaves the request
+			// unacknowledged — which every reconnect is owed, the same process included.
+			select {
+			case <-acks.acked:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the manager never handled the ack")
+			}
 			// Hermes goes away mid-turn.
 			_ = first.Close("gone")
 			deadline := time.Now().Add(2 * time.Second)
@@ -655,6 +682,19 @@ func TestAHarnessRestartIsHandedTheAcknowledgedRequestAndAReconnectIsNot(t *test
 				t.Fatalf("a reconnect of the same process was handed a %v it was already answering", frame["type"])
 			}
 		})
+	}
+}
+
+// ackObserver tells a test when the manager has handled an acknowledgement.
+type ackObserver struct {
+	requests.NopObserver
+	acked chan string
+}
+
+func (o *ackObserver) Acked(requestID string, _ requests.AckOutcome, _ requests.Session) {
+	select {
+	case o.acked <- requestID:
+	default:
 	}
 }
 
@@ -763,5 +803,76 @@ func TestAPostsCitationsAndActivityReachTheHost(t *testing.T) {
 	if len(extras.Citations) != 1 || extras.Citations[0] != "urn:uffici:tool_call:42" ||
 		len(extras.Activity) != 1 || extras.Activity[0] != (contracts.Activity{Tool: "web_extract", Summary: "Read the status page."}) {
 		t.Fatalf("the host received %+v", extras)
+	}
+}
+
+// 🔴 #2385: `memory` is advertised exactly when ALL FOUR memory ops are served — a
+// plugin told so recalls before every model call, and an `unknown_op` recall would
+// read as a silent gap where "memory unavailable" must be said instead.
+func TestMemoryIsAdvertisedOnlyWhenAllFourOpsAreServed(t *testing.T) {
+	serve := func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage("{}"), nil }
+	all := map[string]CallHandler{
+		wire.OpMemoryRecall: serve, wire.OpMemoryRemember: serve, wire.OpMemoryForget: serve, wire.OpMemoryUnfold: serve,
+	}
+	threeOf := map[string]CallHandler{wire.OpMemoryRecall: serve, wire.OpMemoryRemember: serve, wire.OpMemoryForget: serve}
+	for name, tc := range map[string]struct {
+		calls map[string]CallHandler
+		want  bool
+	}{
+		"all four":    {all, true},
+		"three":       {threeOf, false},
+		"recall only": {map[string]CallHandler{wire.OpMemoryRecall: serve}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, Options{Calls: tc.calls})
+			conn := r.dial(t, testToken, true)
+			hello := receive(t, conn)
+			features, _ := hello["features"].([]any)
+			got := false
+			for _, feature := range features {
+				got = got || feature == wire.FeatureMemory
+			}
+			if got != tc.want {
+				t.Fatalf("features %v: memory advertised = %v, want %v", features, got, tc.want)
+			}
+			raw, _ := json.Marshal(hello)
+			if err := wire.Validate(raw); err != nil {
+				t.Fatalf("the hello fails its own schema: %v", err)
+			}
+		})
+	}
+}
+
+// 🔴 #2454: `rerun` is advertised only beside `tools`, and only when `tools.rerun`
+// is served — a plugin told so offers its model the re-run tool, and a re-run
+// answered `unknown_op` would fail a turn that need not have.
+func TestRerunIsAdvertisedOnlyBesideToolsWhenServed(t *testing.T) {
+	serve := func(context.Context, json.RawMessage) (json.RawMessage, error) { return json.RawMessage("{}"), nil }
+	for name, tc := range map[string]struct {
+		calls      map[string]CallHandler
+		tools, ran bool
+	}{
+		"tools and rerun":     {map[string]CallHandler{wire.OpToolsList: serve, wire.OpToolsCall: serve, wire.OpToolsRerun: serve}, true, true},
+		"tools only":          {map[string]CallHandler{wire.OpToolsList: serve, wire.OpToolsCall: serve}, true, false},
+		"rerun without tools": {map[string]CallHandler{wire.OpToolsCall: serve, wire.OpToolsRerun: serve}, false, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRigWith(t, Options{Calls: tc.calls})
+			conn := r.dial(t, testToken, true)
+			hello := receive(t, conn)
+			features, _ := hello["features"].([]any)
+			tools, rerun := false, false
+			for _, feature := range features {
+				tools = tools || feature == wire.FeatureTools
+				rerun = rerun || feature == wire.FeatureToolsRerun
+			}
+			if tools != tc.tools || rerun != tc.ran {
+				t.Fatalf("features %v: tools = %v, rerun = %v; want %v, %v", features, tools, rerun, tc.tools, tc.ran)
+			}
+			raw, _ := json.Marshal(hello)
+			if err := wire.Validate(raw); err != nil {
+				t.Fatalf("the hello fails its own schema: %v", err)
+			}
+		})
 	}
 }

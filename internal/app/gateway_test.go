@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"encoding/pem"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	wstransport "github.com/uffici-ai/uffici-companion/internal/infra/transport/websocket"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
 	"github.com/uffici-ai/uffici-companion/internal/registry"
+	"github.com/uffici-ai/uffici-companion/internal/surface"
 )
 
 // ── The agent key ───────────────────────────────────────────────────────────
@@ -566,4 +568,16 @@ func TestTheDoctorsReleaseLineHasItsOwnBudget(t *testing.T) {
 	if !strings.Contains(out.String(), "release      develop, 0.10.0-dev.4") {
 		t.Fatalf("no release line:\n%s", out.String())
 	}
+}
+
+// Two call-handler families serving one op would silently lose one of them; the
+// companion refuses to start that way instead.
+func TestCallHandlersRefuseTwoHandlersForOneOp(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("two handlers for one op were merged silently")
+		}
+	}()
+	noop := func(context.Context, json.RawMessage) (json.RawMessage, error) { return nil, nil }
+	callHandlers(map[string]surface.CallHandler{"memory.recall": noop}, map[string]surface.CallHandler{"memory.recall": noop})
 }

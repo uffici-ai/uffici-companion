@@ -57,9 +57,22 @@ type autoPlugin struct {
 	noAck bool
 	// beforePost runs between the ack and the post — a turn calling a tool (#2349).
 	beforePost func(ctx context.Context, requestID string)
+
+	briefsMu sync.Mutex
+	// briefs is every brief the plugin was handed, in order (#2390).
+	briefs []requests.Brief
+}
+
+func (a *autoPlugin) seen() []requests.Brief {
+	a.briefsMu.Lock()
+	defer a.briefsMu.Unlock()
+	return append([]requests.Brief(nil), a.briefs...)
 }
 
 func (a *autoPlugin) SendBrief(ctx context.Context, brief requests.Brief) error {
+	a.briefsMu.Lock()
+	a.briefs = append(a.briefs, brief)
+	a.briefsMu.Unlock()
 	if a.noAck {
 		return nil
 	}
@@ -321,18 +334,36 @@ func TestExpectNoPostBothWays(t *testing.T) {
 		t.Fatalf("a silent plugin should satisfy expectNoPost: %v", result.Unmet)
 	}
 
+	// 🔴 #2692: the post is released only once the step has counted its
+	// baseline, and the window is long so a loaded runner cannot push it past
+	// the end — either race made a post "not arrive" and failed the release's
+	// check. No timer orders the two: the runner's own seam does. The step fails
+	// the moment the post lands, so the long window costs nothing.
 	noisy := []fixture.Step{
 		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
-		{Step: "expectNoPost", ForMs: 200},
+		{Step: "expectNoPost", ForMs: 10_000},
 	}
-	r2 := newRig(t, script(noisy, fixture.Assertions{RingsDelivered: 1}),
-		&autoPlugin{session: requests.SessionFresh, answer: "but I did post"})
+	counted := make(chan struct{})
+	var released time.Time
+	held := &autoPlugin{session: requests.SessionFresh, answer: "but I did post",
+		beforePost: func(ctx context.Context, _ string) {
+			select {
+			case <-ctx.Done():
+			case <-counted:
+				released = time.Now()
+			}
+		}}
+	r2 := newRig(t, script(noisy, fixture.Assertions{RingsDelivered: 1}), held)
+	r2.runner.noPostBaseline = func() { close(counted) }
 	result2, err := r2.runner.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if result2.OK() {
 		t.Fatal("a post arrived and expectNoPost still passed")
+	}
+	if waited := time.Since(released); released.IsZero() || waited > 5*time.Second {
+		t.Fatalf("expectNoPost ran on %v after the post was released; it must fail as soon as the post lands", waited)
 	}
 }
 
@@ -610,7 +641,7 @@ func restartRig(t *testing.T, next string) *Runner {
 	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
 		&autoPlugin{session: requests.SessionFresh, silent: true})
 	r.manager.BindProcess("process-1")
-	r.runner.SetAnnounce(func(string) {
+	r.runner.SetAnnounce(func(string, ...any) {
 		sink := &autoPlugin{manager: r.manager, session: requests.SessionFresh, silent: true}
 		r.manager.Detach("conn-1")
 		r.manager.Attach("conn-2", sink, 48000)
@@ -672,10 +703,10 @@ func TestRestartHarnessRecordsItsWindowUntilTheOldConnectionCloses(t *testing.T)
 	runner.plugin = plugin
 	inner := runner.announce
 	var asked time.Time
-	runner.SetAnnounce(func(line string) {
+	runner.SetAnnounce(func(line string, args ...any) {
 		asked = time.Now()
 		plugin.set(false)
-		inner(line)
+		inner(line, args...)
 	})
 	result, err := runner.Run(context.Background())
 	if err != nil || !result.OK() {
@@ -704,7 +735,7 @@ func TestRestartHarnessAnnouncesThePublishedLine(t *testing.T) {
 	runner := restartRig(t, "process-2")
 	var got []string
 	inner := runner.announce
-	runner.SetAnnounce(func(line string) { got = append(got, line); inner(line) })
+	runner.SetAnnounce(func(line string, args ...any) { got = append(got, line); inner(line, args...) })
 	if _, err := runner.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -725,6 +756,47 @@ func TestRestartHarnessWithNoDriverIsAMiss(t *testing.T) {
 	}
 	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
 		t.Fatalf("a restart with nobody to perform it passed: %v", result.Unmet)
+	}
+}
+
+// 🔴 #2414: `endHarnessSession` asks the driver, by the published line and the
+// conversation's WIRE id, and gives it the step's window; with no driver it is
+// a miss, never a silent pass.
+func TestEndHarnessSessionAnnouncesThePublishedLineWithTheConversation(t *testing.T) {
+	steps := []fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectAck", Outcome: "accepted", WithinMs: 1000},
+		{Step: "endHarnessSession", Conversation: "invoices", WithinMs: 50},
+	}
+	r := newRig(t, script(steps, fixture.Assertions{RingsDelivered: 1}),
+		&autoPlugin{session: requests.SessionFresh, silent: true})
+	type ask struct {
+		line string
+		args []any
+	}
+	var got []ask
+	r.runner.SetAnnounce(func(line string, args ...any) { got = append(got, ask{line, args}) })
+	started := time.Now()
+	result, err := r.runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("Run: %v %v", err, result.Unmet)
+	}
+	want := r.runner.script.Conversations["invoices"].ID
+	if len(got) != 1 || got[0].line != "end the harness session" ||
+		len(got[0].args) != 2 || got[0].args[0] != "conversation" || got[0].args[1] != want {
+		t.Fatalf("announced %+v, want the one published line with conversation %q", got, want)
+	}
+	if elapsed := time.Since(started); elapsed < 50*time.Millisecond {
+		t.Fatalf("the driver was given %v, want the step's 50ms", elapsed)
+	}
+
+	r = newRig(t, script(steps, fixture.Assertions{}), &autoPlugin{session: requests.SessionFresh, silent: true})
+	result, err = r.runner.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if result.OK() || !strings.Contains(strings.Join(result.Unmet, "\n"), "no driver") {
+		t.Fatalf("ending a session with nobody to do it passed: %v", result.Unmet)
 	}
 }
 
@@ -812,5 +884,134 @@ func TestExpectToolCallIsScopedToTheCurrentRequest(t *testing.T) {
 	}
 	if result.OK() {
 		t.Fatal("turn one's tool call met turn two's expectation")
+	}
+}
+
+// 🔴 #2454: `expectToolRerun` is met by a re-run on the CURRENT request, and the
+// `toolReruns` tally counts re-runs while `toolCalls` counts them too.
+func TestExpectToolRerunAndTheToolRerunsTally(t *testing.T) {
+	ring := fixture.Step{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"}
+	one, two := 1, 2
+	for name, tc := range map[string]struct {
+		rerun bool
+		tally *int
+		calls *int
+		pass  bool
+	}{
+		"a re-run meets the step":       {true, &one, &two, true},
+		"no re-run is a miss":           {false, nil, nil, false},
+		"a re-run tally that disagrees": {true, &two, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script([]fixture.Step{ring, {Step: "expectToolRerun", WithinMs: 300},
+				{Step: "expectPost", Matcher: "nonEmpty", WithinMs: 1000},
+			}, fixture.Assertions{RingsDelivered: 1, ToolCalls: tc.calls, ToolReruns: tc.tally})
+			s.Tools = []fixture.ScriptTool{{Name: "list_boards", Permission: "allow"}}
+			s.Results = map[string]fixture.ScriptResult{
+				"list_boards": {CallURN: "urn:uffici:tool_call:1", Result: json.RawMessage(`{"boards":[]}`)},
+			}
+			plugin := &autoPlugin{session: requests.SessionFresh, answer: "ok"}
+			r := newRig(t, s, plugin)
+			plugin.beforePost = func(ctx context.Context, requestID string) {
+				first, err := r.host.CallTool(ctx, requestID, "list_boards", json.RawMessage(`{}`))
+				if err != nil {
+					t.Errorf("CallTool: %v", err)
+				}
+				if tc.rerun {
+					if _, err := r.host.RerunTool(ctx, requestID, first.CallURN); err != nil {
+						t.Errorf("RerunTool: %v", err)
+					}
+				}
+			}
+			result, err := r.runner.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.OK() != tc.pass {
+				t.Fatalf("OK() = %v, want %v: %v", result.OK(), tc.pass, result.Unmet)
+			}
+			wantReruns := 0
+			if tc.rerun {
+				wantReruns = 1
+			}
+			if result.Counts.ToolReruns != wantReruns || result.Counts.ToolCalls != 1+wantReruns {
+				t.Fatalf("counted %d re-runs of %d calls", result.Counts.ToolReruns, result.Counts.ToolCalls)
+			}
+		})
+	}
+}
+
+// 🔴 #2386: `expectMemory` is met by a memory op of that kind on the CURRENT
+// request, and the `memoryOps` tally asserts the ops it names.
+func TestExpectMemoryAndTheMemoryOpsTally(t *testing.T) {
+	ring := fixture.Step{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"}
+	for name, tc := range map[string]struct {
+		expect fixture.Step
+		tally  map[string]int
+		pass   bool
+	}{
+		"the op on this request":       {fixture.Step{Step: "expectMemory", Op: "remember", WithinMs: 1000}, map[string]int{"remember": 1}, true},
+		"another op is a miss":         {fixture.Step{Step: "expectMemory", Op: "forget", WithinMs: 200}, nil, false},
+		"a tally that disagrees fails": {fixture.Step{Step: "expectMemory", Op: "remember", WithinMs: 1000}, map[string]int{"remember": 2}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script([]fixture.Step{ring, tc.expect,
+				{Step: "expectPost", Matcher: "nonEmpty", WithinMs: 1000},
+			}, fixture.Assertions{RingsDelivered: 1, MemoryOps: tc.tally})
+			plugin := &autoPlugin{session: requests.SessionFresh, answer: "Noted."}
+			r := newRig(t, s, plugin)
+			plugin.beforePost = func(ctx context.Context, requestID string) {
+				if _, err := r.host.Memory(ctx, contracts.MemoryRemember, requestID, json.RawMessage(`{"text":"The forklift needs a service."}`)); err != nil {
+					t.Errorf("remember: %v", err)
+				}
+			}
+			result, err := r.runner.Run(context.Background())
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if result.OK() != tc.pass {
+				t.Fatalf("OK() = %v, want %v: %v", result.OK(), tc.pass, result.Unmet)
+			}
+			if result.Counts.MemoryOps["remember"] != 1 {
+				t.Fatalf("memory ops counted %v, want one remember", result.Counts.MemoryOps)
+			}
+		})
+	}
+}
+
+// 🔴 #2390: a ring starts where the platform would — at the offset the last
+// answered close COMMITTED, never at the script's starting offset. The platform's
+// `since` is the participant's committed position, so a brief after an answered
+// turn carries only what came after it; one that re-carried the whole
+// conversation drove a resumed harness session with messages it already held.
+func TestARingAfterAnAnsweredCloseStartsAtTheCommittedOffset(t *testing.T) {
+	s := script([]fixture.Step{
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e2", ThroughCursor: "c0002"},
+		{Step: "expectClose", Conversation: "invoices", Outcome: "answered", WithinMs: 1000},
+		{Step: "appendEntries", Conversation: "invoices", Entries: []fixture.ScriptEntry{
+			{ID: "e3", Cursor: "c0003", Kind: "message", Text: "and one more thing",
+				Author: fixture.ScriptAuthor{Type: "member", ID: "m1", Label: "Ana"}},
+		}},
+		{Step: "ring", Conversation: "invoices", Reason: "mentioned", CauseEntry: "e3", ThroughCursor: "c0003"},
+		{Step: "expectClose", Conversation: "invoices", Outcome: "answered", WithinMs: 1000},
+	}, fixture.Assertions{RingsDelivered: 2})
+	plugin := &autoPlugin{session: requests.SessionFresh, answer: "ok"}
+	r := newRig(t, s, plugin)
+	result, err := r.runner.Run(context.Background())
+	if err != nil || !result.OK() {
+		t.Fatalf("Run: %v %v", err, result.Unmet)
+	}
+	briefs := plugin.seen()
+	if len(briefs) != 2 {
+		t.Fatalf("%d briefs, want 2", len(briefs))
+	}
+	if briefs[0].SinceCursor != "c0001" {
+		t.Fatalf("the first ring starts at %q, want the script's offset c0001", briefs[0].SinceCursor)
+	}
+	if briefs[1].SinceCursor != "c0002" {
+		t.Fatalf("the second ring starts at %q, want c0002 — what the answered close committed", briefs[1].SinceCursor)
+	}
+	if len(briefs[1].Delta) != 1 || briefs[1].Delta[0].ID != "e3" {
+		t.Fatalf("the second brief re-carried earlier entries: %+v", briefs[1].Delta)
 	}
 }

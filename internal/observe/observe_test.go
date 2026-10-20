@@ -43,7 +43,7 @@ func TestEveryLineCarriesTheRequestItsConversationAndElapsed(t *testing.T) {
 	observer.BriefSent("req_1", "conv_1", 3, 128)
 	clock = clock.Add(250 * time.Millisecond)
 	observer.Acked("req_1", requests.AckAccepted, requests.SessionFresh)
-	observer.OpenerSent("req_1", 5, 400, 48000)
+	observer.OpenerSent("req_1", 5, 400, 48000, 2)
 	observer.Posted("req_1", 64)
 	observer.Cancelled("req_1", contracts.CancelSuperseded)
 	observer.Redelivered("req_1", 2)
@@ -85,6 +85,11 @@ func TestEveryLineCarriesTheRequestItsConversationAndElapsed(t *testing.T) {
 				i, lines[i]["direction"], lines[i]["frame"], expected.direction, expected.frame)
 		}
 	}
+
+	// 🔴 #2451: the opener counts its summary entries — a number, never their text.
+	if lines[2]["openerSummaryCount"] != float64(2) {
+		t.Fatalf("the opener line carries openerSummaryCount %v, want 2", lines[2]["openerSummaryCount"])
+	}
 }
 
 // A request the logger never saw opened still logs — it just has no elapsed to
@@ -118,8 +123,8 @@ func TestLoggingFillsItsDefaults(_ *testing.T) {
 // counter is a test observer that records what it was told.
 type counter struct{ events []string }
 
-func (c *counter) BriefSent(string, string, int, int) { c.events = append(c.events, "brief") }
-func (c *counter) OpenerSent(string, int, int, int)   { c.events = append(c.events, "opener") }
+func (c *counter) BriefSent(string, string, int, int)    { c.events = append(c.events, "brief") }
+func (c *counter) OpenerSent(string, int, int, int, int) { c.events = append(c.events, "opener") }
 func (c *counter) Acked(string, requests.AckOutcome, requests.Session) {
 	c.events = append(c.events, "ack")
 }
@@ -137,7 +142,7 @@ func TestFanoutTellsEveryObserverAndSkipsNils(t *testing.T) {
 	observer := Fanout(first, nil, second)
 
 	observer.BriefSent("req_1", "conv_1", 1, 1)
-	observer.OpenerSent("req_1", 1, 1, 1)
+	observer.OpenerSent("req_1", 1, 1, 1, 0)
 	observer.Acked("req_1", requests.AckAccepted, requests.SessionFresh)
 	observer.Posted("req_1", 1)
 	observer.Cancelled("req_1", contracts.CancelExpired)

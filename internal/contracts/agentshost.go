@@ -83,6 +83,12 @@ type Entry struct {
 	Attachments []Attachment
 }
 
+// EntryKindSummary is the platform's summary entry (#2451): its own text
+// standing for earlier messages, carried on an opener and never on a delta.
+// The one kind the companion names — to count it and to script it; it renders
+// nothing and parses nothing in it.
+const EntryKindSummary = "summary"
+
 // Context is what the agent is told before the conversation (#2331): the
 // identity block first, then the organization's and each place's pinned
 // context, composed by the PLATFORM. The companion forwards it one to one and
@@ -118,6 +124,15 @@ type Read struct {
 	Entries []Entry
 	Bounded bool
 	Context *Context
+	// ContextChanged names the levels a person changed since the agent last
+	// answered here (2026-10-12); empty when nothing changed or none was sent.
+	ContextChanged []ContextChange
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string
+	Scope string
 }
 
 // Author is who wrote an entry.
@@ -136,6 +151,13 @@ type Attachment struct {
 	ID   string
 	Name string
 	Ref  string
+	// LocalPath is where the companion prefetched the file, relative to the
+	// workspace (#2673) — the companion's own fact, never the platform's. Empty
+	// when it was not prefetched.
+	LocalPath string
+	// PrefetchClass says why a prefetch the plugin asked for did not happen
+	// (`over_budget`, a platform class, …); empty when it did or was not asked.
+	PrefetchClass string
 }
 
 // Outcome is how a request closed.
@@ -255,6 +277,24 @@ type AgentsHost interface {
 	// platform. Arguments and the result are tenant content and never logged.
 	CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (ToolResult, error)
 
+	// RerunTool re-runs a call the platform recorded, named by its `tool_call`
+	// URN, on a request this companion was rung for (#2454): the platform runs
+	// the recorded tool with the recorded arguments as a NEW call, through
+	// today's approvals. 🔴 Never sent twice once it may have reached the
+	// platform — a re-run is a tool call, and a tool is not idempotent. The
+	// result is tenant content and never logged (the URN is an id and may be).
+	// A request never rung is ErrUnknownRequest, before anything is sent.
+	RerunTool(ctx context.Context, requestID, call string) (ToolResult, error)
+
+	// Memory runs one of the agent's memory ops on a request this companion was
+	// rung for, under that request's conversation (#2385). Body is the op's wire
+	// payload; 🔴 the request it is bound to is ALWAYS the argument, never one the
+	// body carries. The answer is the platform's, as JSON. 🔴 Never sent twice
+	// once it may have reached the platform (a remember is not idempotent), and
+	// neither the body nor the answer is ever logged — facts and queries are tenant
+	// content. A request never rung is ErrUnknownRequest, before anything is sent.
+	Memory(ctx context.Context, op MemoryOp, requestID string, body json.RawMessage) (json.RawMessage, error)
+
 	// CloseRequest closes a request with its outcome, and an error class when
 	// the outcome is an error.
 	CloseRequest(ctx context.Context, requestID string, outcome Outcome, errorClass string) error
@@ -295,6 +335,9 @@ type PostExtras struct {
 	Citations []string
 	// Activity is what the agent did with its harness's own tools, by name.
 	Activity []Activity
+	// Attachments are files uploaded on the same request, which the post
+	// carries by reference (#2673).
+	Attachments []Attachment
 }
 
 // Activity is one harness-tool use a post reports: a name and a summary, never
@@ -321,6 +364,20 @@ type ToolResult struct {
 	CallURN string
 	Result  json.RawMessage
 }
+
+// MemoryOp is one of the agent's four memory operations (#2385).
+type MemoryOp string
+
+// The memory operations, as the platform's routes name them.
+const (
+	MemoryRecall   MemoryOp = "recall"
+	MemoryRemember MemoryOp = "remember"
+	MemoryForget   MemoryOp = "forget"
+	MemoryUnfold   MemoryOp = "unfold"
+)
+
+// MemoryOps are the four, in the order the platform documents them.
+var MemoryOps = []MemoryOp{MemoryRecall, MemoryRemember, MemoryForget, MemoryUnfold}
 
 // ErrUnknownRequest is a tool call naming a request this companion was never
 // rung for: refused before anything is sent (#2349).

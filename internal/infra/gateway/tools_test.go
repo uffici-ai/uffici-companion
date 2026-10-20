@@ -315,3 +315,96 @@ func TestAnInvalidCitationIsTheAnswerNotARetry(t *testing.T) {
 		t.Fatalf("an invalid citation closes as %q, want harness_error", got)
 	}
 }
+
+// 🔴 #2454: a re-run rides the same ticket as a tool call, names the call by its
+// URN, and relays the platform's answer as given.
+func TestARerunRidesTheRequestsConversationTicket(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	boardsCatalog(r)
+	if _, err := r.host.CallTool(context.Background(), requestID, "list_boards",
+		json.RawMessage(`{"query":"`+argumentMarker+`"}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	result, err := r.host.RerunTool(context.Background(), requestID, "urn:uffici:tool_call:1")
+	if err != nil {
+		t.Fatalf("RerunTool: %v", err)
+	}
+	if refusals := r.double.Refusals(); len(refusals) != 0 {
+		t.Fatalf("the double refused the re-run: %v", refusals)
+	}
+	calls := r.double.ToolCalls()
+	if len(calls) != 2 || calls[1].RerunOf != "urn:uffici:tool_call:1" || calls[1].Name != "list_boards" ||
+		calls[1].RequestID != requestID || calls[1].ConversationID != conversationID {
+		t.Fatalf("the platform recorded %+v", calls)
+	}
+	if result.CallURN != "urn:uffici:tool_call:1" || !strings.Contains(string(result.Result), "Support") {
+		t.Fatalf("RerunTool = %+v", result)
+	}
+	assertNoToolContentLogged(t, r)
+}
+
+func TestARerunOfACallNeverMadeIsNotFound(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	boardsCatalog(r)
+	_, err := r.host.RerunTool(context.Background(), requestID, "urn:uffici:tool_call:404")
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "not_found" || classified.ErrorInstruction() == "" {
+		t.Fatalf("RerunTool = %v, want the platform's not_found", err)
+	}
+}
+
+// A call whose arguments were not kept is the platform's RESULT, never an error.
+func TestARerunThatCannotRunIsAResultWithNoURN(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	boardsCatalog(r)
+	r.double.Inject("tool-reruns", gatewaytest.Injected{Status: http.StatusOK,
+		Body: `{"callUrn":null,"result":{"ok":false,"error":"rerun_unavailable","message":"The call's arguments were not kept, so it cannot be re-run. Run the tool again with what you need."}}`})
+	result, err := r.host.RerunTool(context.Background(), requestID, "urn:uffici:tool_call:1")
+	if err != nil || result.CallURN != "" || !strings.Contains(string(result.Result), "rerun_unavailable") {
+		t.Fatalf("RerunTool = %+v, %v", result, err)
+	}
+}
+
+func TestARerunOnARequestNeverRungSendsNothing(t *testing.T) {
+	r := newRig(t)
+	boardsCatalog(r)
+	_, err := r.host.RerunTool(context.Background(), requestID, "urn:uffici:tool_call:1")
+	if !errors.Is(err, contracts.ErrUnknownRequest) {
+		t.Fatalf("RerunTool on an unrung request = %v, want ErrUnknownRequest", err)
+	}
+	if mints := r.double.Mints("conversation"); mints != 0 {
+		t.Fatalf("%d conversation tickets minted for a request never rung", mints)
+	}
+}
+
+// 🔴 A re-run is a tool call: a failure after the body left is never sent again.
+func TestARerunIsNeverRetriedOnceSent(t *testing.T) {
+	r := newRig(t)
+	r.open(t)
+	r.ring(t)
+	boardsCatalog(r)
+	if _, err := r.host.CallTool(context.Background(), requestID, "list_boards", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	r.double.Inject("tool-reruns", gatewaytest.Injected{
+		Status: http.StatusServiceUnavailable, Body: gatewaytest.Envelope("platform_unavailable", true, nil),
+		AfterEffect: true,
+	})
+	_, err := r.host.RerunTool(context.Background(), requestID, "urn:uffici:tool_call:1")
+	var classified contracts.ClassifiedError
+	if !errors.As(err, &classified) || classified.ErrorClass() != "platform_unavailable" {
+		t.Fatalf("RerunTool = %v, want the platform's classified failure", err)
+	}
+	if calls := r.double.ToolCalls(); len(calls) != 2 {
+		t.Fatalf("%d tool calls recorded, want 2 (the call and ONE re-run)", len(calls))
+	}
+	if delays := r.backoffDelays(); len(delays) != 0 {
+		t.Fatalf("the re-run waited to retry: %v", delays)
+	}
+}

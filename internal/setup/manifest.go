@@ -35,6 +35,9 @@ func ManifestSchema() []byte { return manifestSchema }
 type ConfigSet struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
+	// Note is what setup tells the person after setting the key: what it changes
+	// beyond this plugin (a key that is the whole harness's, not one platform's).
+	Note string `json:"note,omitempty"`
 }
 
 // Manifest is what a plugin release says about installing itself. Every field
@@ -45,6 +48,7 @@ type Manifest struct {
 	Name            string            `json:"name"`
 	Version         string            `json:"version,omitempty"`
 	PluginDir       string            `json:"pluginDir"`
+	Workspace       string            `json:"workspace,omitempty"`
 	HomeEnv         string            `json:"homeEnv"`
 	DefaultHome     string            `json:"defaultHome"`
 	Enable          []string          `json:"enable"`
@@ -125,6 +129,8 @@ func ParseManifest(raw []byte) (Manifest, error) {
 	if len(segments) < 2 || segments[len(segments)-1] != manifest.Name {
 		return Manifest{}, fmt.Errorf("%s names pluginDir %q; it must be a directory named after the plugin (%q) inside the harness home, never the harness's plugin folder itself", ManifestFile, manifest.PluginDir, manifest.Name)
 	}
+	// 🔴 The workspace stays inside the harness home by the schema's pattern
+	// alone: no segment may start with a dot, so neither `..` nor `.` can appear.
 	if manifest.EnvFile == "" {
 		manifest.EnvFile = ".env"
 	}

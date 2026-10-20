@@ -496,3 +496,28 @@ func TestDoctorWithNeitherNamesSetup(t *testing.T) {
 		t.Fatalf("exit %d, stderr %q — want 2 naming uffici setup", code, errOut.String())
 	}
 }
+
+// 🔴 #2688: `update` is the verb people who run harnesses type (`hermes update`,
+// `claude update`), so it is `upgrade` by another name — the same flags, the
+// same refusals.
+func TestUpdateIsUpgrade(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := run([]string{"update", "--restart-harness", "--no-restart-harness", "--home", t.TempDir()}, &out, &errOut)
+	if code != 2 || !strings.Contains(errOut.String(), "contradict each other") {
+		t.Fatalf("update did not reach the upgrade command: exit %d, stderr %q", code, errOut.String())
+	}
+}
+
+// 🔴 #2688: a word the companion does not know is refused, never ignored — the
+// daemon's flag set stops at the first word, and `uffici updat` used to start
+// the companion in the foreground.
+func TestAnUnknownCommandIsRefused(t *testing.T) {
+	for _, args := range [][]string{{"updat"}, {"run", "extra"}, {"--home", t.TempDir(), "status"}} {
+		var out, errOut bytes.Buffer
+		code := run(args, &out, &errOut)
+		word := args[len(args)-1]
+		if code != 2 || !strings.Contains(errOut.String(), `unknown command "`+word+`"`) {
+			t.Fatalf("%v: exit %d, stderr %q", args, code, errOut.String())
+		}
+	}
+}

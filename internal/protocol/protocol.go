@@ -130,7 +130,7 @@ type ConnectTicketRequest struct {
 	Client     ClientFacts  `json:"client"`
 	Harness    HarnessFacts `json:"harness"`
 	// Plugin and Host are optional (#2236): the attached plugin's version and
-	// the machine's kind, for the Connect tab — never authority.
+	// the machine's kind, for the General tab — never authority.
 	Plugin *PluginFacts `json:"plugin,omitempty"`
 	Host   *HostFacts   `json:"host,omitempty"`
 }
@@ -271,6 +271,10 @@ type ReadResponse struct {
 	// Context is the composed context (#2331) — on the entries read only, and
 	// optional, so an older gateway's read still decodes.
 	Context *Context `json:"context,omitempty"`
+	// ContextChanged names the context levels a person changed since this agent
+	// last answered in the conversation (2026-10-12) — beside Context, never
+	// inside it, so an older companion's strict context check is untouched.
+	ContextChanged []ContextChange `json:"contextChanged,omitempty"`
 	// Card is the card a card conversation's read is about (#2354). The companion
 	// forwards the context's Card block — the platform composed it — and never
 	// reads this; it is decoded so the struct matches the contract.
@@ -347,6 +351,12 @@ type Context struct {
 	Tokens  int              `json:"tokens"`
 	Bounded bool             `json:"bounded"`
 	Missing []ContextMissing `json:"missing,omitempty"`
+}
+
+// ContextChange is one context level that changed since the agent's last answer.
+type ContextChange struct {
+	Name  string `json:"name"`
+	Scope string `json:"scope"`
 }
 
 // ContextBlock is one composed level; Depth is absent on the identity block.
@@ -458,12 +468,162 @@ type ToolCallRequest struct {
 	Arguments json.RawMessage `json:"arguments"`
 }
 
+// ToolRerunRequest is `POST /v1/tool-calls/rerun`' body (#2454): re-run the call
+// the URN names on the request the agent is answering. The answer is a
+// ToolCallResponse; a call whose arguments were not kept answers the result
+// `rerun_unavailable` with no URN.
+type ToolRerunRequest struct {
+	RequestID string `json:"requestId"`
+	Call      string `json:"call"`
+}
+
+// MemoryRecallRequest is `POST /v1/memory/recall`' body (#2385): every level the
+// conversation sits under, searched for the query. 🔴 The query is tenant content:
+// never logged. DeadlineMS is the plugin's whole budget; every hop answers inside it.
+type MemoryRecallRequest struct {
+	RequestID  string `json:"requestId"`
+	Query      string `json:"query"`
+	Limit      int    `json:"limit,omitempty"`
+	DeadlineMS int    `json:"deadlineMs,omitempty"`
+}
+
+// MemorySource is who a fact came from: `remembered` or `member_written`.
+type MemorySource struct {
+	Kind string `json:"kind"`
+}
+
+// MemoryHit is one recalled fact. 🔴 A level, never a folder id or a chain; the
+// text is tenant content, never logged. Distance is nil when full text found it.
+type MemoryHit struct {
+	URN      string       `json:"urn"`
+	Level    string       `json:"level"`
+	Distance *float64     `json:"distance"`
+	Text     string       `json:"text"`
+	At       string       `json:"at"`
+	Source   MemorySource `json:"source"`
+}
+
+// MemoryRecallResponse answers a recall. Degraded says full text stood in;
+// Missing names what could not be had (`embeddings`).
+type MemoryRecallResponse struct {
+	Hits     []MemoryHit `json:"hits"`
+	Degraded bool        `json:"degraded"`
+	Missing  []string    `json:"missing,omitempty"`
+}
+
+// MemoryRememberRequest is `POST /v1/memory/remember`' body: ONE fact on the
+// conversation. There is no level: an agent writes where it is.
+type MemoryRememberRequest struct {
+	RequestID string `json:"requestId"`
+	Text      string `json:"text"`
+}
+
+// MemoryRememberResponse names the remembered fact.
+type MemoryRememberResponse struct {
+	URN string `json:"urn"`
+}
+
+// MemoryForgetRequest is `POST /v1/memory/forget`' body: MARK a fact superseded,
+// by a newer fact or by the request. Never a delete.
+type MemoryForgetRequest struct {
+	RequestID      string `json:"requestId"`
+	URN            string `json:"urn"`
+	ReplacementURN string `json:"replacementUrn,omitempty"`
+}
+
+// MemoryForgetResponse names what superseded the fact.
+type MemoryForgetResponse struct {
+	URN          string `json:"urn"`
+	SupersededBy string `json:"supersededBy"`
+}
+
+// MemoryUnfoldRequest is `POST /v1/memory/unfold`' body: what a URN superseded.
+type MemoryUnfoldRequest struct {
+	RequestID string `json:"requestId"`
+	URN       string `json:"urn"`
+	Depth     int    `json:"depth,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+}
+
+// MemorySupersededBy is what superseded an unfolded row: a URN this place can see,
+// or `{visible: false}` — something it cannot.
+type MemorySupersededBy struct {
+	Visible bool   `json:"visible"`
+	URN     string `json:"urn,omitempty"`
+}
+
+// MemoryUnfoldRow is one row an unfold reaches, `depth` hops back.
+type MemoryUnfoldRow struct {
+	URN            string        `json:"urn"`
+	Level          string        `json:"level"`
+	Text           string        `json:"text"`
+	At             string        `json:"at"`
+	Depth          int           `json:"depth"`
+	SupersededKind string        `json:"supersededKind"`
+	Source         *MemorySource `json:"source"`
+}
+
+// MemoryUnfoldResponse answers an unfold.
+type MemoryUnfoldResponse struct {
+	URN          string              `json:"urn"`
+	SupersededBy *MemorySupersededBy `json:"supersededBy"`
+	Rows         []MemoryUnfoldRow   `json:"rows"`
+}
+
 // ToolCallResponse answers a tool call: the tool's result as the platform
 // returned it (an actionable refusal included), and the call's ledger URN when
 // it ran — null when it did not (an approval asked for). 🔴 Never logged.
 type ToolCallResponse struct {
 	CallURN *string         `json:"callUrn"`
 	Result  json.RawMessage `json:"result"`
+}
+
+// ── Files (#2671) ───────────────────────────────────────────────────────────
+
+// TransferRequest is `POST /v1/requests/:id/transfers`' body: a download names
+// an entry's attachment (AttachmentID, `<messageId>.<index>`) or a Path; an
+// upload names the file's name, size, CRC32C and type, and To to save it into
+// Files instead of attaching it. One struct decodes every arm of the union.
+// 🔴 The bytes never ride it — they cross the files routes under the grant.
+type TransferRequest struct {
+	Op           string `json:"op"`
+	AttachmentID string `json:"attachmentId,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Filename     string `json:"filename,omitempty"`
+	Size         *int64 `json:"size,omitempty"`
+	CRC32C       string `json:"crc32c,omitempty"`
+	ContentType  string `json:"contentType,omitempty"`
+	To           string `json:"to,omitempty"`
+	Overwrite    bool   `json:"overwrite,omitempty"`
+}
+
+// TransferFile is what the platform knows of a transferred file.
+type TransferFile struct {
+	Name        string `json:"name"`
+	Size        int64  `json:"size"`
+	ContentType string `json:"contentType,omitempty"`
+	CRC32C      string `json:"crc32c,omitempty"`
+}
+
+// TransferResponse is the grant. 🔴 Grant is secret-class — never logged; JTI
+// may be.
+type TransferResponse struct {
+	Op        string       `json:"op"`
+	JTI       string       `json:"jti"`
+	Grant     string       `json:"grant"`
+	ExpiresAt time.Time    `json:"expiresAt"`
+	CallURN   string       `json:"callUrn"`
+	File      TransferFile `json:"file"`
+}
+
+// TransferCompleteResponse answers an upload's completion: the attachment a
+// post carries (ID, Name, Ref) for an upload into the conversation, or Path for
+// one into Files.
+type TransferCompleteResponse struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+	Ref  string `json:"ref,omitempty"`
+	Path string `json:"path,omitempty"`
 }
 
 // ── Errors ──────────────────────────────────────────────────────────────────

@@ -1,0 +1,45 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/transfer-complete-response.schema.json",
+	"title": "transfer-complete-response",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"id": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				},
+				"name": {
+					"type": "string",
+					"maxLength": 255
+				},
+				"ref": {
+					"type": "string",
+					"maxLength": 512
+				}
+			},
+			"required": [
+				"id",
+				"name",
+				"ref"
+			],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"path": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 1025
+				}
+			},
+			"required": [
+				"path"
+			],
+			"additionalProperties": false
+		}
+	]
+}

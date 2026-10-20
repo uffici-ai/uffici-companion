@@ -151,3 +151,42 @@ func TestACardBlockAndItsMissingEntrySurviveUnchanged(t *testing.T) {
 		t.Fatalf("the card context arrived as %+v, want %+v", read.Context, want)
 	}
 }
+
+// The levels a person changed since the agent's last answer (2026-10-12): carried
+// one to one beside the context, an entry the wire could not carry dropped —
+// never the reason a read fails — and nothing when the platform sent none.
+func TestTheDeltaReadCarriesTheChangedLevels(t *testing.T) {
+	r := newRig(t)
+	r.double.Seed(conversationID, gatewaytest.Conversation{Offset: "1040", Entries: []protocol.Entry{
+		entry("1042", "external", "c-1", false, "@smith hello"),
+	}, Context: contextFixture(), ContextChanged: []protocol.ContextChange{
+		{Name: "Development", Scope: "folder"},
+		{Name: "Bad", Scope: "Not A Scope"},
+		// 128 accented characters — 256 bytes — is within the protocol's bound.
+		{Name: strings.Repeat("é", 128), Scope: "folder"},
+		{Name: strings.Repeat("é", 129), Scope: "folder"},
+	}})
+	read, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	want := []contracts.ContextChange{
+		{Name: "Development", Scope: "folder"},
+		{Name: strings.Repeat("é", 128), Scope: "folder"},
+	}
+	if !reflect.DeepEqual(read.ContextChanged, want) {
+		t.Fatalf("the changed levels arrived as %+v, want %+v", read.ContextChanged, want)
+	}
+	if read.Context == nil || len(read.Context.Blocks) != 2 {
+		t.Fatalf("the context beside them was lost: %+v", read.Context)
+	}
+
+	none := seedWithContext(t, contextFixture())
+	read, err = none.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if read.ContextChanged != nil {
+		t.Fatalf("a read naming no change arrived with %+v", read.ContextChanged)
+	}
+}

@@ -1,0 +1,6 @@
+{
+	"reason": "every memory op is bound to a request, never a bare conversation (#2385)",
+	"value": {
+		"text": "x"
+	}
+}

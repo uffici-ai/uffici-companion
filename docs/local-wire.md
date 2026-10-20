@@ -62,13 +62,48 @@ still ends in `redelivery_exhausted`. A plugin that omits it keeps the older
 rule, under which an acknowledged request is never redelivered and sits until
 its deadline after a restart.
 
+`drift`, optional, is what in the harness's own configuration reaches past
+Uffici, as the plugin read it at this hello — a client-reported signal that
+`uffici doctor` shows, and **never a refusal**: no value in it closes a
+connection, holds a ring or fails a setup step. Three kinds, each a list of
+names: `mcpServers` (MCP servers configured and enabled in the harness, whose
+calls never pass through the platform), `channels` (the harness's other live
+channels, Uffici's own excluded) and `localMemory` (the settings that keep a
+memory of the harness's own — for Hermes `memory.memory_enabled`,
+`memory.user_profile_enabled`, or `memory.provider` naming another provider).
+A kind the plugin could not read is absent; an empty list means it read the
+source and found nothing. Names only — never a URL, a header, a path or a
+credential — and the plugin clips each name to 64 characters and each list to
+its bound itself, so its report can never be the reason a hello is refused. A
+plugin that omits `drift` is one that predates it.
+
+`harnessSupport`, optional, is the harness versions this plugin release supports
+and its verdict on `harnessVersion` against them: `range` (the supported versions
+in the plugin's own words, at most 64 characters) and `supported` (a boolean,
+**absent** when the plugin could not read its harness's version). Like `drift`, it
+is shown by `uffici doctor` and **never a refusal**. The plugin owns the range,
+because only it knows the interfaces it was written against and how its harness
+numbers releases; the companion never parses a harness version. A plugin
+that omits it is one that predates it.
+
+`capabilities`, optional, is what the plugin asks the companion to do for it —
+**the plugin's choice, never the companion's**, because only the plugin knows
+what its harness needs. Today one: `prefetchAttachments` `{maxBytes}` asks the
+companion to download a brief's attachments into the [workspace](#the-workspace)
+before handing the brief over, up to `maxBytes` per brief (the companion's own
+cap may be lower). A plugin that omits it is asked nothing and gets nothing
+prefetched; an unknown capability is ignored.
+
 **Companion → plugin**: `companionVersion`, and once known, `agentSlug` and
 `orgSlug`. `features`, optional, lists what this companion can carry beyond what
 every v1 companion does, so a newer plugin never sends an older companion a field
 it would drop: `question` means a `post` may carry a question; `redelivery` means
 a restarted harness process is handed again every request its predecessor had
 accepted; `tools` means the plugin may call [`tools.list`](#toolslist) and
-[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. An
+[`tools.call`](#toolscall), and a `post` may carry `citations` and `activity`. `rerun`, only ever beside `tools`, means the plugin may call [`tools.rerun`](#toolsrerun). `memory` means the plugin may call the four [`memory.*`](#memoryrecall-memoryremember-memoryforget-memoryunfold) ops. `files` means the plugin may call
+[`files.download` and `files.upload`](#filesdownload-filesupload), and the hello
+then also carries `workspace`: the workspace's absolute path **as the companion
+sees it**, which every `localPath` on this wire is relative to. An
 absent list means none, and a plugin ignores a name it does not know.
 
 ### `ready` — plugin → companion
@@ -123,6 +158,7 @@ Opens one request on one conversation: `requestId`, `conversationId`, `reason`
 - `resetSession` is the platform forcing a fresh harness session; the plugin must not resume.
 - The plugin renders the `cause`'s author as the inbound sender and the `reason` as one line.
 - `context` is what the agent is told before the conversation — see [the context](#the-context). A companion that predates it sends none, and the plugin keeps its static hint.
+- `contextChanged`, optional, names the context levels a person changed since the agent last answered in this conversation — see [the context](#the-context). Absent when nothing changed, before the agent's first answer there, and from a companion that predates it.
 
 ### `ack` — plugin → companion
 
@@ -130,6 +166,7 @@ Opens one request on one conversation: `requestId`, `conversationId`, `reason`
 
 - `outcome`: `accepted`, `deferred`, `rejected`.
 - `session`: `fresh` or `resumed`. **Freshness is the harness's fact**, not the platform's — only the plugin knows whether it opened a new session.
+  🔴 The plugin reads it from the harness's **routing decision**, never infers it from a lookup: a harness can hold an entry for a session it replaces the moment the message routes (Hermes drops one that is suspended, or ended in its database, and older releases reset one on a timer). A plugin that answered `resumed` because the key existed sent the turn to a new session with no history and no opener. The Hermes plugin routes through the harness's own call, the one the turn makes, and answers `fresh` when that session has no transcript. A check it cannot make answers `fresh`: a wrong `resumed` costs the conversation, a wrong `fresh` one extra read.
 - A `rejected` ack redelivers. A `deferred` ack keeps the request open with no session yet.
 
 ### `opener` — companion → plugin
@@ -165,6 +202,13 @@ harness's account of itself, and is never treated as a Uffici tool call. Never a
 tool's arguments or its result.
 
 Both are sent only to a companion whose `hello` lists the `tools` feature.
+
+`attachments`, optional, are files the post carries — at most twenty, each
+`{id, name, ref}` exactly as a [`files.upload`](#filesdownload-filesupload)
+without `to` answered it on the same request. The bytes were uploaded before
+the post; Uffici refuses an attachment it did not record for the request, and
+the post then fails like any refused post. Sent only to a companion whose
+`hello` lists the `files` feature.
 
 ### `done` — plugin → companion
 
@@ -243,6 +287,54 @@ result}`.
 - Neither the arguments nor the result reach a log line. The companion logs one line per call: the tool's name, the request and the class.
 - Sent only to a companion whose `hello` lists the `tools` feature.
 
+#### `tools.rerun`
+
+Re-run a call Uffici recorded, named by its `tool_call` URN — one the agent sees in a
+summary, a search result or a trace — on the request the plugin is answering. The
+payload is `{requestId, call}`, `call` being `urn:uffici:tool_call:<n>`; the result is
+`tools.call`'s, `{callUrn, result}`.
+
+- Uffici runs the recorded tool again, now, with the arguments it had, as a **new** call: `callUrn` names the new call, and a tool that needs approval asks again.
+- A call whose arguments were not kept cannot be re-run, and that is a **result**, not an error: `{"ok": false, "error": "rerun_unavailable", "message": …}` with a `null` `callUrn`, for the model to read and act on.
+- A URN that names no call this agent made in this conversation is Uffici's `not_found`, answered `upstream_failed` with Uffici's sentence.
+- Everything else is `tools.call`'s: a `requestId` the companion did not deliver is `not_permitted` and nothing is sent, a re-run is sent at most once, a result over the call bound asks for less, and neither the result nor anything but the URN, the request and the class reaches a log line.
+- Sent only to a companion whose `hello` lists the `rerun` feature.
+
+#### `memory.recall`, `memory.remember`, `memory.forget`, `memory.unfold`
+
+The agent's memory in Uffici: what was learned at the place the conversation sits, kept
+by the organization rather than by the agent. Every op is bound to the request the
+plugin is answering, like a tool call — a `requestId` the companion did not deliver is
+refused with `not_permitted` and nothing is sent — and each is sent at most once.
+
+- **`memory.recall`** `{requestId, query, limit?, deadlineMs?}` → `{hits, degraded, missing?}`. Every level the conversation sits under is searched — the organization, its folders, the conversation — and each hit names its `level` (`conversation`, `folder` or `organization`), never a folder. Of two near-duplicates the closer level wins. `distance` is `null` when full text found the hit; `degraded: true` says full text stood in for some or all of the answer, and `missing: ["embeddings"]` that the query itself could not be embedded. An empty `hits` with neither flag means nothing matched.
+- 🔴 **`deadlineMs` is the plugin's whole budget**, and the companion answers inside it: it keeps a margin back and hands Uffici a shorter deadline still, so the answer arrives before a harness's own bound on the call. A deadline it misses is answered `upstream_failed` with a sentence saying memory could not be checked — never an empty recall that reads as "nothing remembered".
+- **`memory.remember`** `{requestId, text}` → `{urn}` — ONE fact about the work, on the request's conversation. There is no level: an agent writes where it is, and a person promotes.
+- **`memory.forget`** `{requestId, urn, replacementUrn?}` → `{urn, supersededBy}` — MARKS a fact an agent wrote in this conversation superseded, by a newer fact of this conversation or by the request. It never deletes; anything else is refused, carried as `upstream_failed` with Uffici's class `forget_refused` in `upstream`.
+- **`memory.unfold`** `{requestId, urn, depth?, limit?}` → `{urn, supersededBy, rows}` — what a fact superseded, up to two hops back. `supersededBy: {visible: false}` means it was superseded by something this conversation cannot see.
+- A failure is answered as it came, `upstream_failed` with Uffici's class in `upstream` and its sentence as the `instruction`, for the agent to relay.
+- Facts, queries and hits never reach a log line. The companion logs one line per op: the op, the request and the class.
+- Sent only to a companion whose `hello` lists the `memory` feature, which it announces only when it serves all four.
+
+#### `files.download`, `files.upload`
+
+Files between the organization in Uffici and the [workspace](#the-workspace) on
+this machine, for the request the plugin is answering. The same two ops for every
+plugin: how a harness shows an image or sends a document is its plugin's
+business, never the companion's. **The bytes never ride this wire** — a call
+carries paths, sizes and ids; the companion moves the file itself, and resumes it
+after a dropped connection.
+
+- **`files.download`** `{requestId, attachmentId | path}` → `{localPath, size, contentType}`. Exactly one of `attachmentId` (an entry attachment's `id`, as a brief or an opener carried it) and `path` (a path in the organization's Files). The file lands at `conversations/<conversationId>/<attachmentId>-<name>` or `files/<path>`; `localPath` says which, relative to the workspace. An attachment never changes once posted, so one already in the workspace is answered from disk with nothing sent to Uffici.
+- **`files.upload`** `{requestId, localPath, to?, overwrite?}` → `{ref, id, name, size}` or `{path, size}`. `localPath` is relative to the workspace, or absolute and inside it. Without `to`, the file is attached to the request's reply: the next `post` carries it, and `{ref, id, name}` is that attachment. With `to`, it is saved into Files at that path and the answer is the `path` it got; `overwrite: true` replaces a file already there, which asks a person first.
+- A `requestId` the companion did not deliver is `not_permitted`, and nothing is sent.
+- 🔴 **A path the workspace fence refuses** — a `..`, a path outside the workspace, a link leading out of it, a hidden name such as `.env` or `.ssh` — is `not_permitted` with `upstream` `{"class": "path_refused"}` and a sentence. A `localPath` naming no regular file is `malformed_payload` with `{"class": "local_file_missing"}`. Neither ever reaches Uffici.
+- A refusal or failure from Uffici is `upstream_failed`, with Uffici's class in `upstream` (`transfer_denied`, `needs_approval`, `file_exists`, `file_too_large`, `destination_refused`, …) and its sentence as the `instruction`. A download whose bytes do not match Uffici's size or checksum is discarded and answered `{"class": "checksum_mismatch"}` or `{"class": "size_mismatch"}`.
+- A transfer dropped mid-file resumes from where it stopped, inside the same call: an upload from the offset Uffici holds, a download from the bytes already written. The call's `deadlineMs` bounds the whole transfer, so a plugin moving a large file gives the call a long deadline.
+- A request that is stopped, superseded, expires or closes takes its transfers with it, and nothing half-written is left in the workspace.
+- Neither paths, file names nor anything Uffici granted reach a log line. The companion logs one line per transfer: the op, the request, a transfer id, the byte count and the class.
+- Sent only to a companion whose `hello` lists the `files` feature.
+
 ### `result` — companion → plugin
 
 The one answer to a `call`. Fields: `callId`, then **exactly one** of `payload` (success) or `error`.
@@ -281,8 +373,61 @@ one**: it maps the platform's bounded read one to one.
 `id`, `cursor`, `at`, `author`, `kind`, `text`, and optional `attachments`.
 
 - `author`: `type` (`member`, `agent`, `correspondent`, `system`), `id`, `label`, optional `handle` — the agent's `@slug`, so the model can address it — and `self`, true for the answering agent's own entries.
-- `kind`: `message`, `tool_line`, `tombstone` — **and anything else**, see forward compatibility.
+- `kind`: `message`, `tool_line`, `tombstone`, `summary` — **and anything else**, see forward compatibility. A `summary` arrives on an opener, authored by the platform (`system`): its text stands for earlier messages — a header line saying what it covers and how to read them, then the summary — or is one sentence saying earlier messages are not shown. A reader renders it as written, with no author label.
 - `attachments`: `id`, `name`, `ref`. By reference; bytes never ride this wire.
+  When the plugin's hello asked for `prefetchAttachments`, each attachment of a
+  brief's `delta` also carries either `localPath` — the file is in the workspace,
+  at that path relative to it — or `prefetchError` `{class}`: it is not, because it
+  was over the budget (`over_budget`), Uffici refused it, or the transfer failed.
+  Such an attachment can still be fetched with `files.download`. An opener's
+  entries are never prefetched.
+
+## The workspace
+
+The one directory the companion reads and writes for the harness: every file a
+call names, and every file it downloads, is inside it.
+
+- **Where it is.** `$UFFICI_WORKSPACE` when set; else the `workspace` the
+  plugin's install manifest names (a path inside the harness's home, recorded by
+  `uffici setup`); else `$UFFICI_HOME/workspace`. In a pod, a volume both
+  containers mount at the same path. `uffici doctor` prints it and whether the
+  companion can write to it, and the companion's `hello` names it.
+- **Its layout**: `conversations/<conversationId>/` for attachments,
+  `files/<path>` for files downloaded from Files, and anything the harness writes
+  there itself. `.uffici/` is the companion's own and is refused to every call.
+- 🔴 **The fence.** Every path a call names is resolved through the
+  filesystem's own links to inside the workspace, or refused: a `..` segment, a
+  path outside it, a link that leads out of it, and any hidden name — a segment
+  starting with `.`, so `.env` or `~/.ssh/id_ed25519` — unless the machine's owner
+  set `UFFICI_WORKSPACE_ALLOW_DOTFILES=1`. `.uffici` is refused in any letter
+  case, dotfiles allowed or not. A refusal is a call result, never a crash.
+- 🔴 **The fence holds at the act, not only at the check.** Every open, file
+  created, directory made, rename and removal goes through the workspace opened
+  once as a root, never through a path string: a directory swapped for a link
+  after the path was checked leads nowhere outside the workspace. So a link
+  inside the workspace is followed only when its target is RELATIVE and stays
+  inside; a link with an absolute target is refused even when it points inside.
+  A file is uploaded only when it is a regular file with one name — a FIFO, a
+  device or a hard link is refused. A downloaded file's mode is set on the open
+  file before it is moved into place.
+- **Where it may not be.** The workspace may not be `$UFFICI_HOME` or a
+  directory containing it — that would put the agent key inside the fence; the
+  companion then serves no file op. Inside it, the default, is fine.
+- **Resuming.** A download dropped mid-file resumes only when Uffici named both
+  an `ETag` (so `If-Range` can refuse a changed file) and a CRC32C (so the result
+  is checked whole); otherwise it starts again from zero. A server that goes
+  silent — no headers for 30 seconds, or no bytes for 60 — fails the attempt,
+  which is retried.
+- **Prefetch.** A brief's prefetch runs for at most 15 seconds, or a quarter of
+  the time left to the request when that is less, and never holds the
+  companion's other work: a stop for the request reaches the plugin at once and
+  ends the prefetch, and no brief follows it.
+- **Attachment ids** become part of a file name (`<attachmentId>-<name>`), so an
+  `attachmentId` carrying a `-` is refused with `path_refused`.
+- **Settings**: `UFFICI_UPLOAD_CHUNK_BYTES` (an upload's chunk, 16 MiB by default
+  and at most 32 MiB) and `UFFICI_PREFETCH_MAX_BYTES` (the companion's own cap on
+  a brief's prefetch, 50 MiB by default; the plugin's `maxBytes` can only lower
+  it).
 
 ## The context
 
@@ -297,6 +442,7 @@ one and composes nothing.
 - `bounded` is true when the budget left some of the context out.
 - `missing` names a part the brief should have had and does not — `part`, `class` and the `instruction` the agent relays to the person. The plugin renders each instruction inside the context; it never drops one, because a silent gap would let the agent answer as if it had been told everything. A context the companion receives but cannot read arrives the same way: no blocks, and the context named missing with the platform's own sentence.
 - The plugin places the context on the **system** side of every turn, fresh or resumed, so an edit reaches the next answer — never on the user side, and the opener never on the system side.
+- `contextChanged` is a list of `{name, scope}` beside `context`, never inside it: the levels whose context changed since the agent's last answer here. The agent's earlier messages may contradict the new text, so the plugin says so on the **user** side of the turn, beside the reason it was woken — the current context wins, and the earlier answers were right when they were given. The system side is untouched, so a harness's prompt cache sees nothing new beyond the edit itself.
 
 ## The per-request state machine
 
@@ -385,7 +531,7 @@ and the harness is not degraded more than the network already does:
 ## Forward compatibility
 
 🔴 **A reader ignores what it does not know.** This is a requirement, not a
-tolerance: a later summary entry kind must arrive with no version bump.
+tolerance: a new entry kind must arrive with no version bump, as `summary` did.
 
 - **An unknown field is ignored.** Schemas admit unknown properties deliberately; what they require is the fields that carry meaning, so a *renamed* field still fails.
 - **An unknown entry `kind` renders as a labelled line.** `kind` is deliberately **not** a closed enum in the schema. Closing it would make every future kind a breaking change.

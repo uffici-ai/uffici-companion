@@ -101,3 +101,38 @@ func TestAContextNamingOnlyWhatIsMissingIsAValidFrame(t *testing.T) {
 		t.Fatalf("blocks reached the wire as %#v, want []", brief.Context["blocks"])
 	}
 }
+
+// The changed levels (2026-10-12): beside the context on a VALID frame, and the
+// key absent — never an empty list — when nothing changed, so an older plugin
+// never sees it and a newer one says nothing.
+func TestABriefNamesTheChangedLevelsOnlyWhenThereAreAny(t *testing.T) {
+	conn := &bytesConn{}
+	sink := &frameSink{conn: conn}
+	changed := briefWith(nil)
+	changed.ContextChanged = []contracts.ContextChange{{Name: "Development", Scope: "folder"}}
+	if err := sink.SendBrief(context.Background(), changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.SendBrief(context.Background(), briefWith(nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i, raw := range conn.frames {
+		if err := wire.Validate(raw); err != nil {
+			t.Fatalf("brief %d is not a valid frame: %v", i, err)
+		}
+	}
+	var first wire.Brief
+	if err := json.Unmarshal(conn.frames[0], &first); err != nil {
+		t.Fatal(err)
+	}
+	if len(first.ContextChanged) != 1 || first.ContextChanged[0] != (wire.ContextChange{Name: "Development", Scope: "folder"}) {
+		t.Fatalf("the brief named %+v", first.ContextChanged)
+	}
+	var second map[string]any
+	if err := json.Unmarshal(conn.frames[1], &second); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := second["contextChanged"]; present {
+		t.Fatal("a brief with nothing changed carried the key")
+	}
+}

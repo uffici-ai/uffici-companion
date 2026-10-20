@@ -32,6 +32,10 @@ type Record struct {
 	// service was written with them — what a re-run without the flags keeps.
 	LogShipping     string `json:"logShipping,omitempty"`
 	HarnessLogLevel string `json:"harnessLogLevel,omitempty"`
+	// Workspace is the workspace the plugin's manifest named, resolved inside
+	// HarnessHome (#2673): the daemon's default when UFFICI_WORKSPACE is unset.
+	// Empty when the manifest names none.
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // HarnessName is what a harness may be called: it becomes a repository name.
@@ -78,6 +82,9 @@ func ReadRecord(companionHome string) (Record, error) {
 	}
 	if record.HarnessHome != "" && !filepath.IsAbs(record.HarnessHome) {
 		return Record{}, fmt.Errorf("%s names a harness home that is not an absolute path", RecordFile)
+	}
+	if record.Workspace != "" && !filepath.IsAbs(record.Workspace) {
+		return Record{}, fmt.Errorf("%s names a workspace that is not an absolute path", RecordFile)
 	}
 	return record, nil
 }

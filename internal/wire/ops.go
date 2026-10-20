@@ -23,6 +23,27 @@ const (
 	OpToolsCall = "tools.call"
 )
 
+// OpToolsRerun re-runs a call the platform recorded, named by its `tool_call` URN,
+// on the request being answered (#2454): a NEW call with the recorded arguments.
+const OpToolsRerun = "tools.rerun"
+
+// The agent's memory (#2385): four call ops, served only together. Each is bound to
+// a request this companion delivered, like a tool call.
+const (
+	OpMemoryRecall   = "memory.recall"
+	OpMemoryRemember = "memory.remember"
+	OpMemoryForget   = "memory.forget"
+	OpMemoryUnfold   = "memory.unfold"
+)
+
+// Files between Uffici and the workspace (#2673): two call ops, served only
+// together, each bound to a request this companion delivered. The same two for
+// every plugin — a harness's own conventions are its plugin's.
+const (
+	OpFilesDownload = "files.download"
+	OpFilesUpload   = "files.upload"
+)
+
 // Op payload directions.
 const (
 	OpRequest = "request"

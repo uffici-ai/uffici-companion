@@ -1,0 +1,9 @@
+{
+	"reason": "an upload is bound to its CRC32C",
+	"value": {
+		"op": "upload",
+		"filename": "a.txt",
+		"size": 3,
+		"contentType": "text/plain"
+	}
+}

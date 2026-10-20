@@ -72,6 +72,36 @@ type Health struct {
 	// doctor` (#2349): a count, never a name or a schema. Absent until a plugin
 	// first lists them — the catalog is read per conversation.
 	Tools *HealthTools `json:"tools,omitempty"`
+	// Drift is the attached plugin's report of its harness's drift, for
+	// `uffici doctor` (#2406): names only, never a URL, a header or a
+	// credential. Absent while no plugin is attached, or when the attached one
+	// predates the report.
+	Drift *HealthDrift `json:"drift,omitempty"`
+	// Harness is the attached plugin's harness, its version, and the plugin's
+	// statement of the versions it supports (#2414), for `uffici doctor`.
+	// Absent while no plugin is attached.
+	Harness *HealthHarness `json:"harness,omitempty"`
+}
+
+// HealthDrift is a plugin's drift report as `/healthz` carries it. 🔴 No
+// `omitempty` on the kinds: a kind the plugin could not read is `null`, one it
+// read and found clean is `[]`, and the doctor says different things for each.
+type HealthDrift struct {
+	MCPServers  []string `json:"mcpServers"`
+	Channels    []string `json:"channels"`
+	LocalMemory []string `json:"localMemory"`
+}
+
+// HealthHarness is the attached plugin's harness as `/healthz` reports it
+// (#2414): the plugin's own words, never parsed by the companion.
+type HealthHarness struct {
+	Kind    string `json:"kind"`
+	Version string `json:"version"`
+	// Range and Supported are the plugin's support statement; Range is empty
+	// when the plugin predates it, and Supported nil when it could not read
+	// the harness's version.
+	Range     string `json:"range,omitempty"`
+	Supported *bool  `json:"supported,omitempty"`
 }
 
 // HealthTools is the most recently listed catalog's size.

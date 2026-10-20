@@ -48,6 +48,15 @@ const AttachWait = 15 * time.Second
 // alone would leave the step waiting on a restart nobody performs.
 const RestartHarnessLine = "restart the harness"
 
+// EndHarnessSessionLine is what an `endHarnessSession` step asks the run's
+// driver to act on (#2414), with the conversation's wire id as `conversation`.
+//
+// 🔴 A published literal, like RestartHarnessLine: both drivers end that
+// conversation's session INSIDE the real harness when the companion logs it —
+// for Hermes, its row in `state.db`, which a live gateway reads at routing time
+// and replaces with a new, empty session. Pinned from the platform's root.
+const EndHarnessSessionLine = "end the harness session"
+
 // Plugin is what the runner can do to the attached plugin, for the steps that
 // exercise reconnection and refusal.
 //
@@ -106,6 +115,16 @@ type Counts struct {
 	Redeliveries int
 	// ToolCalls is how many tool calls reached the host (#2349).
 	ToolCalls int
+	// ToolReruns is how many of those tool calls were re-runs of a recorded call
+	// (#2454); a re-run is also counted in ToolCalls.
+	ToolReruns int
+	// MemoryOps is how many of each memory op reached the host (#2386).
+	MemoryOps map[string]int
+	// Uploads is how many uploads the host recorded, UploadsResumed how many of
+	// them resumed after a dropped connection, Downloads how many downloads were
+	// served to their last byte, and AttachmentsPosted how many attachments the
+	// posts carried (#2679).
+	Uploads, UploadsResumed, Downloads, AttachmentsPosted int
 }
 
 // events is everything the runner saw, in order.
@@ -164,6 +183,11 @@ type Runner struct {
 	// it; AttachWait is the value every real run gets.
 	attachWait time.Duration
 
+	// noPostBaseline, when set, runs once an `expectNoPost` step has counted the
+	// posts it measures from. A test seam only (#2692): it lets a test order a
+	// post AFTER that count without a timer. Nil in every real run.
+	noPostBaseline func()
+
 	// lastRing is the request id the most recent `ring` step opened.
 	//
 	// 🔴 Tracked here rather than derived from delivered briefs. A ring that
@@ -179,8 +203,9 @@ type Runner struct {
 	ringMu             sync.Mutex
 
 	// announce tells the run's driver something only it can do — restart the
-	// harness. Nil in a run with no driver, where `restartHarness` fails.
-	announce func(line string)
+	// harness, end a session inside it. Nil in a run with no driver, where
+	// `restartHarness` and `endHarnessSession` fail. args are slog key/values.
+	announce func(line string, args ...any)
 }
 
 // New builds a Runner.
@@ -210,7 +235,7 @@ func (r *Runner) SetAttachWait(wait time.Duration) {
 
 // SetAnnounce sets how the runner asks the run's driver to act: the daemon logs
 // the line, and the driver following that log acts on it.
-func (r *Runner) SetAnnounce(announce func(line string)) { r.announce = announce }
+func (r *Runner) SetAnnounce(announce func(line string, args ...any)) { r.announce = announce }
 
 // Observer is the runner's view of the state machine.
 func (r *Runner) Observer() requests.Observer { return (*observer)(r) }
@@ -224,7 +249,7 @@ func (o *observer) BriefSent(requestID, _ string, _, _ int) {
 	o.events.notify()
 }
 
-func (o *observer) OpenerSent(requestID string, _, _, _ int) {
+func (o *observer) OpenerSent(requestID string, _, _, _, _ int) {
 	o.events.mu.Lock()
 	o.events.openers = append(o.events.openers, requestID)
 	o.events.mu.Unlock()
@@ -361,8 +386,14 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 	case "expectNoPost":
 		current := r.latestRequestID()
 		before := r.postsFor(current)
-		r.sleep(ctx, r.within(step.ForMs))
-		if r.postsFor(current) > before {
+		if r.noPostBaseline != nil {
+			r.noPostBaseline()
+		}
+		// Fails the moment a post arrives rather than at the window's end
+		// (#2692): a long window costs nothing when the post comes. The last
+		// count after the window also covers a run cancelled mid-window.
+		arrived := func() bool { return r.postsFor(current) > before }
+		if r.waitFor(ctx, step.ForMs, arrived, "none arrived") == "" || arrived() {
 			return "a post arrived for " + current + " where none was expected"
 		}
 		return ""
@@ -387,8 +418,19 @@ func (r *Runner) play(ctx context.Context, index int, step fixture.Step) string 
 		return ""
 	case "restartHarness":
 		return r.restartHarness(ctx, step)
+	case "endHarnessSession":
+		return r.endHarnessSession(ctx, step)
 	case "expectToolCall":
 		return r.expectToolCall(ctx, step)
+	case "expectToolRerun":
+		return r.expectToolRerun(ctx, step)
+	case "expectMemory":
+		return r.expectMemory(ctx, step)
+	case "interruptNextUpload":
+		r.host.InterruptNextUpload(int64(step.AfterBytes))
+		return ""
+	case "expectUpload":
+		return r.expectUpload(ctx, step)
 	default:
 		// Unreachable: Validate refuses unknown steps at load. Stated rather than
 		// ignored, because a silently skipped step is a removed assertion.
@@ -405,6 +447,14 @@ func (r *Runner) ring(index int, step fixture.Step) string {
 	if step.DeadlineMs > 0 {
 		deadline = r.clock().Add(time.Duration(step.DeadlineMs) * time.Millisecond)
 	}
+	// 🔴 Where the platform would start (#2390): the offset the conversation's
+	// last answered or empty close COMMITTED. The script's own `offset` is only
+	// where the store began; ringing from it re-carried the whole conversation
+	// into every brief, which the platform never does.
+	since, err := r.host.OffsetOf(step.Conversation)
+	if err != nil {
+		return err.Error()
+	}
 	requestID := fmt.Sprintf("req_%d", index)
 	r.ringMu.Lock()
 	r.lastRing = requestID
@@ -418,7 +468,7 @@ func (r *Runner) ring(index int, step fixture.Step) string {
 		Reason:         step.Reason,
 		Cause:          contracts.Cause{EntryID: step.CauseEntry},
 		Deadline:       deadline,
-		SinceCursor:    conversation.Offset,
+		SinceCursor:    since,
 		ThroughCursor:  step.ThroughCursor,
 		ResetSession:   step.ResetSession,
 	}
@@ -463,6 +513,9 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 			if sent.RequestID != current {
 				continue
 			}
+			if step.Attachments != nil && !r.attachedIntact(sent, *step.Attachments) {
+				continue
+			}
 			switch matcher {
 			case "contains":
 				if strings.Contains(sent.Text, step.Value) {
@@ -485,8 +538,59 @@ func (r *Runner) expectPost(ctx context.Context, step fixture.Step) string {
 		}
 		return false
 	}
+	miss := fmt.Sprintf("no post satisfying %s %q", matcher, step.Value)
+	if step.Attachments != nil {
+		miss += fmt.Sprintf(" carrying %d intact attachment(s)", *step.Attachments)
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, miss)
+}
+
+// attachedIntact is whether a post carries exactly `want` attachments, each an
+// upload of its own request that arrived with the CRC32C its grant was minted
+// for — what the person downloads is what the harness made (#2679).
+func (r *Runner) attachedIntact(sent fixture.PostRecord, want int) bool {
+	if len(sent.Attachments) != want {
+		return false
+	}
+	intact := map[string]bool{}
+	for _, upload := range r.host.Uploads() {
+		if upload.RequestID == sent.RequestID && upload.ID != "" && upload.Intact {
+			intact[upload.ID] = true
+		}
+	}
+	for _, attachment := range sent.Attachments {
+		if !intact[attachment.ID] {
+			return false
+		}
+	}
+	return true
+}
+
+// expectUpload waits for an upload on the CURRENT request that arrived intact:
+// saved at `to` when the step names one, else attached to the reply, and
+// carrying `contains` when given (#2679).
+func (r *Runner) expectUpload(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, upload := range r.host.Uploads() {
+			if upload.RequestID != current || !upload.Intact {
+				continue
+			}
+			if strings.TrimLeft(upload.To, "/") != strings.TrimLeft(step.To, "/") {
+				continue
+			}
+			if step.Contains == "" || strings.Contains(string(upload.Data), step.Contains) {
+				return true
+			}
+		}
+		return false
+	}
+	where := "attached to the reply"
+	if step.To != "" {
+		where = "saved at " + step.To
+	}
 	return r.waitFor(ctx, step.WithinMs, matched,
-		fmt.Sprintf("no post satisfying %s %q", matcher, step.Value))
+		fmt.Sprintf("no intact upload %s carrying %q", where, step.Contains))
 }
 
 // expectToolCall waits for a tool call on the CURRENT request naming the tool,
@@ -506,6 +610,36 @@ func (r *Runner) expectToolCall(ctx context.Context, step fixture.Step) string {
 	}
 	return r.waitFor(ctx, step.WithinMs, matched,
 		fmt.Sprintf("no call of tool %q with arguments containing %q", step.Name, step.ArgumentsContain))
+}
+
+// expectToolRerun waits for a re-run of a recorded call on the CURRENT request
+// (#2454): the plugin's re-run tool reaching the platform side.
+func (r *Runner) expectToolRerun(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, call := range r.host.ToolCalls() {
+			if call.RequestID == current && call.RerunOf != "" {
+				return true
+			}
+		}
+		return false
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, "no re-run of a recorded tool call")
+}
+
+// expectMemory waits for a memory op on the CURRENT request (#2386): the harness's
+// own tool reaching the platform, or its prefetch before a turn.
+func (r *Runner) expectMemory(ctx context.Context, step fixture.Step) string {
+	current := r.latestRequestID()
+	matched := func() bool {
+		for _, call := range r.host.MemoryCalls() {
+			if call.RequestID == current && string(call.Op) == step.Op {
+				return true
+			}
+		}
+		return false
+	}
+	return r.waitFor(ctx, step.WithinMs, matched, fmt.Sprintf("no memory %s on the current request", step.Op))
 }
 
 // expectClose waits for a request to close, optionally for a NAMED conversation
@@ -626,6 +760,28 @@ func (r *Runner) restartHarness(ctx context.Context, step fixture.Step) string {
 	return miss
 }
 
+// endHarnessSession asks the driver to end the conversation's session inside
+// the harness (#2414), then gives it `withinMs` to do so.
+//
+// 🔴 Nothing here can see the session end — it lives in the harness — so this
+// step is never the evidence. The script's NEXT ring is: a plugin that reads its
+// harness's routing acks it `fresh` and earns an opener (`expectAck` with
+// `session: fresh`, then `expectOpener`), and one that read a stale lookup acks
+// `resumed`. A driver that ended nothing fails those expectations, not this one.
+func (r *Runner) endHarnessSession(ctx context.Context, step fixture.Step) string {
+	if r.announce == nil {
+		return "the script ends a harness session, but this run has no driver to do it"
+	}
+	conversation, ok := r.script.Conversations[step.Conversation]
+	if !ok {
+		// Unreachable: Validate refuses an unknown conversation at load.
+		return fmt.Sprintf("conversation %q is not in the script", step.Conversation)
+	}
+	r.announce(EndHarnessSessionLine, "conversation", conversation.ID)
+	r.sleep(ctx, r.within(step.WithinMs))
+	return ""
+}
+
 // waitFor polls a condition until it holds or the window closes.
 func (r *Runner) waitFor(ctx context.Context, withinMs int, holds func() bool, miss string) string {
 	deadline := time.Now().Add(r.within(withinMs))
@@ -730,6 +886,25 @@ func (r *Runner) result(unmet []string) Result {
 		Acks: map[string]int{}, Sessions: map[string]int{},
 		Closes: map[string]int{}, Cancels: map[string]int{},
 		ToolCalls: len(r.host.ToolCalls()),
+		MemoryOps: map[string]int{},
+	}
+	for _, call := range r.host.ToolCalls() {
+		if call.RerunOf != "" {
+			counts.ToolReruns++
+		}
+	}
+	for _, call := range r.host.MemoryCalls() {
+		counts.MemoryOps[string(call.Op)]++
+	}
+	for _, upload := range r.host.Uploads() {
+		counts.Uploads++
+		if upload.Resumed {
+			counts.UploadsResumed++
+		}
+	}
+	counts.Downloads = r.host.Downloads()
+	for _, sent := range r.host.Posts() {
+		counts.AttachmentsPosted += len(sent.Attachments)
 	}
 	for _, ack := range r.events.acks {
 		counts.Acks[string(ack.outcome)]++
@@ -762,10 +937,23 @@ func (r *Runner) checkTally(result *Result, note func(string, ...any)) {
 	if want.ToolCalls != nil && result.Counts.ToolCalls != *want.ToolCalls {
 		note("assert: %d tool call(s), want %d", result.Counts.ToolCalls, *want.ToolCalls)
 	}
+	if want.ToolReruns != nil && result.Counts.ToolReruns != *want.ToolReruns {
+		note("assert: %d tool re-run(s), want %d", result.Counts.ToolReruns, *want.ToolReruns)
+	}
+	exactly("upload(s)", want.Uploads, result.Counts.Uploads, note)
+	exactly("download(s)", want.Downloads, result.Counts.Downloads, note)
+	exactly("resumed upload(s)", want.UploadsResumed, result.Counts.UploadsResumed, note)
 	compare("ack", want.Acks, result.Counts.Acks, note)
 	compare("session", want.Sessions, result.Counts.Sessions, note)
 	compare("close", want.Closes, result.Counts.Closes, note)
 	compare("cancel", want.Cancels, result.Counts.Cancels, note)
+	compare("memory op", want.MemoryOps, result.Counts.MemoryOps, note)
+}
+
+func exactly(label string, want *int, got int, note func(string, ...any)) {
+	if want != nil && got != *want {
+		note("assert: %d %s, want %d", got, label, *want)
+	}
 }
 
 func compare(label string, want, got map[string]int, note func(string, ...any)) {

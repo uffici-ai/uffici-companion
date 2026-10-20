@@ -325,7 +325,7 @@ func TestTheWholeTurnAgainstTheDouble(t *testing.T) {
 		t.Fatalf("the connection ticket was minted with %+v", facts)
 	}
 	// 🔴 #2236: the plugin's version and the machine's kind ride the same ticket —
-	// the facts the Connect tab shows and an out-of-date notice will read.
+	// the facts the General tab shows and an out-of-date notice will read.
 	if facts[0].Plugin == nil || facts[0].Plugin.Version != "0.4.0" ||
 		facts[0].Host == nil || facts[0].Host.OS != "linux" || facts[0].Host.OSRelease != "Debian GNU/Linux 13 (trixie)" {
 		t.Fatalf("the connection ticket carried plugin %+v and host %+v", facts[0].Plugin, facts[0].Host)

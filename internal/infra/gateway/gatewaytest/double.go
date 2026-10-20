@@ -62,6 +62,9 @@ type Conversation struct {
 	// Context is what the entries read carries (#2331); nil sends none, as an
 	// older gateway does. The opener never carries one.
 	Context *protocol.Context
+	// ContextChanged is the levels the read names as changed since the agent's
+	// last answer (2026-10-12); nil sends none.
+	ContextChanged []protocol.ContextChange
 	// Tools is the conversation's tool catalog (#2349); nil lists none.
 	Tools []protocol.ToolDescriptor
 	// ToolResults is each tool's scripted answer, by name; a listed tool with
@@ -83,6 +86,10 @@ type ToolCall struct {
 	ConversationID string
 	Name           string
 	Arguments      json.RawMessage
+	// CallURN is the URN the call was answered with; empty answered none.
+	CallURN string
+	// RerunOf is the URN a re-run named (#2454); empty for a first call.
+	RerunOf string
 }
 
 // Post is one recorded message.
@@ -96,6 +103,8 @@ type Post struct {
 	// Citations and Activity are what the post reported (#2349).
 	Citations []string
 	Activity  []protocol.PostActivity
+	// Attachments are the uploads the post carried (#2673).
+	Attachments []protocol.Attachment
 }
 
 // Close is one recorded close.
@@ -153,6 +162,11 @@ type Double struct {
 	logsGate       chan struct{}
 	logBatches     []protocol.LogBatch
 	toolCalls      []ToolCall
+	// memoryCalls and facts are the agent's memory (#2385).
+	memoryCalls []MemoryCall
+	facts       map[string][]*doubleFact
+	// files is the file side (#2673): grants, the tus uploads, the downloads.
+	files *transferState
 }
 
 type ringed struct {
@@ -226,7 +240,8 @@ func (d *Double) SetTools(conversationID string, tools []protocol.ToolDescriptor
 }
 
 // Inject queues scripted answers for a route key: `connect`, `conversation`,
-// `entries`, `opener`, `posts`, `close`, `doorbell`, `tools`, `tool-calls`.
+// `entries`, `opener`, `posts`, `close`, `doorbell`, `tools`, `tool-calls`,
+// `tool-reruns`, `memory`.
 func (d *Double) Inject(route string, answers ...Injected) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -311,8 +326,18 @@ func (d *Double) serve(w http.ResponseWriter, r *http.Request) {
 		d.control(w, r)
 	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/requests/") && strings.HasSuffix(path, "/close"):
 		d.closeRoute(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/requests/") && strings.Contains(path, "/transfers"):
+		d.transferRoute(w, r)
+	case path == "/v1/files/download":
+		d.download(w, r)
+	case strings.HasPrefix(path, "/v1/files/uploads"):
+		d.uploads(w, r)
 	case r.Method == http.MethodPost && path == "/v1/tool-calls":
 		d.toolCall(w, r)
+	case r.Method == http.MethodPost && path == "/v1/tool-calls/rerun":
+		d.toolRerun(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(path, "/v1/memory/"):
+		d.memory(w, r)
 	default:
 		fail(w, http.StatusNotFound, "not_found")
 	}
@@ -640,6 +665,7 @@ func (d *Double) read(w http.ResponseWriter, r *http.Request, conversationID, ro
 	}
 	if route == "entries" {
 		answer.Context = conversation.Context
+		answer.ContextChanged = conversation.ContextChanged
 	}
 	_ = json.NewEncoder(w).Encode(answer)
 }
@@ -662,7 +688,7 @@ func (d *Double) post(w http.ResponseWriter, r *http.Request, conversationID str
 		d.postsByID[body.PostID] = messageID
 		d.posts = append(d.posts, Post{
 			MessageID: messageID, PostID: body.PostID, RequestID: body.RequestID, Text: body.Text,
-			Question: body.Question, Citations: body.Citations, Activity: body.Activity,
+			Question: body.Question, Citations: body.Citations, Activity: body.Activity, Attachments: body.Attachments,
 		})
 	}
 	d.mu.Unlock()
@@ -743,6 +769,7 @@ func (d *Double) toolCall(w http.ResponseWriter, r *http.Request) {
 	if admitted {
 		d.toolCalls = append(d.toolCalls, ToolCall{
 			RequestID: body.RequestID, ConversationID: conversationID, Name: body.Name, Arguments: body.Arguments,
+			CallURN: answer.CallURN,
 		})
 	}
 	d.mu.Unlock()
@@ -754,21 +781,87 @@ func (d *Double) toolCall(w http.ResponseWriter, r *http.Request) {
 	case hasInjected:
 		writeInjected(w, injected)
 	default:
-		response := protocol.ToolCallResponse{Result: answer.Result}
-		if response.Result == nil {
-			response.Result = json.RawMessage(`{"ok":true}`)
-		}
-		if answer.CallURN != "" {
-			urn := answer.CallURN
-			response.CallURN = &urn
-		}
-		raw := mustJSON(response)
-		if err := protocol.Validate("tool-call-response", raw); err != nil {
-			panic("gatewaytest: a scripted tool answer is off-contract: " + err.Error())
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(raw)
+		writeToolAnswer(w, answer)
 	}
+}
+
+// toolRerun serves `POST /v1/tool-calls/rerun` (#2454): the gateway's rules for a
+// tool call, plus one — the URN must name a call previously made in the ticket's
+// conversation (another conversation's, or one never made, is `not_found`). An
+// admitted re-run is RECORDED as a tool call carrying RerunOf, and answers the
+// original tool's scripted answer.
+func (d *Double) toolRerun(w http.ResponseWriter, r *http.Request) {
+	injected, hasInjected := d.next("tool-reruns")
+	if hasInjected && !injected.AfterEffect {
+		writeInjected(w, injected)
+		return
+	}
+	conversationID, ok := d.convTicket(w, r, "")
+	if !ok {
+		return
+	}
+	raw := readBody(r)
+	if err := protocol.Validate("tool-rerun-request", raw); err != nil {
+		d.refuse("tool-rerun: " + err.Error())
+		fail(w, http.StatusBadRequest, "invalid_request")
+		return
+	}
+	var body protocol.ToolRerunRequest
+	_ = json.Unmarshal(raw, &body)
+	d.mu.Lock()
+	request, rung := d.requests[body.RequestID]
+	closed := d.closedReqs[body.RequestID]
+	var original *ToolCall
+	for i := range d.toolCalls {
+		call := d.toolCalls[i]
+		if call.ConversationID == conversationID && call.CallURN != "" && call.CallURN == body.Call {
+			original = &call
+			break
+		}
+	}
+	var answer ToolAnswer
+	if original != nil {
+		if conversation := d.conversations[conversationID]; conversation != nil {
+			answer = conversation.ToolResults[original.Name]
+		}
+	}
+	admitted := rung && request.conversationID == conversationID && !closed && original != nil
+	if admitted {
+		d.toolCalls = append(d.toolCalls, ToolCall{
+			RequestID: body.RequestID, ConversationID: conversationID, Name: original.Name,
+			Arguments: original.Arguments, CallURN: answer.CallURN, RerunOf: body.Call,
+		})
+	}
+	d.mu.Unlock()
+	switch {
+	case !rung || request.conversationID != conversationID || original == nil:
+		fail(w, http.StatusNotFound, "not_found")
+	case closed:
+		fail(w, http.StatusConflict, "request_closed")
+	case hasInjected:
+		writeInjected(w, injected)
+	default:
+		writeToolAnswer(w, answer)
+	}
+}
+
+// writeToolAnswer answers a scripted tool answer in the protocol's shape: no
+// result is `{"ok":true}`, no URN a null one.
+func writeToolAnswer(w http.ResponseWriter, answer ToolAnswer) {
+	response := protocol.ToolCallResponse{Result: answer.Result}
+	if response.Result == nil {
+		response.Result = json.RawMessage(`{"ok":true}`)
+	}
+	if answer.CallURN != "" {
+		urn := answer.CallURN
+		response.CallURN = &urn
+	}
+	raw := mustJSON(response)
+	if err := protocol.Validate("tool-call-response", raw); err != nil {
+		panic("gatewaytest: a scripted tool answer is off-contract: " + err.Error())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(raw)
 }
 
 func (d *Double) closeRoute(w http.ResponseWriter, r *http.Request) {

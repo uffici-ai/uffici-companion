@@ -46,7 +46,9 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "setup" {
 		return setupCommand(args[1:], stdout, stderr)
 	}
-	if len(args) > 0 && args[0] == "upgrade" {
+	// `update` is `upgrade` by the name harnesses use for it (`hermes update`,
+	// `claude update`, #2688).
+	if len(args) > 0 && (args[0] == "upgrade" || args[0] == "update") {
 		return upgradeCommand(args[1:], stdout, stderr)
 	}
 	flags := flag.NewFlagSet("uffici", flag.ContinueOnError)
@@ -72,6 +74,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		args = args[1:]
 	}
 	if err := flags.Parse(args); err != nil {
+		return app.ExitConfig
+	}
+	// 🔴 The flag set stops at the first word that is not a flag, so a mistyped
+	// or unknown command would otherwise start the daemon in the foreground
+	// (#2688).
+	if flags.NArg() > 0 {
+		_, _ = fmt.Fprintf(stderr, "uffici: unknown command %q — the commands are run, setup, pair, doctor and upgrade (or update)\n", flags.Arg(0))
 		return app.ExitConfig
 	}
 
@@ -170,6 +179,19 @@ func terminalConfirm(out io.Writer) func(string) (bool, bool) {
 		}
 		defer func() { _ = tty.Close() }()
 		return setup.AskRestart(tty, out, question)
+	}
+}
+
+// terminalPause waits for Enter on this process's terminal, as terminalConfirm
+// asks there (#2688); false when there is none or it closes first.
+func terminalPause(out io.Writer) func([]string, string) bool {
+	return func(lead []string, prompt string) bool {
+		tty, err := os.Open("/dev/tty")
+		if err != nil {
+			return false
+		}
+		defer func() { _ = tty.Close() }()
+		return setup.WaitForEnter(tty, out, lead, prompt)
 	}
 }
 
@@ -426,6 +448,7 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		DryRun:         *dryRun,
 		RestartHarness: restartChoice,
 		Confirm:        terminalConfirm(stdout),
+		Pause:          terminalPause(stdout),
 		GOOS:           runtime.GOOS,
 		UserHome:       userHome,
 		CompanionHome:  resolved.Home,
@@ -536,7 +559,7 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	return setup.Upgrade(ctx, setup.UpgradeOptions{
 		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion, GatewayURL: *gatewayURL,
 		Current: build.Version(), FromVersion: *fromVersion,
-		RestartHarness: restartChoice, Confirm: terminalConfirm(stdout),
+		RestartHarness: restartChoice, Confirm: terminalConfirm(stdout), Pause: terminalPause(stdout),
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, UserHome: userHome, CompanionHome: resolved.Home,
 		Binary: binary, UID: strconv.Itoa(os.Getuid()),
 		Env: os.Getenv, LookPath: exec.LookPath, Runner: setup.ExecRunner{},

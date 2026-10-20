@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -194,6 +195,8 @@ func TestRunNeedsAScript(t *testing.T) {
 // RESUMED one afterwards, which is what a real harness does.
 type testPlugin struct {
 	conn *ws.Conn
+	// hello is the companion's answer to this plugin's hello.
+	hello map[string]any
 
 	mu   sync.Mutex
 	seen map[string]bool
@@ -218,6 +221,11 @@ const pluginReply = "yes, it is filed"
 // not stop the test, it just stops that goroutine, and the run then hangs
 // until the outer timeout with no reason given.
 func dialPluginErr(socket, token string) (*testPlugin, error) {
+	return dialPluginHello(socket, token, nil)
+}
+
+// dialPluginHello is dialPluginErr with extra fields on the plugin's hello.
+func dialPluginHello(socket, token string, extra map[string]any) (*testPlugin, error) {
 	client := &http.Client{Transport: &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
@@ -236,7 +244,7 @@ func dialPluginErr(socket, token string) (*testPlugin, error) {
 	// naming something other than the cause.
 	var lastErr error
 	for attempt := 0; attempt < 100; attempt++ {
-		plugin, err := attachOnce(ctx, client, token)
+		plugin, err := attachOnce(ctx, client, token, extra)
 		if err == nil {
 			return plugin, nil
 		}
@@ -247,16 +255,18 @@ func dialPluginErr(socket, token string) (*testPlugin, error) {
 }
 
 // attachOnce performs one dial + hello + companion-hello exchange.
-func attachOnce(ctx context.Context, client *http.Client, token string) (*testPlugin, error) {
+func attachOnce(ctx context.Context, client *http.Client, token string, extra map[string]any) (*testPlugin, error) {
 	conn, _, err := ws.Dial(ctx, "ws://companion/v1/ring", &ws.DialOptions{HTTPClient: client})
 	if err != nil {
 		return nil, err
 	}
 
-	raw, err := json.Marshal(map[string]any{
+	hello := map[string]any{
 		"v": 1, "type": "hello", "harness": "hermes", "harnessVersion": "0.21.3",
 		"pluginVersion": "0.1.0", "token": token, "contextBudgetTokens": 48000,
-	})
+	}
+	maps.Copy(hello, extra)
+	raw, err := json.Marshal(hello)
 	if err != nil {
 		_ = conn.CloseNow()
 		return nil, err
@@ -293,7 +303,7 @@ func attachOnce(ctx context.Context, client *http.Client, token string) (*testPl
 		_ = conn.CloseNow()
 		return nil, err
 	}
-	return &testPlugin{conn: conn, seen: map[string]bool{}}, nil
+	return &testPlugin{conn: conn, hello: frame, seen: map[string]bool{}}, nil
 }
 
 func (p *testPlugin) send(t *testing.T, frame map[string]any) {
@@ -569,13 +579,14 @@ func TestTheVerdictReportsCountsAndMissesAndNoContent(t *testing.T) {
 	report(logger, runner.Result{
 		RingsDelivered: 0,
 		Unmet:          []string{"step 3 (expectPost): no post satisfying contains \"filed\""},
-		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1, ToolCalls: 3},
+		Counts:         runner.Counts{Briefs: 2, Openers: 1, Posts: 0, Redeliveries: 1, ToolCalls: 3, ToolReruns: 2},
 	})
 
 	logged := sink.String()
 	// 🔴 `"toolCalls":3`: the plugin's release e2e and the platform's read the
-	// tool-call count from this line by that name (#2349).
-	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered", `"toolCalls":3`} {
+	// tool-call count from this line by that name (#2349), and the re-run count
+	// as `toolReruns` (#2454).
+	for _, want := range []string{"ringsDelivered", "unmet expectation", "no ring was delivered", `"toolCalls":3`, `"toolReruns":2`} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the verdict never mentions %q:\n%s", want, logged)
 		}
@@ -775,7 +786,7 @@ func TestNoTranscriptContentOrTokenReachesTheLog(t *testing.T) {
 	if len(log) == 0 {
 		t.Fatal("the run produced no log at all, so this guard looked at nothing")
 	}
-	for _, field := range []string{"deltaEntryCount", "deltaChars", "openerChars", "budgetDeclared", "elapsedMs"} {
+	for _, field := range []string{"deltaEntryCount", "deltaChars", "openerChars", "openerSummaryCount", "budgetDeclared", "elapsedMs"} {
 		if !strings.Contains(log, field) {
 			t.Fatalf("the log carries no %q, so the counts wave 4 needs are not being emitted", field)
 		}

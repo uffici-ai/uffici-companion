@@ -269,14 +269,3 @@ func retryDelay(attempt int) time.Duration {
 // sleeper waits, or returns early when the context ends. Injected so tests do
 // not sleep.
 type sleeper func(ctx context.Context, d time.Duration) error
-
-func sleepContext(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
-}

@@ -46,6 +46,22 @@ func newFor(t *testing.T, schema string) any {
 		return &LogBatch{}
 	case "log-batch-response":
 		return &LogBatchResponse{}
+	case "memory-forget-request":
+		return &MemoryForgetRequest{}
+	case "memory-forget-response":
+		return &MemoryForgetResponse{}
+	case "memory-recall-request":
+		return &MemoryRecallRequest{}
+	case "memory-recall-response":
+		return &MemoryRecallResponse{}
+	case "memory-remember-request":
+		return &MemoryRememberRequest{}
+	case "memory-remember-response":
+		return &MemoryRememberResponse{}
+	case "memory-unfold-request":
+		return &MemoryUnfoldRequest{}
+	case "memory-unfold-response":
+		return &MemoryUnfoldResponse{}
 	case "logs-ticket-request":
 		return &LogsTicketRequest{}
 	case "logs-ticket-response":
@@ -76,6 +92,14 @@ func newFor(t *testing.T, schema string) any {
 		return &ToolCallResponse{}
 	case "tool-catalog-response":
 		return &ToolCatalogResponse{}
+	case "tool-rerun-request":
+		return &ToolRerunRequest{}
+	case "transfer-request":
+		return &TransferRequest{}
+	case "transfer-response":
+		return &TransferResponse{}
+	case "transfer-complete-response":
+		return &TransferCompleteResponse{}
 	}
 	t.Fatalf("no struct for schema %q", schema)
 	return nil
@@ -88,6 +112,13 @@ var clientBodies = map[string]bool{
 	"ack": true, "close-request": true, "connect-ticket-request": true,
 	"conversation-ticket-request": true, "pairing-request": true, "post-request": true, "tool-call-request": true,
 	"log-batch": true, "logs-ticket-request": true,
+	// The agent's memory (#2385): the companion encodes all four requests.
+	"memory-recall-request": true, "memory-remember-request": true,
+	"memory-forget-request": true, "memory-unfold-request": true,
+	// A re-run of a recorded call (#2454).
+	"tool-rerun-request": true,
+	// A transfer's grant request (#2671).
+	"transfer-request": true,
 }
 
 type golden struct{ schema, name string }

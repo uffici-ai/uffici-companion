@@ -24,14 +24,17 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/coder/websocket"
 
 	"github.com/uffici-ai/uffici-companion/internal/contracts"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/waits"
 )
 
 // ClientName is how the companion names itself to the platform.
@@ -66,6 +69,17 @@ type Options struct {
 	// push must not share a connection pool with a call a person is waiting on.
 	// Nil builds a second default client.
 	LogsHTTPClient *http.Client
+	// FilesHTTPClient carries a transfer's bytes (#2673). 🔴 Its own pool, and no
+	// whole-request timeout: a file takes as long as it takes, and the call's or
+	// the request's deadline bounds it instead. Nil builds one.
+	FilesHTTPClient *http.Client
+	// FilesHeaderTimeout bounds the wait for a transfer answer's headers, and
+	// FilesIdleTimeout the wait for each read of a download's body: a server
+	// that stops sending is a failed attempt, retried, never a hang until the
+	// request's deadline. Zero takes DefaultFilesHeaderTimeout and
+	// DefaultFilesIdleTimeout.
+	FilesHeaderTimeout time.Duration
+	FilesIdleTimeout   time.Duration
 	// Logger receives classified lines only. Nil discards.
 	Logger *slog.Logger
 	// Now and Sleep are the clock, injected so tests neither wait nor race it.
@@ -77,6 +91,8 @@ type Options struct {
 type Host struct {
 	api       *client
 	logsAPI   *client
+	filesHTTP *http.Client
+	filesIdle time.Duration
 	version   string
 	harnessOf func() (string, string)
 	pluginOf  func() string
@@ -130,7 +146,7 @@ func New(options Options) (*Host, error) {
 	}
 	sleep := options.Sleep
 	if sleep == nil {
-		sleep = sleepContext
+		sleep = waits.Sleep
 	}
 	version := options.Version
 	if version == "" {
@@ -144,7 +160,17 @@ func New(options Options) (*Host, error) {
 			Transport: http.DefaultTransport.(*http.Transport).Clone(),
 		}
 	}
+	headerTimeout := options.FilesHeaderTimeout
+	if headerTimeout <= 0 {
+		headerTimeout = DefaultFilesHeaderTimeout
+	}
+	filesIdle := options.FilesIdleTimeout
+	if filesIdle <= 0 {
+		filesIdle = DefaultFilesIdleTimeout
+	}
 	return &Host{
+		filesHTTP: withHeaderTimeout(options.FilesHTTPClient, headerTimeout),
+		filesIdle: filesIdle,
 		api: &client{
 			base: base, key: options.Key, instanceID: options.InstanceID,
 			userAgent: ClientName + "/" + version, http: httpClient, now: now,
@@ -377,9 +403,10 @@ func (h *Host) ReadSince(ctx context.Context, conversationID, since, through str
 		return contracts.Read{}, localError(ClassPlatformError, http.StatusOK)
 	}
 	return contracts.Read{
-		Entries: toEntries(answer.Entries),
-		Bounded: answer.Bounded,
-		Context: h.decodeContext(answer.Context),
+		Entries:        toEntries(answer.Entries),
+		Bounded:        answer.Bounded,
+		Context:        h.decodeContext(answer.Context),
+		ContextChanged: toContextChanged(answer.ContextChanged),
 	}, nil
 }
 
@@ -422,6 +449,31 @@ func (h *Host) decodeContext(raw json.RawMessage) *contracts.Context {
 		return unreadableContext()
 	}
 	return toContext(&decoded)
+}
+
+// maxContextChanged is the wire's bound on a change list (the protocol's
+// CONTEXT_CHANGES_MAX); a longer list is cut, never refused — it only informs.
+const maxContextChanged = 16
+
+// contextScope is the protocol's scope grammar.
+var contextScope = regexp.MustCompile(`^[a-z][a-z_]{0,31}$`)
+
+// toContextChanged maps the levels a person changed since the agent's last
+// answer (2026-10-12) one to one, dropping an entry the wire could not carry.
+func toContextChanged(in []protocol.ContextChange) []contracts.ContextChange {
+	var out []contracts.ContextChange
+	for _, c := range in {
+		// Characters, never bytes: the protocol counts a name's characters, and an
+		// accented folder name is longer in bytes than the 128 it is allowed.
+		if c.Name == "" || utf8.RuneCountInString(c.Name) > 128 || !contextScope.MatchString(c.Scope) {
+			continue
+		}
+		out = append(out, contracts.ContextChange{Name: c.Name, Scope: c.Scope})
+		if len(out) == maxContextChanged {
+			break
+		}
+	}
+	return out
 }
 
 // toContext maps the platform's context one to one — the companion composes
@@ -480,6 +532,11 @@ func (h *Host) Post(ctx context.Context, requestID, conversationID, text string,
 		for _, a := range extras.Activity {
 			body.Activity = append(body.Activity, protocol.PostActivity{Tool: a.Tool, Summary: a.Summary})
 		}
+		// Uploads completed on this request (#2673): the platform refuses one it
+		// did not record for it.
+		for _, a := range extras.Attachments {
+			body.Attachments = append(body.Attachments, protocol.Attachment{ID: a.ID, Name: a.Name, Ref: a.Ref})
+		}
 	}
 	var answer protocol.PostResponse
 	err = h.api.ticketed(ctx, conversationID, http.MethodPost,
@@ -537,10 +594,29 @@ func (h *Host) CallTool(ctx context.Context, requestID, name string, arguments j
 	if len(arguments) == 0 {
 		arguments = json.RawMessage("{}")
 	}
+	return h.toolCallOnce(ctx, conversationID, "/v1/tool-calls",
+		protocol.ToolCallRequest{RequestID: requestID, Name: name, Arguments: arguments})
+}
+
+// RerunTool re-runs a call the platform recorded, named by its `tool_call` URN,
+// on a request this companion was rung for (#2454): the same ticket, the same
+// at-most-once send and the same answer as CallTool — a re-run IS a tool call,
+// so a failure after the body left is never retried. A call whose arguments
+// were not kept is a RESULT (`rerun_unavailable`), never an error.
+func (h *Host) RerunTool(ctx context.Context, requestID, call string) (contracts.ToolResult, error) {
+	conversationID, known := h.conversationOf(requestID)
+	if !known {
+		return contracts.ToolResult{}, contracts.ErrUnknownRequest
+	}
+	return h.toolCallOnce(ctx, conversationID, "/v1/tool-calls/rerun",
+		protocol.ToolRerunRequest{RequestID: requestID, Call: call})
+}
+
+// toolCallOnce sends one tool call's body under the conversation's ticket, at
+// most once, and maps the platform's answer to a ToolResult.
+func (h *Host) toolCallOnce(ctx context.Context, conversationID, path string, body any) (contracts.ToolResult, error) {
 	var answer protocol.ToolCallResponse
-	err := h.api.ticketedOnce(ctx, conversationID, http.MethodPost, "/v1/tool-calls",
-		protocol.ToolCallRequest{RequestID: requestID, Name: name, Arguments: arguments},
-		&answer, controlAttempts, h.sleep)
+	err := h.api.ticketedOnce(ctx, conversationID, http.MethodPost, path, body, &answer, controlAttempts, h.sleep)
 	if err != nil {
 		h.logFailure("tool_call", err)
 		return contracts.ToolResult{}, err
@@ -595,15 +671,22 @@ func (h *Host) Close() error {
 
 // logFailure logs one classified control-plane failure: the family and the
 // class, never a body.
-func (h *Host) logFailure(family string, err error) {
+func (h *Host) logFailure(family string, err error) { logPlatformFailure(h.log, family, err) }
+
+// logPlatformFailure is logFailure for a logger that may be nil (the bytes
+// client's): the family and the class, never a body.
+func logPlatformFailure(log *slog.Logger, family string, err error) {
+	if log == nil {
+		return
+	}
 	var classified *Error
 	if errors.As(err, &classified) {
-		h.log.Warn("a platform call failed",
+		log.Warn("a platform call failed",
 			slog.String("family", family), slog.String("class", classified.Class),
 			slog.Int("status", classified.Status), slog.Bool("retryable", classified.Retryable))
 		return
 	}
-	h.log.Warn("a platform call failed", slog.String("family", family), slog.String("class", "context_ended"))
+	log.Warn("a platform call failed", slog.String("family", family), slog.String("class", "context_ended"))
 }
 
 // PlatformCloseClasses is the conversations API's closed close vocabulary: it

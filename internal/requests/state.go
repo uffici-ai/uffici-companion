@@ -115,6 +115,9 @@ type Request struct {
 	// the ack sweep skip a request carrying it, so one read in flight is never
 	// joined by a second delivery of the same request.
 	briefing bool
+	// stopPrefetch ends the request's prefetch, set under the manager's lock
+	// while one runs: the request going terminal ends it at once.
+	stopPrefetch func()
 }
 
 // Limits bound one request. Zero values mean the defaults.

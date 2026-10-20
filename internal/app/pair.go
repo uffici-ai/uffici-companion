@@ -13,6 +13,7 @@ import (
 	"github.com/uffici-ai/uffici-companion/internal/infra/gateway"
 	"github.com/uffici-ai/uffici-companion/internal/pairing"
 	"github.com/uffici-ai/uffici-companion/internal/protocol"
+	"github.com/uffici-ai/uffici-companion/internal/waits"
 )
 
 // pairer is what `uffici pair` asks of the agents host.
@@ -83,7 +84,7 @@ func Pair(ctx context.Context, config Config, out io.Writer, options PairOptions
 	}
 	sleep := options.Sleep
 	if sleep == nil {
-		sleep = sleepFor
+		sleep = waits.Sleep
 	}
 	harness := options.Harness
 	// The request's schema needs both facts; an unstated one is `unknown`, never "".
@@ -159,7 +160,7 @@ func Pair(ctx context.Context, config Config, out io.Writer, options PairOptions
 			say("")
 			if withCode {
 				// The portal may not have answered the claim in time and never sealed the key.
-				say("uffici pair: the pairing did not complete in time — get a new command from the agent's Connect tab in the portal.")
+				say("uffici pair: the pairing did not complete in time — get a new command from the agent's page in the portal.")
 			} else {
 				say("uffici pair: the code expired before it was approved. Run `uffici pair` again for a new one.")
 			}
@@ -236,7 +237,7 @@ func openWithCode(
 		isClassified := errors.As(err, &classified)
 		if isClassified && classified.Class == "not_found" {
 			say("")
-			say("uffici pair: this pairing code is not valid any more — get a new command from the agent's Connect tab in the portal.")
+			say("uffici pair: this pairing code is not valid any more — get a new command from the agent's page in the portal.")
 			return protocol.PairingResponse{}, ExitConfig
 		}
 		// An unclassified failure is the network; a classified one says itself
@@ -253,7 +254,7 @@ func openWithCode(
 		if !now().Add(wait).Before(deadline) {
 			say("")
 			say("uffici pair: the platform could not be reached while the pairing code was valid. %s", instructionOf(err))
-			say("  Get a new command from the agent's Connect tab in the portal and run it again.")
+			say("  Get a new command from the agent's page in the portal and run it again.")
 			return protocol.PairingResponse{}, ExitMiss
 		}
 		// One line per retry, so a person watching knows it is still trying — never the code.
@@ -288,16 +289,4 @@ func instructionOf(err error) string {
 		return classified.Instruction
 	}
 	return "the agents host could not be reached; check the network and UFFICI_GATEWAY_URL."
-}
-
-// sleepFor waits `d`, or less when the context ends first.
-func sleepFor(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(d)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }

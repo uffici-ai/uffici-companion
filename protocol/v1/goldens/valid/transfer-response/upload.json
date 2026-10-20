@@ -1,0 +1,13 @@
+{
+	"op": "upload",
+	"jti": "8e7d6c5b-4a39-4281-9706-f5e4d3c2b1a0",
+	"grant": "eyJhbGciOiJIUzI1NiJ9.eyJ2IjoxfQ.c2lnbmF0dXJlLW5vdC1yZWFs",
+	"expiresAt": "2026-10-13T12:00:00.000Z",
+	"callUrn": "urn:uffici:tool_call:42",
+	"file": {
+		"name": "chart.png",
+		"size": 48213,
+		"contentType": "image/png",
+		"crc32c": "yZRlqg=="
+	}
+}

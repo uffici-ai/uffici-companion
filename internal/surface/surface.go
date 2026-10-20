@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"sync"
 	"time"
 
@@ -55,6 +56,29 @@ type Surface struct {
 	harnessVersion string
 	// pluginVersion is the last plugin's own version, reported likewise (#2236).
 	pluginVersion string
+	// drift is the ATTACHED plugin's report of its harness's drift (#2406), nil
+	// while none is connected or when the plugin predates the report.
+	drift *wire.Drift
+	// support is the ATTACHED plugin's statement of the harness versions it
+	// supports (#2414), nil while none is connected or when it predates it.
+	support *wire.HarnessSupport
+	// prefetch is the ATTACHED plugin's ask for attachment prefetch (#2673), nil
+	// while none is connected or when it asked for none.
+	prefetch *wire.PrefetchAttachments
+	// workspace is the workspace's path, named in the hello beside `files`.
+	workspace string
+}
+
+// PrefetchAsked reports the connected plugin's prefetch budget and whether it
+// asked for prefetch at all (#2673) — 🔴 the plugin's choice: a plugin that did
+// not ask gets nothing prefetched.
+func (s *Surface) PrefetchAsked() (int64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.prefetch == nil {
+		return 0, false
+	}
+	return s.prefetch.MaxBytes, true
 }
 
 // HarnessFacts reports the harness the last plugin said it translates for, or
@@ -73,6 +97,43 @@ func (s *Surface) PluginVersion() string {
 	return s.pluginVersion
 }
 
+// Drift reports the connected plugin's drift report (#2406): nil while no
+// plugin is connected, or when the connected one sent none. The lists are
+// copies, safe to keep.
+func (s *Surface) Drift() *wire.Drift {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.drift == nil {
+		return nil
+	}
+	return &wire.Drift{
+		MCPServers:  slices.Clone(s.drift.MCPServers),
+		Channels:    slices.Clone(s.drift.Channels),
+		LocalMemory: slices.Clone(s.drift.LocalMemory),
+	}
+}
+
+// AttachedHarness reports, under one lock, whether a plugin is attached and,
+// when one is, its harness kind and version and its support statement
+// (#2414): one moment, so `/healthz` never pairs one plugin's facts with
+// another's support, or an attached flag with a detached plugin's facts.
+func (s *Surface) AttachedHarness() (attached bool, kind, version string, support *wire.HarnessSupport) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.attached {
+		return false, "", "", nil
+	}
+	if s.support != nil {
+		copied := *s.support
+		if s.support.Supported != nil {
+			verdict := *s.support.Supported
+			copied.Supported = &verdict
+		}
+		support = &copied
+	}
+	return true, s.harnessKind, s.harnessVersion, support
+}
+
 // Options configure a Surface.
 type Options struct {
 	// Token is the shared secret from `$UFFICI_HOME/wire-token`.
@@ -87,6 +148,9 @@ type Options struct {
 	// Calls maps a `call` op to its handler (#2028). An op missing here is
 	// answered `unknown_op`, never a close.
 	Calls map[string]CallHandler
+	// Workspace is the workspace's path as this companion sees it (#2673), named
+	// in the hello beside the `files` feature; empty serves no files feature.
+	Workspace string
 }
 
 // New builds a Surface over a listener and a request manager.
@@ -111,7 +175,10 @@ func New(listener contracts.Listener, manager *requests.Manager, options Options
 	if version == "" {
 		version = "0.0.0-dev"
 	}
-	return &Surface{listener: listener, manager: manager, token: options.Token, log: logger, version: version, calls: options.Calls}, nil
+	return &Surface{
+		listener: listener, manager: manager, token: options.Token, log: logger, version: version,
+		calls: options.Calls, workspace: options.Workspace,
+	}, nil
 }
 
 // Serve accepts connections until the context ends or the listener closes.
@@ -164,6 +231,13 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 	s.pendingProcess = hello.ProcessID
 	s.harnessKind, s.harnessVersion = hello.Harness, hello.HarnessVersion
 	s.pluginVersion = hello.PluginVersion
+	s.drift = hello.Drift
+	s.support = hello.HarnessSupport
+	s.prefetch = nil
+	if hello.Capabilities != nil && hello.Capabilities.PrefetchAttachments != nil {
+		asked := *hello.Capabilities.PrefetchAttachments
+		s.prefetch = &asked
+	}
 	s.mu.Unlock()
 	s.log.Info("plugin connected",
 		slog.String("conn", connID),
@@ -172,9 +246,17 @@ func (s *Surface) handle(ctx context.Context, conn contracts.Conn) {
 		slog.String("pluginVersion", hello.PluginVersion),
 		slog.String("processId", hello.ProcessID),
 		slog.Int("budgetDeclared", hello.ContextBudgetTokens),
+		slog.Bool("driftReported", hello.Drift != nil),
+		slog.String("harnessInRange", supportVerdict(hello.HarnessSupport)),
+		slog.Bool("prefetchAsked", hello.Capabilities != nil && hello.Capabilities.PrefetchAttachments != nil),
 	)
 
-	if err := sink.sendCompanionHello(ctx, s.version, s.features()); err != nil {
+	features := s.features()
+	workspace := ""
+	if slices.Contains(features, wire.FeatureFiles) {
+		workspace = s.workspace
+	}
+	if err := sink.sendCompanionHello(ctx, s.version, features, workspace); err != nil {
 		s.closeWith(conn, string(wire.ReasonShuttingDown), connID, "could not answer hello")
 		return
 	}
@@ -468,6 +550,9 @@ func (s *Surface) release(connID string) {
 	s.mu.Lock()
 	s.attached = false
 	s.attachedConn = nil
+	s.drift = nil
+	s.support = nil
+	s.prefetch = nil
 	s.mu.Unlock()
 	s.manager.Detach(connID)
 }
@@ -555,8 +640,8 @@ func (f *frameSink) sendRaw(ctx context.Context, raw []byte) error {
 	return f.conn.Send(bounded, raw)
 }
 
-func (f *frameSink) sendCompanionHello(ctx context.Context, version string, features []string) error {
-	return f.send(ctx, map[string]any{
+func (f *frameSink) sendCompanionHello(ctx context.Context, version string, features []string, workspace string) error {
+	hello := map[string]any{
 		"v": wire.Version, "type": "hello", "companionVersion": version,
 		// 🔴 What this companion carries beyond every v1 companion: a plugin sends a
 		// question only to a companion that says it can relay one (#2232), and leaves
@@ -564,7 +649,12 @@ func (f *frameSink) sendCompanionHello(ctx context.Context, version string, feat
 		// (#2273), and calls the agent's tools only through a companion that serves
 		// them (#2349).
 		"features": features,
-	})
+	}
+	// Beside `files` only (#2673): every localPath on the wire is relative to it.
+	if workspace != "" {
+		hello["workspace"] = workspace
+	}
+	return f.send(ctx, hello)
 }
 
 // features is what this companion's hello advertises. 🔴 `tools` only when both
@@ -574,6 +664,25 @@ func (s *Surface) features() []string {
 	features := []string{wire.FeatureQuestion, wire.FeatureRedelivery}
 	if s.calls[wire.OpToolsList] != nil && s.calls[wire.OpToolsCall] != nil {
 		features = append(features, wire.FeatureTools)
+		// 🔴 `rerun` only beside `tools` and only when `tools.rerun` is served
+		// (#2454): a plugin told so offers the re-run tool to its model.
+		if s.calls[wire.OpToolsRerun] != nil {
+			features = append(features, wire.FeatureToolsRerun)
+		}
+	}
+	// 🔴 `memory` only when all FOUR memory ops are served (#2385): a plugin told so
+	// recalls before every model call, and a recall answered `unknown_op` would read
+	// as a silent gap — the plugin renders "memory unavailable" for a companion that
+	// does not announce it.
+	if s.calls[wire.OpMemoryRecall] != nil && s.calls[wire.OpMemoryRemember] != nil &&
+		s.calls[wire.OpMemoryForget] != nil && s.calls[wire.OpMemoryUnfold] != nil {
+		features = append(features, wire.FeatureMemory)
+	}
+	// 🔴 `files` only when BOTH file ops are served and the workspace is known
+	// (#2673): a plugin told so registers its file tools and resolves every
+	// localPath against the workspace the hello names.
+	if s.calls[wire.OpFilesDownload] != nil && s.calls[wire.OpFilesUpload] != nil && s.workspace != "" {
+		features = append(features, wire.FeatureFiles)
 	}
 	return features
 }
@@ -595,6 +704,15 @@ func (f *frameSink) SendBrief(ctx context.Context, brief requests.Brief) error {
 	// its static hint (#2331).
 	if brief.Context != nil {
 		frame["context"] = wireContext(brief.Context)
+	}
+	// Absent, never empty, when nothing changed (2026-10-12): an older plugin
+	// never sees the key, and a newer one tells the model only when it is here.
+	if len(brief.ContextChanged) > 0 {
+		changed := make([]wire.ContextChange, 0, len(brief.ContextChanged))
+		for _, c := range brief.ContextChanged {
+			changed = append(changed, wire.ContextChange{Name: c.Name, Scope: c.Scope})
+		}
+		frame["contextChanged"] = changed
 	}
 	return f.send(ctx, frame)
 }
@@ -666,9 +784,15 @@ func wireEntries(entries []contracts.Entry) []map[string]any {
 		if len(entry.Attachments) > 0 {
 			attachments := make([]map[string]any, 0, len(entry.Attachments))
 			for _, attachment := range entry.Attachments {
-				attachments = append(attachments, map[string]any{
-					"id": attachment.ID, "name": attachment.Name, "ref": attachment.Ref,
-				})
+				mapped := map[string]any{"id": attachment.ID, "name": attachment.Name, "ref": attachment.Ref}
+				// The companion's own facts, present only when the plugin asked for
+				// prefetch (#2673): where the file is, or why it is not there.
+				if attachment.LocalPath != "" {
+					mapped["localPath"] = attachment.LocalPath
+				} else if attachment.PrefetchClass != "" {
+					mapped["prefetchError"] = map[string]any{"class": attachment.PrefetchClass}
+				}
+				attachments = append(attachments, mapped)
 			}
 			mapped["attachments"] = attachments
 		}
@@ -703,12 +827,30 @@ func questionOf(question *wire.Question) *contracts.Question {
 // host: the question (#2232), the citations and the activity (#2349). Nil when
 // the post carries none of them.
 func postExtrasOf(post *wire.Post) *contracts.PostExtras {
-	if post.Question == nil && len(post.Citations) == 0 && len(post.Activity) == 0 {
+	if post.Question == nil && len(post.Citations) == 0 && len(post.Activity) == 0 && len(post.Attachments) == 0 {
 		return nil
 	}
 	extras := &contracts.PostExtras{Question: questionOf(post.Question), Citations: post.Citations}
 	for _, a := range post.Activity {
 		extras.Activity = append(extras.Activity, contracts.Activity{Tool: a.Tool, Summary: a.Summary})
 	}
+	// The uploads this reply carries (#2673), by reference.
+	for _, a := range post.Attachments {
+		extras.Attachments = append(extras.Attachments, contracts.Attachment{ID: a.ID, Name: a.Name, Ref: a.Ref})
+	}
 	return extras
+}
+
+// supportVerdict is the plugin's support verdict as one log word (#2414).
+func supportVerdict(support *wire.HarnessSupport) string {
+	switch {
+	case support == nil:
+		return "not_reported"
+	case support.Supported == nil:
+		return "unknown"
+	case *support.Supported:
+		return "yes"
+	default:
+		return "no"
+	}
 }

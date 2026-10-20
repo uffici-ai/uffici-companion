@@ -11,6 +11,44 @@
         "additionalProperties": false
       },
       "permission": "allow"
+    },
+    {
+      "name": "read_file",
+      "description": "Acts on this organization's Uffici workspace. Read a file from Uffici Files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "permission": "allow"
+    },
+    {
+      "name": "write_file",
+      "description": "Acts on this organization's Uffici workspace. Write a file into Uffici Files.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "content": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "content"
+        ],
+        "additionalProperties": false
+      },
+      "permission": "allow"
     }
   ],
   "results": {
@@ -26,7 +64,55 @@
       }
     }
   },
+  "memory": { "unavailableIn": ["onboarding"] },
   "conversations": {
+    "files": {
+      "id": "conv_ci_files",
+      "offset": "",
+      "context": {
+        "blocks": [
+          {
+            "name": "Identity",
+            "scope": "identity",
+            "tokens": 31,
+            "text": "You are an AI agent, not a human.\nNever present yourself as a human.\nThis conversation is in the organization's portal, where you are shown as an AI agent.\nYou are Smith (@smith). Answer in English unless the person writes in another language."
+          }
+        ],
+        "tokens": 31,
+        "bounded": false
+      },
+      "entries": [
+        {
+          "id": "f1",
+          "cursor": "c0001",
+          "at": "2026-09-18T16:00:00Z",
+          "kind": "message",
+          "text": "Here are the Lisbon invoice and the meter photo. What do they say?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          },
+          "attachments": [
+            {
+              "id": "f1.0",
+              "name": "invoice-2026-118.pdf",
+              "ref": "conversations/conv_ci_files/invoice-2026-118.pdf",
+              "contentType": "application/pdf",
+              "data": "JVBERi0xLjQKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2JqCjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2JqCjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIgNzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4gPj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2OSA+PgpzdHJlYW0KQlQgL0YxIDEyIFRmIDcyIDcyMCBUZCAoSW52b2ljZSAyMDI2LTExOCwgTGlzYm9uLiBbcGRmLWNhbmFyeV0pIFRqIEVUCmVuZHN0cmVhbQplbmRvYmoKNSAwIG9iago8PCAvVHlwZSAvRm9udCAvU3VidHlwZSAvVHlwZTEgL0Jhc2VGb250IC9IZWx2ZXRpY2EgPj4KZW5kb2JqCnhyZWYKMCA2CjAwMDAwMDAwMDAgNjU1MzUgZiAKMDAwMDAwMDAwOSAwMDAwMCBuIAowMDAwMDAwMDU4IDAwMDAwIG4gCjAwMDAwMDAxMTUgMDAwMDAgbiAKMDAwMDAwMDI0MSAwMDAwMCBuIAowMDAwMDAwMzYwIDAwMDAwIG4gCnRyYWlsZXIKPDwgL1NpemUgNiAvUm9vdCAxIDAgUiA+PgpzdGFydHhyZWYKNDMwCiUlRU9GCg=="
+            },
+            {
+              "id": "f1.1",
+              "name": "meter.png",
+              "ref": "conversations/conv_ci_files/meter.png",
+              "contentType": "image/png",
+              "data": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAAIXRFWHRDb21tZW50AE1ldGVyIHBob3RvLiBbcG5nLWNhbmFyeV3nh4VUAAAADElEQVR4nGP4P5MBAAQzAZncH4SNAAAAAElFTkSuQmCC"
+            }
+          ]
+        }
+      ]
+    },
     "invoices": {
       "id": "conv_ci_invoices",
       "offset": "",
@@ -50,6 +136,19 @@
         "bounded": false
       },
       "entries": [
+        {
+          "id": "40",
+          "cursor": "c0000",
+          "at": "2026-09-18T08:00:00Z",
+          "kind": "summary",
+          "text": "Summary of 37 earlier messages (2026-09-01 – 2026-09-03). To read them: read_conversation with segment \"urn:uffici:segment:40\".\nAna asked for the Lisbon invoice to be checked; Smith found it unpaid and wrote to the client. [summary-canary]",
+          "author": {
+            "type": "system",
+            "id": "platform",
+            "label": "",
+            "self": false
+          }
+        },
         {
           "id": "i1",
           "cursor": "c0001",
@@ -201,6 +300,25 @@
             "type": "member",
             "id": "member_5",
             "label": "Joana Lima",
+            "self": false
+          }
+        }
+      ]
+    },
+    "ledger": {
+      "id": "conv_ci_ledger",
+      "offset": "",
+      "entries": [
+        {
+          "id": "l1",
+          "cursor": "c0001",
+          "at": "2026-09-18T14:00:00Z",
+          "kind": "message",
+          "text": "Please remember for later, with your uffici_remember tool: invoices for the Lisbon client go out on the 10th. [remember-this]",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
             "self": false
           }
         }
@@ -732,22 +850,367 @@
       "conversation": "support",
       "outcome": "answered",
       "withinMs": 240000
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "support",
+      "entries": [
+        {
+          "id": "s2",
+          "cursor": "c0002",
+          "at": "2026-09-18T13:05:00Z",
+          "kind": "message",
+          "text": "Check the boards again, please. [rerun-a-tool]",
+          "author": {
+            "type": "member",
+            "id": "member_5",
+            "label": "Joana Lima",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "support",
+      "reason": "mentioned",
+      "causeEntry": "s2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "🔴 #2454, a re-run of a recorded call. The model mock calls `uffici_rerun` on the marker with the latest `tool_call` URN its session carries — the earlier `list_boards` result's — and the plugin carries it through the companion's `tools.rerun`; the scripted host finds the call in THIS conversation and answers the tool's result again."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectToolRerun",
+      "withinMs": 120000,
+      "note": "The re-run reached the platform side, on THIS request — not merely offered."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "Support",
+      "withinMs": 120000,
+      "note": "`contains` the board's name, which only the re-run's result carries: this turn's own message never names it."
+    },
+    {
+      "step": "expectClose",
+      "conversation": "support",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "ring",
+      "conversation": "ledger",
+      "reason": "mentioned",
+      "causeEntry": "l1",
+      "throughCursor": "c0001",
+      "deadlineMs": 120000,
+      "note": "🔴 #2386, the agent's memory. The model mock calls `uffici_remember` on the marker (a real model is asked to in words) with a fact carrying the memory canary; the plugin carries it through the companion's `memory.remember`, and the scripted host keeps it on this conversation."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectMemory",
+      "op": "remember",
+      "withinMs": 120000,
+      "note": "The fact reached the platform side, on THIS request."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "ledger",
+      "outcome": "answered",
+      "withinMs": 240000,
+      "note": "Gate before the recall ring."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "ledger",
+      "entries": [
+        {
+          "id": "l2",
+          "cursor": "c0002",
+          "at": "2026-09-18T14:05:00Z",
+          "kind": "message",
+          "text": "When do the Lisbon invoices go out?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "ledger",
+      "reason": "mentioned",
+      "causeEntry": "l2",
+      "throughCursor": "c0002",
+      "deadlineMs": 120000,
+      "note": "🔴 The recall. Before Hermes calls the model, the plugin's memory provider asks `memory.recall` with the turn's text; the fact shares its words, so it comes back and Hermes fences it into `<memory-context>` on the USER side. The runners judge that from the model mock's `memory_recalled` boolean — never its text. `onboarding`'s turns are the outage: the script takes memory down there, and each of them must tell the model so inside the same fence."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectMemory",
+      "op": "recall",
+      "withinMs": 60000,
+      "note": "The prefetch reached the platform side on THIS request, before the answer."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "ledger",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "endHarnessSession",
+      "conversation": "invoices",
+      "withinMs": 20000,
+      "note": "🔴 #2414, a session the harness REPLACES. `withinMs` is the driver's whole window — it notices the line within a second, then a `docker exec` starts Python and ends the row — and is generous because a ring that beats the end is answered `resumed`, which reads as the very defect this step exists to catch. The driver ends this conversation's session inside the real Hermes — its row in `state.db`, which a live gateway reads when the next message routes, and then answers with a new session that has no history. A plugin that read its session index's key acked `resumed` here: no opener came, and the agent answered the newest message of a conversation it could not see. This step proves nothing by itself; the ring below does."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "invoices",
+      "entries": [
+        {
+          "id": "i8",
+          "cursor": "c0008",
+          "at": "2026-09-18T15:00:00Z",
+          "kind": "message",
+          "text": "Back to the Lisbon invoice — is it settled now?",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "invoices",
+      "reason": "mentioned",
+      "causeEntry": "i8",
+      "throughCursor": "c0008",
+      "deadlineMs": 120000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000,
+      "note": "FRESH, on a conversation resumed three times before: the session it ran on is gone."
+    },
+    {
+      "step": "expectOpener",
+      "note": "The conversation before the delta reaches the new session."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "nonEmpty",
+      "withinMs": 120000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "invoices",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "ring",
+      "conversation": "files",
+      "reason": "mentioned",
+      "causeEntry": "f1",
+      "throughCursor": "c0001",
+      "deadlineMs": 180000,
+      "note": "🔴 #2679, the first use case: a person's PDF and PNG. The companion prefetches both into the shared workspace (two downloads through the fixture's loopback files routes), the plugin hands them to Hermes as media — the PNG as an image part, the PDF as a document at a local path — and the mock names each canary only when it found it in the bytes it was given. The member's text names neither canary, so an echo cannot pass."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "fresh",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectOpener",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "[pdf-canary]",
+      "withinMs": 180000
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "[png-canary]",
+      "withinMs": 180000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "files",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "interruptNextUpload",
+      "afterBytes": 65536,
+      "note": "🔴 The interrupted transfer: the next upload's connection drops 64 KiB into its PATCH, once. The companion resumes from the offset a HEAD reports, the run passes, and the tally's `uploadsResumed` says it happened."
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "files",
+      "entries": [
+        {
+          "id": "f2",
+          "cursor": "c0002",
+          "at": "2026-09-18T16:05:00Z",
+          "kind": "message",
+          "text": "Please make me the Q3 report as a PDF and attach it to your reply. [make-a-file]",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "files",
+      "reason": "mentioned",
+      "causeEntry": "f2",
+      "throughCursor": "c0002",
+      "deadlineMs": 180000,
+      "note": "The second use case, attached: the mock writes the report INSIDE the shared workspace and answers `MEDIA:<path>`; Hermes delivers it through the adapter's send_document, the plugin uploads it with files.upload, and a post carries it."
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectPost",
+      "attachments": 1,
+      "withinMs": 180000,
+      "note": "Exactly one attachment, and it is an upload of this request that arrived with the CRC32C its grant was minted for — what the person downloads is what the harness wrote."
+    },
+    {
+      "step": "expectUpload",
+      "contains": "[report-canary]",
+      "withinMs": 180000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "files",
+      "outcome": "answered",
+      "withinMs": 240000
+    },
+    {
+      "step": "appendEntries",
+      "conversation": "files",
+      "entries": [
+        {
+          "id": "f3",
+          "cursor": "c0003",
+          "at": "2026-09-18T16:10:00Z",
+          "kind": "message",
+          "text": "Now save that report into Files at reports/q3-report.pdf with your uffici_upload tool. [save-a-file]",
+          "author": {
+            "type": "member",
+            "id": "member_1",
+            "label": "Ana Marques",
+            "self": false
+          }
+        }
+      ]
+    },
+    {
+      "step": "ring",
+      "conversation": "files",
+      "reason": "mentioned",
+      "causeEntry": "f3",
+      "throughCursor": "c0003",
+      "deadlineMs": 180000
+    },
+    {
+      "step": "expectAck",
+      "outcome": "accepted",
+      "session": "resumed",
+      "withinMs": 60000
+    },
+    {
+      "step": "expectUpload",
+      "to": "reports/q3-report.pdf",
+      "contains": "[report-canary]",
+      "withinMs": 180000,
+      "note": "The second use case, saved: uffici_upload with `to`, the file at the place the agent chose."
+    },
+    {
+      "step": "expectPost",
+      "matcher": "contains",
+      "value": "saved",
+      "withinMs": 180000
+    },
+    {
+      "step": "expectClose",
+      "conversation": "files",
+      "outcome": "answered",
+      "withinMs": 240000
     }
   ],
   "assert": {
-    "ringsDelivered": 13,
-    "openersSent": 6,
+    "ringsDelivered": 20,
+    "openersSent": 9,
     "closes": {
-      "answered": 10,
+      "answered": 17,
       "cancelled": 2,
       "error": 1
     },
     "sessions": {
-      "fresh": 6,
-      "resumed": 8
+      "fresh": 9,
+      "resumed": 12
     },
-    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).",
-    "posts": 10,
-    "toolCalls": 1
+    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).\n\n🔴 `memoryOps` names `remember` alone (#2386): recall is not counted, because Hermes skips a prefetch on a trivial prompt, so a count would assert Hermes's heuristic; `ledger`'s `expectMemory` step and the runners' `memory_recalled` judgement carry it.",
+    "posts": 18,
+    "toolCalls": 2,
+    "toolReruns": 1,
+    "uploads": 2,
+    "downloads": 2,
+    "uploadsResumed": 1,
+    "memoryOps": { "remember": 1 }
   }
 }

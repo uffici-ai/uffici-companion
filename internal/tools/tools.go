@@ -1,5 +1,6 @@
 // Package tools serves the agent's Uffici tools on the local wire (#2349): the
-// `tools.list` and `tools.call` call ops, over the agents host.
+// `tools.list` and `tools.call` call ops, and `tools.rerun` (#2454), over the
+// agents host.
 //
 // 🔴 A translator, like the host beneath it. The catalog is the platform's and
 // the result is the platform's; this package validates both against the wire's
@@ -7,7 +8,8 @@
 // platform's class and sentence. It decides nothing about what a tool may do.
 //
 // 🔴 Arguments and results are tenant content. Neither reaches a log line: what
-// is logged about a call is the tool's name, the request, and the class.
+// is logged about a call is the tool's name, the request, and the class — and for
+// a re-run the URN it named, which is an id.
 package tools
 
 import (
@@ -54,9 +56,10 @@ const (
 type Host interface {
 	ListTools(ctx context.Context, conversationID string) ([]contracts.Tool, error)
 	CallTool(ctx context.Context, requestID, name string, arguments json.RawMessage) (contracts.ToolResult, error)
+	RerunTool(ctx context.Context, requestID, call string) (contracts.ToolResult, error)
 }
 
-// Handler serves the two ops.
+// Handler serves the three ops.
 type Handler struct {
 	Host Host
 	// Logger receives one line per tool call: the tool, the request, the class.
@@ -96,6 +99,11 @@ type callRequest struct {
 	RequestID string          `json:"requestId"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+type rerunRequest struct {
+	RequestID string `json:"requestId"`
+	Call      string `json:"call"`
 }
 
 type callResult struct {
@@ -172,9 +180,37 @@ func (h *Handler) Call(ctx context.Context, payload json.RawMessage) (json.RawMe
 		return nil, &surface.CallFailure{Class: wire.ClassMalformedPayload}
 	}
 	answer, err := h.Host.CallTool(ctx, request.RequestID, request.Name, request.Arguments)
+	attrs := []any{slog.String("tool", request.Name), slog.String("request", request.RequestID)}
+	return h.answer(wire.OpToolsCall, "tool call", attrs, answer, err)
+}
+
+// Rerun is the surface's CallHandler for `tools.rerun` (#2454): re-run a call the
+// platform recorded, named by its `tool_call` URN, on the request being answered.
+//
+// 🔴 A re-run IS a tool call: sent at most once, answered in `tools.call`'s
+// shape, and a call whose arguments were not kept is the platform's RESULT
+// (`rerun_unavailable`), relayed as given. The log line names the request, the
+// URN and the class — never the result.
+func (h *Handler) Rerun(ctx context.Context, payload json.RawMessage) (json.RawMessage, error) {
+	if err := wire.ValidateOpPayload(wire.OpToolsRerun, wire.OpRequest, payload); err != nil {
+		return nil, &surface.CallFailure{Class: wire.ClassMalformedPayload}
+	}
+	var request rerunRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return nil, &surface.CallFailure{Class: wire.ClassMalformedPayload}
+	}
+	answer, err := h.Host.RerunTool(ctx, request.RequestID, request.Call)
+	attrs := []any{slog.String("call", request.Call), slog.String("request", request.RequestID)}
+	return h.answer(wire.OpToolsRerun, "tool re-run", attrs, answer, err)
+}
+
+// answer turns the host's answer to a call or a re-run into the op's result:
+// a failure with the platform's class and sentence, or the result kept inside
+// the call bound — and logs one line naming the class.
+func (h *Handler) answer(op, what string, attrs []any, answer contracts.ToolResult, err error) (json.RawMessage, error) {
 	if err != nil {
 		failure := h.callFailure(err)
-		h.logCall(request, failure.Class, classOf(err))
+		h.logCall(what, attrs, failure.Class, classOf(err))
 		return nil, failure
 	}
 	result := callResult{Result: answer.Result}
@@ -182,17 +218,17 @@ func (h *Handler) Call(ctx context.Context, payload json.RawMessage) (json.RawMe
 		urn := answer.CallURN
 		result.CallURN = &urn
 	}
-	encoded, err := bounded(wire.OpToolsCall, result)
+	encoded, err := bounded(op, result)
 	if err != nil {
 		var failure *surface.CallFailure
 		if errors.As(err, &failure) && result.CallURN != nil {
 			// The call ran: its URN rides the failure, so the agent can still cite it.
 			failure.Upstream = mustJSON(map[string]string{"class": "result_too_large", "callUrn": *result.CallURN})
 		}
-		h.logCall(request, wire.ClassUpstreamFailed, "result_too_large")
+		h.logCall(what, attrs, wire.ClassUpstreamFailed, "result_too_large")
 		return nil, err
 	}
-	h.logCall(request, "", "")
+	h.logCall(what, attrs, "", "")
 	return encoded, nil
 }
 
@@ -205,15 +241,14 @@ func (h *Handler) callFailure(err error) *surface.CallFailure {
 	return upstreamFailure(err)
 }
 
-// logCall logs one tool call by name, request and class — 🔴 never its
-// arguments or its result.
-func (h *Handler) logCall(request callRequest, class wire.CallErrorClass, upstream string) {
-	attrs := []any{slog.String("tool", request.Name), slog.String("request", request.RequestID)}
+// logCall logs one tool call (by name) or re-run (by URN), its request and its
+// class — 🔴 never its arguments or its result.
+func (h *Handler) logCall(what string, attrs []any, class wire.CallErrorClass, upstream string) {
 	if class == "" {
-		h.log().Info("tool call answered", append(attrs, slog.String("class", "ok"))...)
+		h.log().Info(what+" answered", append(attrs, slog.String("class", "ok"))...)
 		return
 	}
-	h.log().Warn("tool call failed", append(attrs, slog.String("class", string(class)),
+	h.log().Warn(what+" failed", append(attrs, slog.String("class", string(class)),
 		slog.String("upstream", upstream))...)
 }
 

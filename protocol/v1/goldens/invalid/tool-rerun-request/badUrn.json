@@ -1,0 +1,7 @@
+{
+	"reason": "a call is re-run by its ledger URN, never an ordinal or a name (#2454)",
+	"value": {
+		"requestId": "6f1c0f7a-2f0e-4f2e-9b1e-0d6a0b5c7e21",
+		"call": "t#42"
+	}
+}

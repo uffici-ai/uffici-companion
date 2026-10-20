@@ -1,0 +1,89 @@
+{
+	"$id": "https://uffici.ai/schemas/agents/v1/transfer-request.schema.json",
+	"title": "transfer-request",
+	"$schema": "https://json-schema.org/draft/2020-12/schema",
+	"anyOf": [
+		{
+			"type": "object",
+			"properties": {
+				"op": {
+					"type": "string",
+					"const": "download"
+				},
+				"attachmentId": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 64
+				}
+			},
+			"required": [
+				"op",
+				"attachmentId"
+			],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"op": {
+					"type": "string",
+					"const": "download"
+				},
+				"path": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 1024
+				}
+			},
+			"required": [
+				"op",
+				"path"
+			],
+			"additionalProperties": false
+		},
+		{
+			"type": "object",
+			"properties": {
+				"op": {
+					"type": "string",
+					"const": "upload"
+				},
+				"filename": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 255
+				},
+				"size": {
+					"type": "integer",
+					"minimum": 0,
+					"maximum": 9007199254740991
+				},
+				"crc32c": {
+					"type": "string",
+					"pattern": "^[A-Za-z0-9+/]{6}==$"
+				},
+				"contentType": {
+					"type": "string",
+					"maxLength": 127,
+					"pattern": "^[\\w.+-]+\\/[\\w.+-]+$"
+				},
+				"to": {
+					"type": "string",
+					"minLength": 1,
+					"maxLength": 1024
+				},
+				"overwrite": {
+					"type": "boolean"
+				}
+			},
+			"required": [
+				"op",
+				"filename",
+				"size",
+				"crc32c",
+				"contentType"
+			],
+			"additionalProperties": false
+		}
+	]
+}

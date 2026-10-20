@@ -24,6 +24,9 @@ type Brief struct {
 	// Context is what the agent is told before the conversation (#2331), as the
 	// platform composed it; nil when it sent none.
 	Context *contracts.Context
+	// ContextChanged names the levels a person changed since the agent last
+	// answered here (2026-10-12); empty when nothing changed.
+	ContextChanged []contracts.ContextChange
 }
 
 // PluginSink is the attached plugin, as the manager sees it.
@@ -56,7 +59,7 @@ type ReleaseSink interface {
 // content into a log by construction rather than by accident.
 type Observer interface {
 	BriefSent(requestID, conversationID string, deltaEntries, deltaChars int)
-	OpenerSent(requestID string, entries, chars, budgetDeclared int)
+	OpenerSent(requestID string, entries, chars, budgetDeclared, summaryEntries int)
 	Acked(requestID string, outcome AckOutcome, session Session)
 	Posted(requestID string, chars int)
 	Closed(requestID string, outcome contracts.Outcome, errorClass string)
@@ -71,7 +74,7 @@ type NopObserver struct{}
 func (NopObserver) BriefSent(string, string, int, int) {}
 
 // OpenerSent ignores an opener.
-func (NopObserver) OpenerSent(string, int, int, int) {}
+func (NopObserver) OpenerSent(string, int, int, int, int) {}
 
 // Acked ignores an acknowledgement.
 func (NopObserver) Acked(string, AckOutcome, Session) {}
@@ -101,6 +104,11 @@ type Manager struct {
 	limits   Limits
 	observer Observer
 	now      func() time.Time
+	prefetch PrefetchFunc
+	report   func(requestID string, err error)
+	// background counts the deliveries running off their caller's goroutine
+	// (a brief with attachments to prefetch); tests wait on it.
+	background sync.WaitGroup
 
 	mu sync.Mutex
 	// byID and byConversation are two views of the same requests. The second is
@@ -140,7 +148,33 @@ type Options struct {
 	Observer Observer
 	// Now is the clock, injected so deadline and timeout tests do not sleep.
 	Now func() time.Time
+	// Prefetch, optional, is handed a brief's delta before the brief is sent
+	// (#2673) and returns it with what it fetched marked on the attachments. It
+	// runs for at most PrefetchWindow, OFF the goroutine that delivered the ring;
+	// a request withdrawn while it ran is not briefed.
+	Prefetch PrefetchFunc
+	// Report, optional, hears a delivery that failed off its caller's goroutine
+	// — what OnRing would otherwise have returned.
+	Report func(requestID string, err error)
 }
+
+// PrefetchMaxWindow bounds a brief's prefetch, whatever the request's deadline.
+const PrefetchMaxWindow = 15 * time.Second
+
+// PrefetchWindow is how long a brief's prefetch may run: a quarter of what is
+// left of the request, and never more than PrefetchMaxWindow — an attachment
+// that takes longer is handed over without its local path, never a brief that
+// misses its turn.
+func PrefetchWindow(now, deadline time.Time) time.Duration {
+	window := PrefetchMaxWindow
+	if !deadline.IsZero() {
+		window = min(window, deadline.Sub(now)/4)
+	}
+	return max(window, 0)
+}
+
+// PrefetchFunc prepares a brief's entries — the file transfer engine's prefetch.
+type PrefetchFunc func(ctx context.Context, requestID string, entries []contracts.Entry) []contracts.Entry
 
 // New builds a Manager over an AgentsHost.
 func New(host contracts.AgentsHost, options Options) *Manager {
@@ -156,6 +190,8 @@ func New(host contracts.AgentsHost, options Options) *Manager {
 		host:           host,
 		limits:         options.Limits.withDefaults(),
 		observer:       observer,
+		prefetch:       options.Prefetch,
+		report:         options.Report,
 		now:            now,
 		byID:           map[string]*Request{},
 		closed:         map[string]struct{}{},
@@ -373,6 +409,68 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		return nil
 	}
 
+	if m.prefetch != nil && hasAttachments(read.Entries) {
+		// 🔴 OFF the caller's goroutine (#2673 self-review H4). A ring is
+		// delivered on the doorbell's one dispatch goroutine, which also carries
+		// every other ring and the platform's cancel — a person's stop (Art. 14).
+		// A prefetch held there would hold the stop behind a slow download. The
+		// request keeps its `briefing` mark meanwhile, so nothing else briefs it.
+		m.background.Add(1)
+		go func() {
+			defer m.background.Done()
+			if err := m.prefetchThenBrief(ctx, request, read, sink, connID); err != nil && m.report != nil {
+				m.report(request.RequestID, err)
+			}
+		}()
+		return nil
+	}
+	return m.brief(ctx, request, read, sink, connID, read.Entries)
+}
+
+// prefetchThenBrief fetches a brief's attachments for at most PrefetchWindow,
+// then sends the brief — unless the request was withdrawn meanwhile.
+func (m *Manager) prefetchThenBrief(ctx context.Context, request *Request, read contracts.Read, sink PluginSink, connID string) error {
+	prefetchCtx, cancel := context.WithTimeout(ctx, PrefetchWindow(m.now(), request.Deadline))
+	defer cancel()
+	m.mu.Lock()
+	if request.State.Terminal() {
+		// Withdrawn before the prefetch began: nothing to fetch for.
+		request.briefing = false
+		m.mu.Unlock()
+		return nil
+	}
+	request.stopPrefetch = cancel
+	m.mu.Unlock()
+	entries := m.prefetch(prefetchCtx, request.RequestID, read.Entries)
+	m.mu.Lock()
+	request.stopPrefetch = nil
+	withdrawn := request.State.Terminal()
+	if withdrawn {
+		request.briefing = false
+	}
+	m.mu.Unlock()
+	if withdrawn {
+		// Cancelled while its attachments were fetched: the cancel reached the
+		// plugin, and the transfers were aborted with it.
+		return nil
+	}
+	return m.brief(ctx, request, read, sink, connID, entries)
+}
+
+// hasAttachments reports whether a delta carries an attachment to prefetch.
+func hasAttachments(entries []contracts.Entry) bool {
+	for _, entry := range entries {
+		for _, attachment := range entry.Attachments {
+			if attachment.ID != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// brief sends a brief over the sink chosen at delivery.
+func (m *Manager) brief(ctx context.Context, request *Request, read contracts.Read, sink PluginSink, connID string, entries []contracts.Entry) error {
 	brief := Brief{
 		RequestID:      request.RequestID,
 		ConversationID: request.ConversationID,
@@ -382,8 +480,9 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 		SinceCursor:    request.SinceCursor,
 		ThroughCursor:  request.ThroughCursor,
 		ResetSession:   request.ResetSession,
-		Delta:          read.Entries,
+		Delta:          entries,
 		Context:        read.Context,
+		ContextChanged: read.ContextChanged,
 	}
 	if err := sink.SendBrief(ctx, brief); err != nil {
 		// 🔴 A send that failed because ANOTHER connection replaced this one keeps
@@ -411,17 +510,40 @@ func (m *Manager) deliver(ctx context.Context, request *Request) error {
 
 	m.mu.Lock()
 	request.briefing = false
-	if !m.advanceLocked(request, StateDelivered) {
+	if request.State.Terminal() {
 		// Withdrawn while the brief was on the wire: nothing more to do for it.
 		m.mu.Unlock()
 		return nil
 	}
+	// 🔴 #2694: a request is created `delivered`, and the plugin may have
+	// answered already — a local socket acks before this goroutine gets the
+	// lock back. Moving it to `delivered` here undid that ack, and the ack sweep
+	// then briefed the harness a second time. The state is left as it is.
 	request.DeliveredAt = m.now()
 	request.ContextTokens = contextTokens(read.Context)
-	m.connOf[request.RequestID] = connID
+	// 🔴 The owner only while it is still the attached connection (#2694
+	// review): Detach purged this connection's entries if it went during the
+	// send, and writing it back refused the reconnected plugin's frames as
+	// `wrong_connection`. A replaced send records its owner when it re-briefs.
+	if m.connID == connID {
+		m.connOf[request.RequestID] = connID
+	}
+	// 🔴 #2694: the connection was replaced while this send was in flight, and
+	// the request is still unanswered — un-acked, or reopened by BindProcess for
+	// a new harness process. The attach's RedeliverOpen skipped it as still
+	// briefing, so nothing else would brief the new connection: this send does.
+	// An acked request a same-process reconnect kept is not re-briefed.
+	// redeliver claims it under its own lock, so a RedeliverOpen racing this one
+	// still briefs it once.
+	replaced := m.sink != nil && m.connID != connID && request.State == StateDelivered
 	m.mu.Unlock()
 
+	// An ack that landed during the send is observed BEFORE this line, so the
+	// frame log may show the ack ahead of its brief (#2694 review); both happened.
 	m.observer.BriefSent(request.RequestID, request.ConversationID, len(read.Entries), charsOf(read.Entries))
+	if replaced {
+		return m.redeliver(ctx, request)
+	}
 	return nil
 }
 
@@ -525,42 +647,90 @@ func (m *Manager) OnAck(ctx context.Context, connID, requestID string, outcome A
 	m.observer.Acked(requestID, outcome, session)
 
 	if outcome == AckRejected {
+		// 🔴 Back to `delivered` first (#2694 review): the send no longer moves a
+		// request there, so a rejection left in `acked` hid the redelivered brief
+		// from the ack sweep and from RedeliverOpen — nobody acking it meant it
+		// sat until its deadline instead of reaching `redelivery_exhausted`.
+		// Only the rejection's own move re-briefs: a restart that reopened the
+		// request meanwhile has its new process briefed already.
+		m.mu.Lock()
+		terminal := request.State.Terminal()
+		moved := request.State == StateAcked && m.advanceLocked(request, StateDelivered)
+		m.mu.Unlock()
+		if terminal {
+			return ErrClosedRequest
+		}
+		if !moved {
+			return nil
+		}
 		return m.redeliver(ctx, request)
 	}
 	if outcome == AckDeferred || !session.EarnsOpener() {
 		// 🔴 A resumed session reads NOTHING here. The turn answers either way, so
 		// the only evidence of getting this wrong is an opener read per turn.
-		if !m.advance(request, StatePosting) {
-			return ErrClosedRequest
-		}
-		return nil
+		return m.advanceFrom(request, StateAcked, StatePosting)
 	}
 
 	m.mu.Lock()
-	if !m.advanceLocked(request, StateOpening) {
+	if request.State != StateAcked || !m.advanceLocked(request, StateOpening) {
+		terminal := request.State.Terminal()
 		m.mu.Unlock()
-		return ErrClosedRequest
+		if terminal {
+			return ErrClosedRequest
+		}
+		// Reopened for a new harness process since this ack (#2694): the new
+		// process is briefed afresh, and this ack has nothing left to do.
+		return nil
 	}
 	// 🔴 The context arrived with the brief, before this ack, and sits in the
 	// same system-side budget the plugin declared — so the opener gets what is
 	// left. The number is the platform's; the companion estimates nothing.
-	sink, budget := m.sink, openerBudget(m.budget, request.ContextTokens)
+	budget := openerBudget(m.budget, request.ContextTokens)
 	m.mu.Unlock()
 
 	entries, err := m.host.ReadOpener(ctx, request.ConversationID, request.ThroughCursor, budget)
 	if err != nil {
 		return m.fail(ctx, request, fmt.Errorf("reading the opener for %s: %w", requestID, err))
 	}
+	// 🔴 The sink is read AFTER the opener (#2698): a same-process reconnect
+	// during the read replaced it, and the harness on the new connection is still
+	// working on this brief. A request no longer `opening` was reopened for a new
+	// process, which is briefed afresh — no opener is owed to anyone.
+	m.mu.Lock()
+	terminal, opening, sink := request.State.Terminal(), request.State == StateOpening, m.sink
+	m.mu.Unlock()
+	if terminal {
+		return ErrClosedRequest
+	}
+	if !opening {
+		return nil
+	}
 	if sink != nil {
 		if err := sink.SendOpener(ctx, requestID, entries); err != nil {
 			return fmt.Errorf("sending the opener for %s: %w", requestID, err)
 		}
 	}
-	m.observer.OpenerSent(requestID, len(entries), charsOf(entries), budget)
+	m.observer.OpenerSent(requestID, len(entries), charsOf(entries), budget, summariesOf(entries))
 
-	if !m.advance(request, StatePosting) {
+	return m.advanceFrom(request, StateOpening, StatePosting)
+}
+
+// advanceFrom moves a request from the state its caller left it in, and only
+// from there (#2694). An ack's later moves run outside the lock; a harness
+// that restarted into a new process meanwhile reopened the request to
+// `delivered` for that process, and moving it on would hide it from the
+// redelivery that briefs the new one. That is no error: nil, nothing moved.
+// A withdrawn request is ErrClosedRequest, as `advance` reports it.
+func (m *Manager) advanceFrom(request *Request, from, to State) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if request.State.Terminal() {
 		return ErrClosedRequest
 	}
+	if request.State != from {
+		return nil
+	}
+	m.advanceLocked(request, to)
 	return nil
 }
 
@@ -924,6 +1094,10 @@ func (m *Manager) remember(requestID string) {
 // newer request — the next ring would not supersede it, and the conversation
 // would hold two open requests.
 func (m *Manager) release(request *Request) {
+	if request.stopPrefetch != nil {
+		request.stopPrefetch()
+		request.stopPrefetch = nil
+	}
 	if m.byConversation[request.ConversationID] == request {
 		delete(m.byConversation, request.ConversationID)
 	}
@@ -973,6 +1147,18 @@ func (m *Manager) Open() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.byID)
+}
+
+// summariesOf counts the platform's summary entries (#2451) — the fold a fresh
+// session's opener carries. The kind is the platform's; the companion only counts.
+func summariesOf(entries []contracts.Entry) int {
+	total := 0
+	for _, entry := range entries {
+		if entry.Kind == contracts.EntryKindSummary {
+			total++
+		}
+	}
+	return total
 }
 
 func charsOf(entries []contracts.Entry) int {

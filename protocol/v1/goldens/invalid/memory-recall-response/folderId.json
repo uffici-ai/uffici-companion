@@ -1,0 +1,19 @@
+{
+	"reason": "🔴 a hit names a LEVEL, never a folder id or a chain (#2049 decision 10)",
+	"value": {
+		"hits": [
+			{
+				"urn": "urn:uffici:fact:9c8b7a6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+				"level": "folder",
+				"folderId": "a1b2c3d4-e5f6-4789-8abc-def012345678",
+				"distance": 0.1,
+				"text": "x",
+				"at": "2026-10-04T10:00:00.000Z",
+				"source": {
+					"kind": "remembered"
+				}
+			}
+		],
+		"degraded": false
+	}
+}

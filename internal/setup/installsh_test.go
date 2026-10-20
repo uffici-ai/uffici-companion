@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 )
@@ -235,11 +236,14 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 	archive := fakeBinaryArchive(t)
 	sums := []byte(sha(archive) + "  " + thisAsset() + "\n")
 	const token = "ghp_installer_test_token_not_a_secret"
-	var bearerHits, publicHits int
+	// Counted on the server's goroutines, read by the test (#2696).
+	var bearerHits, publicHits atomic.Int32
 	var server *httptest.Server
-	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Unstarted, so `server` is assigned before any handler can read its URL
+	// (#2696).
+	server = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/uffici-ai/") {
-			publicHits++
+			publicHits.Add(1)
 			http.NotFound(w, r) // a private repository answers the public URL with nothing useful
 			return
 		}
@@ -247,7 +251,7 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 			http.Error(w, "no", http.StatusNotFound)
 			return
 		}
-		bearerHits++
+		bearerHits.Add(1)
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
 			// GitHub's real shape: pretty-printed, `url` before `name`, an
@@ -261,6 +265,7 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 			http.NotFound(w, r)
 		}
 	}))
+	server.Start()
 	t.Cleanup(server.Close)
 	cmd := exec.Command("sh", filepath.Join(moduleRoot(t), "install.sh"), "--dry-run", "--harness", "hermes")
 	cmd.Env = append(os.Environ(),
@@ -276,8 +281,8 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("installer failed on the token path: %v\n%s", err, out)
 	}
-	if bearerHits < 4 || publicHits != 0 {
-		t.Fatalf("expected the listing, checksums and asset through the API with the token (got %d bearer hits, %d public hits)", bearerHits, publicHits)
+	if bearerHits.Load() < 4 || publicHits.Load() != 0 {
+		t.Fatalf("expected the listing, checksums and asset through the API with the token (got %d bearer hits, %d public hits)", bearerHits.Load(), publicHits.Load())
 	}
 	if strings.Contains(string(out), token) {
 		t.Fatal("the token was printed")
