@@ -458,7 +458,7 @@ delivered → acked(fresh | resumed) → [opening] → posting → closed{outcom
 - `posting` — one or more posts.
 - `closed` — `done` arrived, with its outcome.
 - `cancelled` — a `cancel` was sent, with its reason.
-- `expired` — the deadline passed with no `done`.
+- `expired` — the deadline passed with no `done`. The plugin hears `cancel` with reason `expired`; upstream the request closes as an **error** — `no_runtime` when no plugin was attached (the brief was held), `timeout` when one took it — so the person is told the agent did not answer. One exception: a request the plugin already posted on expires as `cancelled`, quietly — the person heard the answer, and a "did not answer" note beside it would be wrong.
 
 Rules that hold across it:
 

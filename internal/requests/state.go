@@ -98,6 +98,12 @@ type Request struct {
 
 	// Posts counts forwarded posts, against PostsPerRequestMax.
 	Posts int
+	// Posted is sticky: a post was forwarded at some point in this request's
+	// life, whichever harness process made it (#2842). `Posts` is reset when a
+	// request is reopened for a restarted harness, so the new answer's cap starts
+	// at zero; this bit is not, because "the person already heard something" is
+	// true for the rest of the request's life.
+	Posted bool
 	// Redeliveries counts how many times this request has been sent again.
 	Redeliveries int
 
@@ -192,8 +198,15 @@ func OutcomeFor(state State, done contracts.Outcome) contracts.Outcome {
 	switch state {
 	case StateClosed:
 		return done
-	case StateCancelled, StateExpired:
+	case StateCancelled:
 		return contracts.OutcomeCancelled
+	case StateExpired:
+		// 🔴 An expiry is a FAILURE, never a decision (#2842): the platform keeps an
+		// agent's `cancelled` close silent — no note, no missed-request report — so
+		// a request that ran out of time as `cancelled` left the person with nothing
+		// and the agent reading Online. `error` is what writes "the agent did not
+		// answer"; the offset still never moves.
+		return contracts.OutcomeError
 	default:
 		return contracts.OutcomeError
 	}

@@ -41,6 +41,8 @@ func TestTerminalStatesAreTerminal(t *testing.T) {
 // 🔴 The mapping that decides whether entries survive. A cancelled or expired
 // request must reach the platform as an outcome that does NOT advance the
 // offset — otherwise everything it covered vanishes from every later brief.
+// And an expired one reaches it as `error`, never `cancelled` (#2842): the
+// platform keeps a `cancelled` close silent, and the person must be told.
 func TestCancelledAndExpiredNeverReachThePlatformAsAnswered(t *testing.T) {
 	for _, testCase := range []struct {
 		state State
@@ -51,7 +53,7 @@ func TestCancelledAndExpiredNeverReachThePlatformAsAnswered(t *testing.T) {
 		{StateClosed, contracts.OutcomeEmpty, contracts.OutcomeEmpty},
 		{StateClosed, contracts.OutcomeError, contracts.OutcomeError},
 		{StateCancelled, contracts.OutcomeAnswered, contracts.OutcomeCancelled},
-		{StateExpired, contracts.OutcomeAnswered, contracts.OutcomeCancelled},
+		{StateExpired, contracts.OutcomeAnswered, contracts.OutcomeError},
 		{StatePosting, contracts.OutcomeAnswered, contracts.OutcomeError},
 	} {
 		got := OutcomeFor(testCase.state, testCase.done)

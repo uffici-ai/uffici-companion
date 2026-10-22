@@ -561,9 +561,10 @@ func (m *Manager) supersede(ctx context.Context, request *Request) error {
 
 // cancel withdraws a request from the plugin and closes it upstream.
 //
-// 🔴 The upstream close is what keeps the offset where it was: it goes as
-// `cancelled`, which does not advance. A supersede that closed as answered
-// would lose every entry the superseded request covered.
+// 🔴 The upstream close is what keeps the offset where it was: a stop or a
+// supersede goes as `cancelled` and an expiry as `error`, neither of which
+// advances. A supersede that closed as answered would lose every entry the
+// superseded request covered.
 func (m *Manager) cancel(ctx context.Context, request *Request, reason contracts.CancelReason) error {
 	m.mu.Lock()
 	if request.State.Terminal() {
@@ -580,6 +581,30 @@ func (m *Manager) cancel(ctx context.Context, request *Request, reason contracts
 	// frame handled while the sends below are on the wire must not decide it.
 	outcome := OutcomeFor(request.State, contracts.OutcomeCancelled)
 	sink := m.sink
+	// 🔴 An expiry closes upstream as an ERROR with a class the platform turns into
+	// the "did not answer" note (#2842): `no_runtime` when no plugin is attached —
+	// a ring held on a machine whose harness is down, the incident's shape — and
+	// `timeout` when a plugin took the brief and never finished (the platform reads
+	// it as `harness_error`). Decided HERE, under the lock, from the sink this
+	// companion holds at the moment of the expiry. 🔴 Except a request the agent
+	// already POSTED on: the platform's own expiry writes the note only when
+	// nothing was posted ("a did-not-answer note beside an answer is a lie"), so a
+	// slow answer that ran out of time closes `cancelled` — quiet, the offset
+	// unmoved — exactly as the platform would have closed it. A stop and a
+	// supersede close `cancelled` too; the class below is IGNORED on a `cancelled`
+	// close (`CloseRequest` sends it only with `error`), so the plugin's reason
+	// rides along for the log and nothing else.
+	errorClass := string(reason)
+	if reason == contracts.CancelExpired {
+		if request.Posted {
+			outcome = contracts.OutcomeCancelled
+		} else {
+			errorClass = "timeout"
+			if sink == nil {
+				errorClass = "no_runtime"
+			}
+		}
+	}
 	m.release(request)
 	delete(m.connOf, request.RequestID)
 	// 🔴 Remembered HERE, beside the state transition, not after the two I/O
@@ -609,9 +634,9 @@ func (m *Manager) cancel(ctx context.Context, request *Request, reason contracts
 	}
 	m.observer.Cancelled(request.RequestID, reason)
 
-	closeErr := m.host.CloseRequest(ctx, request.RequestID, outcome, string(reason))
+	closeErr := m.host.CloseRequest(ctx, request.RequestID, outcome, errorClass)
 	if closeErr == nil {
-		m.observer.Closed(request.RequestID, outcome, string(reason))
+		m.observer.Closed(request.RequestID, outcome, errorClass)
 	}
 
 	// Forgotten either way, exactly as closeUpstream does it: an entry kept
@@ -801,6 +826,7 @@ func (m *Manager) OnPost(ctx context.Context, connID, requestID, text string, ex
 		return ErrClosedRequest
 	}
 	request.Posts++
+	request.Posted = true
 	posts := request.Posts
 	m.mu.Unlock()
 
