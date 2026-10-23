@@ -616,9 +616,9 @@
     {
       "step": "expectClose",
       "conversation": "onboarding",
-      "outcome": "cancelled",
+      "outcome": "error",
       "withinMs": 60000,
-      "note": "The expiry's close. The ring's `deadlineMs` above is the assertion; this waits for what it causes."
+      "note": "The expiry's close — `error` (`timeout`, the plugin took the brief) since #2842: an expired request is never `cancelled`, which the platform keeps silent. The ring's `deadlineMs` above is the assertion; this waits for what it causes."
     },
     {
       "step": "ring",
@@ -1197,14 +1197,14 @@
     "openersSent": 9,
     "closes": {
       "answered": 17,
-      "cancelled": 2,
-      "error": 1
+      "cancelled": 1,
+      "error": 2
     },
     "sessions": {
       "fresh": 9,
       "resumed": 12
     },
-    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 1` is the refused question on `desk` (#2235, #2272).\n\n🔴 `memoryOps` names `remember` alone (#2386): recall is not counted, because Hermes skips a prefetch on a trivial prompt, so a count would assert Hermes's heuristic; `ledger`'s `expectMemory` step and the runners' `memory_recalled` judgement carry it.",
+    "note": "🔴 The closes and sessions ARE asserted here, as a tally. An earlier version of this block carried a note saying so while listing neither, so every close outcome was unasserted — the note described a property the file did not have.\n\nA tally rather than positional `expectClose` steps because a real harness finishes turns at times a script cannot predict: a cancel races a fast reply, an expiry's deadline passes mid-flight, and an ordered expectation then matches whichever request happens to be current and fails for a reason about scheduling.\n\n🔴 No `empty` close appears, and that is a measured absence rather than an oversight. The empty-turn ring asks the model to say nothing through a marker in its text, and the model mock honours that — proven directly in `tests/test_model_mock.py`. It does not survive the journey: Hermes builds its own prompt rather than passing an entry's text through, so the marker never reaches the model and the turn answers. `empty` is therefore demonstrated at the unit level and NOT end to end, and this file says so instead of asserting a count that only sometimes holds.\n\n🔴 `posts` IS asserted (#2273): a harness restart mid-turn once answered the person twice — Hermes's own auto-resume turn and the companion's redelivered brief — and every per-request expectation still held, because each only asks for a post. The total is where a second answer shows. `error: 2` is the refused question on `desk` (#2235, #2272) and the `onboarding` expiry, an `error` since #2842 (#2925); `cancelled: 1` is the injected stop on `invoices` alone.\n\n🔴 `memoryOps` names `remember` alone (#2386): recall is not counted, because Hermes skips a prefetch on a trivial prompt, so a count would assert Hermes's heuristic; `ledger`'s `expectMemory` step and the runners' `memory_recalled` judgement carry it.",
     "posts": 18,
     "toolCalls": 2,
     "toolReruns": 1,
