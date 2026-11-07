@@ -1,10 +1,10 @@
 package protocol
 
 // The companion's ONE spelling of the platform's URN prefix (#2386). The platform's
-// codec is `@velcra/field-types`' urn.ts, which this tree cannot import (a child
+// codec is its field-types package's urn.ts, which this tree cannot import (a child
 // references nothing outside itself); the scripted stand-ins for the platform mint
 // the URNs the platform would, and do it here alone. Pinned to the codec's prefix
-// from the platform's root by `scripts/__tests__/no-second-urn-codec.test.mjs`.
+// from the platform's root by its `no-second-urn-codec.test.mjs`.
 const urnPrefix = "urn:uffici:"
 
 // FactURN is a remembered fact's URN.

@@ -2,7 +2,7 @@
 // else: no implementation, no I/O, no third-party import.
 //
 // This is the platform's interface-first pattern carried into Go idiom
-// (`.claude/rules/architecture.md`, `contracts.md`): code depends on the
+// (the platform's architecture and contracts rules): code depends on the
 // interface, implementations live under `internal/infra/<backend>/`, and
 // `internal/registry` hands out the one selected by configuration. A test
 // substitutes an implementation; it never reaches for a concrete type.

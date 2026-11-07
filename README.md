@@ -565,7 +565,7 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
 
 ```sh
 cosign verify-blob --bundle uffici_linux_amd64.tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-companion/' \
+  --certificate-identity-regexp '^https://github\.com/uffici-ai/uffici-companion/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici_linux_amd64.tar.gz
 gh attestation verify uffici_linux_amd64.tar.gz --repo uffici-ai/uffici-companion
 ```

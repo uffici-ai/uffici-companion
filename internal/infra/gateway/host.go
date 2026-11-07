@@ -22,10 +22,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"unicode/utf8"
@@ -45,8 +47,8 @@ const controlAttempts = 4
 
 // Options configure a Host.
 type Options struct {
-	// BaseURL is the agents host: `https://agents.uffici.dev`,
-	// `https://agents.localhost`.
+	// BaseURL is the agents host, `https://agents.uffici.ai`. Plain http is
+	// admitted for a loopback host only — a test double.
 	BaseURL string
 	// Key is the agent key. 🔴 SECRET-CLASS.
 	Key string
@@ -117,14 +119,26 @@ type Host struct {
 	doorbellID string
 }
 
+// loopbackHost reports whether host names this machine: `localhost` or a
+// loopback IP.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // requestMemory bounds the request → conversation map a close reads.
 const requestMemory = 1024
 
 // New builds a Host. It dials nothing until OpenDoorbell.
 func New(options Options) (*Host, error) {
 	base, err := url.Parse(options.BaseURL)
-	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") {
-		return nil, fmt.Errorf("the agents host must be an https URL, like https://agents.uffici.dev")
+	httpsHost := err == nil && base.Scheme == "https"
+	loopbackHTTP := err == nil && base.Scheme == "http" && loopbackHost(base.Hostname())
+	if err != nil || base.Host == "" || (!httpsHost && !loopbackHTTP) {
+		return nil, fmt.Errorf("the agents host must be an https URL, like https://agents.uffici.ai")
 	}
 	if options.Key == "" {
 		return nil, fmt.Errorf("the gateway agents host needs the agent key")

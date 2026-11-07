@@ -1,6 +1,6 @@
 {
 	"version": 1,
-	"note": "Emitted by `pnpm --filter @velcra/agents-gateway protocol:emit` from apps/agents-gateway/protocol/src — never edited by hand. The companion carries a byte-identical copy (scripts/__tests__/agents-protocol-parity.test.mjs).",
+	"note": "Emitted by the agents-gateway's protocol:emit from its protocol definitions — never edited by hand. The companion carries a byte-identical copy, pinned by the platform's agents-protocol parity test.",
 	"schemas": [
 		"ack",
 		"cancel",

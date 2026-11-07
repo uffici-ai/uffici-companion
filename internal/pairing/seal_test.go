@@ -10,7 +10,7 @@ import (
 )
 
 // vector is testdata/seal-vector.json — the portal's sealer reproduces it from the
-// same inputs (apps/portal/src/lib/__tests__/pairing-seal.test.ts), so a drift on
+// same inputs (its `pairing-seal.test.ts`), so a drift on
 // either side of the scheme fails a test on that side.
 type vector struct {
 	RecipientPrivateKey string `json:"recipientPrivateKey"`

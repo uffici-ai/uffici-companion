@@ -43,7 +43,7 @@ const busyInstruction = "Too many platform requests are already in progress; tel
 // platform vocabulary, never tenant content (decision 32).
 //
 // 🔴 The plugin carries the same sentences (`call_contract.py`), pinned from the
-// platform repository by `scripts/__tests__/uffici-call-instructions-parity.test.mjs`:
+// platform repository by its `uffici-call-instructions-parity.test.mjs`:
 // the person hears the same thing whichever side answered the call.
 var defaultInstructions = map[wire.CallErrorClass]string{
 	wire.ClassUnknownOp:        "This action is not available on this connection; tell the person it could not be done.",

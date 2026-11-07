@@ -1206,7 +1206,7 @@ func contextTokens(c *contracts.Context) int {
 // The platform's bounds on an opener's budget (`OPENER_MIN_BUDGET` /
 // `OPENER_MAX_BUDGET` in the conversations API's runtime plane) — a budget outside
 // them is refused as invalid_budget and fails the whole request. Pinned against the
-// platform's source by scripts/__tests__/uffici-opener-budget-parity.test.mjs.
+// platform's source by its `uffici-opener-budget-parity.test.mjs`.
 const (
 	OpenerMinBudget = 1000
 	OpenerMaxBudget = 200000
