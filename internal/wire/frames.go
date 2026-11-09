@@ -14,7 +14,7 @@
 // reverse) fails. A generator was weighed and declined — `oneOf` and the
 // discriminated frame union generate poorly in Go, and a code generator is a
 // second toolchain dependency inside a child whose whole purpose is to need
-// none (see `.claude/rules/uffici.md`). The parity test is the guarantee either
+// none (the platform's rule for this tree). The parity test is the guarantee either
 // approach would have rested on.
 package wire
 

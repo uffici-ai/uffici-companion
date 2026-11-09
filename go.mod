@@ -1,5 +1,5 @@
 // The Uffici companion — the one program a customer runs next to their agent
-// harness. Developed in uffici-ai/velcra-platform under `uffici/`, mirrored to
+// harness. Developed in Uffici's platform repository under `uffici/`, mirrored to
 // uffici-ai/uffici-companion on a release tag (epic #1994, decisions 34–36).
 //
 // 🔴 No `replace` directive may point outside this directory: the child is

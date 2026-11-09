@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -191,6 +192,11 @@ func LoadConfig(env Env, flags Config) (Config, error) {
 		// 🔴 Loopback, always. A wildcard bind would put the wire — whose only
 		// authentication is a local token — on every interface of a pod.
 		config.TCPAddr = fmt.Sprintf("127.0.0.1:%d", port)
+	}
+	// 🔴 And an explicit --tcp is held to the same rule: the wire's token and
+	// its unauthenticated /health never leave this machine.
+	if host, _, err := net.SplitHostPort(config.TCPAddr); err != nil || !loopbackHost(host) {
+		return config, fmt.Errorf("--tcp is %q; the wire serves on a loopback address only, like 127.0.0.1:%d", config.TCPAddr, DefaultTCPPort)
 	}
 
 	level, err := parseLevel("UFFICI_LOG_LEVEL", env("UFFICI_LOG_LEVEL"))
@@ -1054,4 +1060,14 @@ func callHandlers(tables ...map[string]surface.CallHandler) map[string]surface.C
 		}
 	}
 	return out
+}
+
+// loopbackHost reports whether host names this machine: `localhost` or a
+// loopback IP.
+func loopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }

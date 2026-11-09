@@ -25,8 +25,7 @@
 		"testdata",
 		"trixie",
 		"uffici",
-		"unrewritten",
-		"velcra"
+		"unrewritten"
 	],
 	"ignorePaths": [".git", "go.sum"]
 }

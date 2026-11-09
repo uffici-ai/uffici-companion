@@ -121,7 +121,7 @@ func TestParseAgentsHostKindDefaultsToFixture(t *testing.T) {
 		}
 	}
 	// 🔴 A typo is refused, never read as the fixture.
-	for _, value := range []string{"nonsense", "gatway", "agents.uffici.dev"} {
+	for _, value := range []string{"nonsense", "gatway", "agents.example.com"} {
 		if _, err := ParseAgentsHostKind(value); err == nil {
 			t.Errorf("ParseAgentsHostKind(%q) was accepted", value)
 		}

@@ -109,6 +109,8 @@ func runInstallerWith(t *testing.T, attrs *syscall.SysProcAttr, server *httptest
 		"UFFICI_INSTALL_PREFIX="+prefix,
 		"UFFICI_GITHUB_TOKEN=",
 		"UFFICI_VERSION=",
+		// Not run under sudo, whatever the developer's shell is (#3128).
+		"SUDO_USER=",
 		"UFFICI_HOME=",
 		// 🔴 A run with no --gateway-url asks this loopback server, never the
 		// production default: it names no release, so the latest is fetched.
@@ -505,5 +507,39 @@ func TestInstallScriptResolvesTheGatewayInFourSteps(t *testing.T) {
 				t.Fatalf("asked %q, want %s/v1/release", asked, tc.want)
 			}
 		})
+	}
+}
+
+func TestInstallScriptRefusesRootThroughSudo(t *testing.T) {
+	// #3128: under `sudo` the companion would become root's service, pointed at root's
+	// harness, while the harness runs as someone else. A fake `id` stands in for root.
+	fake := t.TempDir()
+	if err := os.WriteFile(filepath.Join(fake, "id"), []byte("#!/bin/sh\necho 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, sudoUser := range []string{"alice", ""} {
+		// --yes: a run with no terminal must not stop for its pairing question first.
+		cmd := exec.Command("sh", filepath.Join(moduleRoot(t), "install.sh"), "--dry-run", "--yes")
+		cmd.Env = append(os.Environ(),
+			"PATH="+fake+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"SUDO_USER="+sudoUser,
+			"UFFICI_RELEASES_BASE_URL=http://127.0.0.1:1",
+			"UFFICI_RELEASES_API_URL=http://127.0.0.1:1",
+			"UFFICI_GATEWAY_URL=http://127.0.0.1:1",
+			"HOME="+t.TempDir(),
+		)
+		out, err := cmd.CombinedOutput()
+		refused := strings.Contains(string(out), "do not run this with sudo")
+		if sudoUser != "" && (err == nil || !strings.Contains(string(out), "run it as alice")) {
+			t.Fatalf("root through sudo was not refused: %v\n%s", err, out)
+		}
+		if sudoUser != "" && strings.Contains(string(out), " 2\n") {
+			t.Fatalf("the exit status was printed inside the message:\n%s", out)
+		}
+		// Root itself (a server where the harness runs as root) is NOT refused: the run
+		// must get past the check to the line it prints next, whatever happens after.
+		if sudoUser == "" && (refused || !strings.Contains(string(out), "uffici-install: agents gateway:")) {
+			t.Fatalf("root without sudo did not get past the check:\n%s", out)
+		}
 	}
 }

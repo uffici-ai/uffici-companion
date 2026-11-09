@@ -913,7 +913,7 @@ func TestTheAttachWaitIsSettableFromTheConfig(t *testing.T) {
 	// — and the built-in 15s is a laptop's number. A CI runner passes its own,
 	// or the companion gives up while the harness is still starting and the run
 	// blames the half that was working. The mirror of this test lives in
-	// `scripts/__tests__/uffici-compose-profile.test.mjs`, which pins that the
+	// the platform's `uffici-compose-profile.test.mjs`, which pins that the
 	// e2e actually passes one.
 	home := shortHome(t)
 	if _, err := EnsureToken(home, ""); err != nil {

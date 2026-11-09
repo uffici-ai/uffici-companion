@@ -44,16 +44,26 @@ can diagnose a machine without asking you for them — see
 
 - Linux (x86-64 or arm64) or macOS on Apple silicon, for the release binaries. Any platform
   Go builds for works from source.
-- Outbound HTTPS to your Uffici agents host: the address your organization was given, for
-  example `https://agents.uffici.ai`.
 - An agent created in the Uffici portal by an administrator of your organization.
-- For the plugin, the harness it targets — see [The plugin for your harness](#the-plugin-for-your-harness).
+- Your harness, installed for the user who will run the companion. For Hermes: **Hermes
+  0.23** (the plugin supports `>=0.23.0,<0.24`), with `hermes` on the `PATH`, run as a
+  gateway (`hermes gateway`), and Hermes's `plugins.isolation` left at its default,
+  `in_process` — see [uffici-for-hermes](https://github.com/uffici-ai/uffici-for-hermes).
+- Outbound HTTPS to your Uffici agents host — the address your organization was given, for
+  example `https://agents.uffici.ai` — and to GitHub (`github.com`, `api.github.com`,
+  `raw.githubusercontent.com` and GitHub's release-download hosts), where the releases are
+  downloaded from. No inbound port.
+- `curl`, `tar`, and `sha256sum` (or `shasum` on macOS) for the install line.
+- On Linux, a systemd user session; on a server, `loginctl enable-linger "$USER"` once, or the
+  companion stops when you log out.
 
 ## Install
 
-The Uffici portal gives you this line — when an administrator creates the agent, and on the
-agent's **Connect** tab — with your organization's agents host and a pairing code already in
-it. Paste it on the machine that runs your harness:
+The Uffici portal gives you this line — when an administrator creates the agent, and later on
+the agent's **Advanced** tab, under **Connection** (**Get the command**) — with your organization's agents host and a
+pairing code already in it. Paste it on the machine that runs your harness, **as the user that
+runs the harness, never with `sudo`**: the companion is installed for that user and serves
+that user's harness.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
@@ -69,7 +79,7 @@ It does, in order:
 2. Pairs it with your agent, using the code in the line: the key arrives sealed to this
    machine, and nobody has to approve anything — the administrator who asked for the line
    chose the agent. The code works once and for ten minutes; after that, get a new line from
-   the **Connect** tab.
+   the agent's **Advanced** tab, under **Connection** (**Get the command**).
 3. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
    and starts it — or restarts it, if it was already running.
 4. Downloads the plugin for your harness from the same release of that plugin, checks it, installs
@@ -82,22 +92,43 @@ It does, in order:
    harness alone and says what that means until it restarts: it keeps the plugin it loaded
    (or none, on a first install), without the settings this run wrote. Under a pipe the
    question is read from your terminal. `--restart-harness` restarts without asking,
-   `--no-restart-harness` never does, and `--yes` counts as a yes. Once the harness is
-   restarted, the agent shows **Online** in the portal.
+   `--no-restart-harness` never does, and `--yes` counts as a yes.
 6. Runs `uffici doctor`.
+
+**What success looks like.** `uffici doctor` reports the connection to Uffici up and the
+harness's plugin attached, and the agent shows **Online** in the portal once the harness has
+restarted with the plugin. Then send the agent a message in a conversation it takes part in:
+the answer appears under it. If it does not, `uffici doctor` says what is missing — see
+[Verify it](#verify-it).
+
+**`uffici: command not found`?** The binary is installed as `~/.local/bin/uffici`, which is
+not on every shell's `PATH` (macOS's default is one). Add
+`export PATH="$HOME/.local/bin:$PATH"` to your shell profile, or call it by its full path.
 
 Every step is announced before it runs. Add `--dry-run` to be told and nothing else: the
 script then installs no binary either. The script is [install.sh](install.sh) in this
-repository — POSIX shell, needing only `curl` and `tar` — so you can read it before you run
-it, and everything past the download is `uffici setup`, a command of the binary itself, so
+repository — POSIX shell, needing `curl`, `tar` and a SHA-256 tool besides the usual base
+utilities — so you can read it before you run it, and everything past the download is `uffici setup`, a command of the binary itself, so
 it is the same on every machine. The script never prints the pairing code; it shows
 `****-****` where it would be. The code does sit on the command line while the line runs,
 where other users of the machine can see it in the process list: it works once and for ten
 minutes, and whoever runs it first gets the agent's key — run the line on a machine you
 trust, and get a new one if you pasted it somewhere shared.
 
-**Something wrong, or moving the agent to this machine?** Get a new line from the **Connect**
-tab and run it again on the same machine: it pairs again and replaces the key, and the old key
+**Rather read the script first?** Download it, read it, then run it with the same flags:
+
+```sh
+curl -fsSLo install.sh https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh
+less install.sh
+sh install.sh --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
+```
+
+The script checks every archive against its release's checksum list, which proves the
+download is intact. That the release was built from this repository is what the signature and
+the build attestation prove — see [Security posture](#security-posture).
+
+**Something wrong, or moving the agent to this machine?** Get a new line from the
+agent's **Advanced** tab, under **Connection** (**Get the command**) and run it again on the same machine: it pairs again and replaces the key, and the old key
 keeps working for a short overlap. Without a pairing code, re-running the line upgrades the
 companion and the plugin and keeps the key it has.
 
@@ -136,8 +167,6 @@ what moved from which version to which. It keeps the agent key and never pairs.
   for the next run.
 - A machine set up before `setup.json` existed has nothing to read: run `uffici setup` once
   (with `--no-pair`, it keeps the key), then upgrade from then on.
-- While a repository is private, set `UFFICI_GITHUB_TOKEN` in the environment, as for the
-  install.
 
 ### Which version you get
 
@@ -160,7 +189,7 @@ nothing on the machine changes.
 
 ### Which gateway
 
-The install line, `uffici setup`, `uffici upgrade` and `uffici run` use the agents gateway
+The install line, `uffici setup` and `uffici upgrade` use the agents gateway
 named by, in this order:
 
 1. `--gateway-url <url>`.
@@ -172,21 +201,10 @@ Each run prints the gateway it uses and where it came from before it pairs or do
 anything. Whichever answered is written into the service and into `setup.json`, so a machine
 that took the default says so afterwards.
 
-**Without a code in the line** — a machine you pair by hand — the pairing step prints a code
-instead, which an administrator approves in the portal (see
-[Pair it with your agent](#pair-it-with-your-agent)). That step asks you to confirm which
-agent the key is for; under a pipe the answer is read from your terminal, and with no terminal
-at all the run stops and says so before anything is downloaded (`--yes` answers for you).
-
-While a repository is private, the downloads need a token: set `UFFICI_GITHUB_TOKEN` in the
-environment before the line (never as a flag; a flag is in your shell history), and fetch
-the script itself with that token too:
-
-```sh
-curl -fsSL -H "Authorization: Bearer $UFFICI_GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-  | UFFICI_GITHUB_TOKEN="$UFFICI_GITHUB_TOKEN" sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
-```
+`uffici run` — what the service runs — is written with the gateway on its command line, so it
+needs nothing from you. Run by hand, it reaches Uffici only with `--gateway-url` (or
+`UFFICI_AGENTS_HOST=gateway`): with neither, it starts a built-in test fixture for plugin
+authors and never connects (see [The plugin for your harness](#the-plugin-for-your-harness)).
 
 ### Install by hand
 
@@ -229,7 +247,7 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 `uffici setup` does this for you; by hand, it is one command. It needs to know your agents
 host, so set that first (the same value your service will use).
 
-**With a code from the portal** — the one in the line the **Connect** tab gives you:
+**With a code from the portal** — the one in the line the agent's **Advanced** tab, under **Connection** (**Get the command**) gives you:
 
 ```sh
 export UFFICI_GATEWAY_URL=https://agents.uffici.ai   # the address your organization was given
@@ -239,13 +257,16 @@ uffici pair --harness hermes --code XXXX-XXXX
 The key arrives at once: no approval, no question. The command prints the agent, the
 organization and the key's last four characters. A code that is not valid any more — used,
 expired, or mistyped — ends the run with "this pairing code is not valid any more"; get a new
-line from the **Connect** tab. If the agents host cannot be reached, the command keeps trying
+line from the agent's **Advanced** tab, under **Connection** (**Get the command**). If the agents host cannot be reached, the command keeps trying
 while the code could still be valid.
 
-**Without a code** — the administrator approves the code this machine shows:
+**Without a code** — the administrator approves the code this machine shows. The install line
+without `--pairing-code` does the same: it asks you to confirm which agent the key is for,
+reading the answer from your terminal under a pipe, and with no terminal at all it stops
+before anything is downloaded (`--yes` answers for you).
 
 ```sh
-uffici pair --harness hermes --harness-version 0.21.5
+uffici pair --harness hermes --harness-version 0.23.0
 ```
 
 1. The command prints a code in the form `XXXX-XXXX`, valid for ten minutes.
@@ -316,15 +337,17 @@ given both paths.
 
 Run the companion as a native sidecar in your harness's pod. Both containers share the pod's
 network namespace, so the plugin reaches the companion on loopback TCP. The key comes from a
-Secret, so there is no pairing; `$UFFICI_HOME` is still a volume, because it holds the
+Secret, so there is no pairing: get it on the agent's **Advanced** tab with **Rotate key**,
+which shows the new key once. `$UFFICI_HOME` is still a volume, because it holds the
 instance id. The wire token is a second Secret both containers read, because they share no
-filesystem.
+filesystem: any random string of at least 32 characters, for example from
+`openssl rand -hex 32`.
 
 ```yaml
 spec:
   initContainers:
     - name: companion
-      image: ghcr.io/uffici-ai/uffici-companion:0   # published with each release, from this repository's Dockerfile
+      image: ghcr.io/uffici-ai/uffici-companion:X.Y.Z   # pin a release; published with each, from this repository's Dockerfile
       restartPolicy: Always                         # native sidecar (Kubernetes 1.29+)
       env:
         - name: UFFICI_AGENTS_HOST
@@ -425,7 +448,6 @@ The companion reads its environment once, at start.
 | `UFFICI_LOG_SHIPPING` | `on` (default) or `off`: whether this machine's log lines are sent to Uffici at all. Set with `uffici setup --log-shipping`. Anything else exits with status `2`. |
 | `UFFICI_LOG_SHIPPING_LEVEL` | The lowest level of the companion's and the plugin's own lines that are sent: `debug`, `info` (default), `warn` or `error`. Independent of `UFFICI_LOG_LEVEL`. |
 | `UFFICI_LOG_LEVEL_HARNESS` | The lowest level of the **harness's** own lines that may leave this machine: `debug`, `info`, `warn` (default) or `error`. Set with `uffici setup --harness-log-level`. The stricter of this and the agent's level in Uffici applies. |
-| `UFFICI_GITHUB_TOKEN` | Read by the installer and by `uffici setup` to download from a private repository. Never printed. |
 | `UFFICI_WORKSPACE` | The [workspace](#the-workspace): the one directory files are moved in and out of. An absolute path. Default: the directory your harness's plugin names, as `uffici setup` recorded it, else `$UFFICI_HOME/workspace`. |
 | `UFFICI_WORKSPACE_ALLOW_DOTFILES` | `1` lets a path inside the workspace name a hidden file or directory (`.env`, `.cache/…`). Unset, they are refused. |
 | `UFFICI_UPLOAD_CHUNK_BYTES` | How much of a file one upload request carries. Default 16 MiB (`16777216`), at most 32 MiB. A dropped connection sends at most one chunk again. |
@@ -463,7 +485,7 @@ Every file the companion moves lives in one directory, the workspace:
 
 A dropped connection reconnects with a fresh ticket on a jittered backoff from one second to
 one minute. A revoked or refused key waits at the minute. The cure is a new key: get a new
-line from the agent's **Connect** tab and run it on this machine, which pairs again and
+line from the agent's **Advanced** tab, under **Connection**, and run it on this machine, which pairs again and
 restarts the companion — a running companion holds the key it started with. When Uffici restarts, the companion reconnects at
 once. If another machine holds this agent's connection, the companion reports
 `instance_conflict` and keeps retrying at the minute; pair a second agent, or switch on
@@ -521,8 +543,9 @@ Each plugin is a translator between the harness's own hooks and the companion's 
 It holds no credential and opens no network connection. If the companion is down, the plugin
 does nothing and the agent shows offline.
 
-`uffici setup --harness <kind>` fetches the plugin from `uffici-for-<kind>`'s latest release,
-verifies it against that release's checksum list, and follows the install manifest the
+`uffici setup --harness <kind>` fetches the plugin release your agents gateway names (else
+`uffici-for-<kind>`'s latest — see [Which version you get](#which-version-you-get)), verifies
+it against that release's checksum list, and follows the install manifest the
 release carries (`uffici-plugin.json`: where the harness keeps plugins, how to enable one,
 which configuration keys to set, which environment the plugin reads, and where its workspace
 is). The companion holds no per-harness code of its own, and refuses a manifest with a field
@@ -537,11 +560,13 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
 
 ## Security posture
 
-- The agent key is the only credential. The companion alone holds it; it is never logged,
-  never shown to a plugin, and is revoked and reissued from the portal.
+- The agent key is the only credential. The companion alone holds it, in
+  `$UFFICI_HOME/agent-key` (mode `600`); it is never logged and never shown to a plugin. On the
+  agent's **Advanced** tab in the portal, **Rotate key** issues a new one and **Revoke key**
+  cuts every connection within a minute.
 - Outbound only: one WebSocket and HTTPS calls to your agents host. No inbound port.
 - On each connection it tells Uffici what is answering, for your administrators to see on the
-  agent's General tab: its own version, the plugin's and the harness's versions, and the
+  agent's **Advanced** tab: its own version, the plugin's and the harness's versions, and the
   machine's kind — operating system, architecture and OS release (for example
   `Debian GNU/Linux 13 (trixie)`, `linux/amd64`). Never the machine's name, a user name or a
   path.
@@ -557,21 +582,51 @@ and a scripted stand-in for Uffici lets a plugin be tested without an account
   file and recorded there, under a short-lived grant that never reaches a log line. The
   companion reads and writes only inside the [workspace](#the-workspace). A download copies
   your organization's file onto this machine, which is yours.
-- The companion runs inside your perimeter with your key, which is why it is open source: you
-  can read what it does with the key and where it connects, and build it yourself.
+- The companion runs as your user, inside your perimeter, with your key, which is why it is open
+  source: you can read what it does with the key and where it connects, and build it
+  yourself. Its fence around the [workspace](#the-workspace) is enforced by the program, not by
+  the operating system. `uffici setup` and `uffici upgrade` run the harness's own commands,
+  edit its configuration and its `.env`, and install user services; nothing runs as root.
+- Your agents gateway chooses which signed release `uffici upgrade` installs, up or down (see
+  [Which version you get](#which-version-you-get)); `--version` pins one instead.
 - Each release is built in this repository by its own workflow, from the tag, and ships with
   a checksum list, a keyless Sigstore signature bundle and a build attestation, so you can
   verify that what you run was built from this source by that run:
 
 ```sh
 cosign verify-blob --bundle uffici_linux_amd64.tar.gz.sigstore.json \
-  --certificate-identity-regexp 'https://github.com/uffici-ai/uffici-companion/' \
+  --certificate-identity-regexp '^https://github\.com/uffici-ai/uffici-companion/\.github/workflows/release\.yml@refs/tags/v' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com uffici_linux_amd64.tar.gz
 gh attestation verify uffici_linux_amd64.tar.gz --repo uffici-ai/uffici-companion
 ```
 
-The installer verifies the checksum on every download; the signature and the attestation
-are yours to check with the commands above.
+Without cosign, the checksum list alone proves an archive is intact (not where it came from):
+`sha256sum -c checksums.txt --ignore-missing` (`shasum -a 256 -c checksums.txt
+--ignore-missing` on macOS). The installer verifies the checksum on every download; the
+signature and the attestation are yours to check with the commands above. Build attestations
+exist for the releases cut since this repository became public.
+
+## Uninstall
+
+`uffici setup` changed your harness's configuration as well as installing the companion, so an
+uninstall undoes both. For Hermes:
+
+1. Stop and remove the service. On Linux:
+   `systemctl --user disable --now ai.uffici.companion`, then delete
+   `~/.config/systemd/user/ai.uffici.companion.service`. On macOS:
+   `launchctl bootout gui/$(id -u)/ai.uffici.companion`, then delete
+   `~/Library/LaunchAgents/ai.uffici.companion.plist`.
+2. Remove the binary and the companion's directory, which holds the agent key:
+   `rm ~/.local/bin/uffici` and `rm -r ~/.uffici`.
+3. Remove the plugin from Hermes: `hermes plugins disable uffici-for-hermes`, delete
+   `<hermes home>/plugins/uffici-for-hermes`, and remove the `UFFICI_*` lines from Hermes's
+   `.env` (`hermes config env-path` prints where it is).
+4. Restore the Hermes settings the setup changed, with `hermes config set`:
+   `gateway.platforms.uffici.enabled false`; `memory.provider` back to yours (or unset);
+   `memory.memory_enabled true` and `memory.user_profile_enabled true` for Hermes's own
+   `MEMORY.md` and `USER.md`; `display.memory_notifications` back to yours; and your own
+   `gateway.media_delivery_allow_dirs`, which the setup replaced. Then restart Hermes.
+5. In the portal, revoke the key on the agent's **Advanced** tab (**Revoke key**).
 
 ## Build and test from source
 
@@ -588,7 +643,7 @@ Layout, for readers:
 
 ```text
 install.sh           the one-line installer: fetch, verify, install, hand over to `uffici setup`
-cmd/uffici/          the command: `run`, `pair`, `doctor`, `setup`
+cmd/uffici/          the command: `run`, `pair`, `doctor`, `setup`, `upgrade`
 internal/            the daemon; `internal/setup/` is the installer's second half
 protocol/v1/         the Uffici-to-companion contract: JSON Schemas and examples
 wire/v1/             the local wire's contract: JSON Schemas and examples
@@ -601,6 +656,9 @@ docs/                the local wire and the fixture script format
 This repository receives releases from Uffici.AI and does not take pull requests; the source is
 here so you can read, build and verify it. To report a problem or ask for a change, contact
 Uffici.AI through your account or [uffici.ai](https://uffici.ai).
+
+To report a security vulnerability, follow [SECURITY.md](SECURITY.md): privately, never in a
+public issue.
 
 ## License
 

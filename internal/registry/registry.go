@@ -1,8 +1,8 @@
 // Package registry selects implementations by configuration, and is the only
 // place in the companion that knows which backend is in play.
 //
-// This is the platform's registry pattern in Go idiom (`.claude/rules/
-// architecture.md`): everything else depends on `internal/contracts`, and a
+// This is the platform's registry pattern in Go idiom (its architecture
+// rule): everything else depends on `internal/contracts`, and a
 // test substitutes a slot rather than reaching for a concrete type. There is no
 // package-level singleton — the daemon builds one Registry at start-up and
 // passes it down, because a global would make two differently-configured

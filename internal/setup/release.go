@@ -187,7 +187,7 @@ func (r Release) get(ctx context.Context, url, accept string) ([]byte, error) {
 			// upgrading in that window gets here. Say which version it waited for.
 			return nil, fmt.Errorf("%s: %s", r.Describe(), noAssetsYet(r.Version))
 		}
-		return nil, fmt.Errorf("%s has no such release or asset (404) — is there a release yet, and is the repository public or a token set?", r.Describe())
+		return nil, fmt.Errorf("%s has no such release or asset (404) — is there such a release yet? A release's files appear a few minutes after it is tagged", r.Describe())
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("fetching from %s answered %d", r.Describe(), resp.StatusCode)
