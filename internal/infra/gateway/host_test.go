@@ -798,12 +798,12 @@ func TestAnAckWithNoSocketIsClassified(t *testing.T) {
 func TestNewRefusesAnIncompleteConfiguration(t *testing.T) {
 	for name, options := range map[string]gateway.Options{
 		"no URL":         {Key: "k", InstanceID: instanceID},
-		"not a URL":      {BaseURL: "agents.uffici.dev", Key: "k", InstanceID: instanceID},
-		"a wrong scheme": {BaseURL: "ftp://agents.uffici.dev", Key: "k", InstanceID: instanceID},
+		"not a URL":      {BaseURL: "agents.example.com", Key: "k", InstanceID: instanceID},
+		"a wrong scheme": {BaseURL: "ftp://agents.example.com", Key: "k", InstanceID: instanceID},
 		// Plain http is a loopback test double's alone; a public host is https.
 		"plain http to a public host": {BaseURL: "http://agents.uffici.ai", Key: "k", InstanceID: instanceID},
-		"no key":                      {BaseURL: "https://agents.uffici.dev", InstanceID: instanceID},
-		"no instance":                 {BaseURL: "https://agents.uffici.dev", Key: "k"},
+		"no key":                      {BaseURL: "https://agents.example.com", InstanceID: instanceID},
+		"no instance":                 {BaseURL: "https://agents.example.com", Key: "k"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := gateway.New(options); err == nil {

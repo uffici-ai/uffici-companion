@@ -18,8 +18,6 @@
 # Environment:
 #   UFFICI_INSTALL_PREFIX   where the binary goes (default ~/.local; the binary is <prefix>/bin/uffici)
 #   UFFICI_VERSION          pin a release (default: the one the agents gateway names, else the latest)
-#   UFFICI_GITHUB_TOKEN     a GitHub token, only while the repository is private; never printed,
-#                           never placed on a command line
 #   UFFICI_GATEWAY_URL      the agents gateway, if not given as --gateway-url (default: the one a
 #                           previous setup recorded, else https://agents.uffici.ai)
 #
@@ -29,7 +27,8 @@
 set -eu
 
 say() { printf '%s\n' "uffici-install: $*"; }
-die() { printf '%s\n' "uffici-install: $*" >&2; exit "${2:-1}"; }
+# The message is the first argument, the exit status the optional second — never printed.
+die() { printf '%s\n' "uffici-install: $1" >&2; exit "${2:-1}"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "$1 is needed and not on the PATH" 2; }
 
 main() {
@@ -46,6 +45,14 @@ main() {
   need tar
   need uname
   need mktemp
+
+  # 🔴 Never as root through sudo: the companion is installed for the user who runs the line,
+  # and serves THAT user's harness — under sudo it would be root's service, pointed at root's
+  # harness, while the harness runs as someone else. Root itself (a server where the harness
+  # runs as root) and `sudo -u <user>` are fine.
+  if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" = 0 ]; then
+    die "do not run this with sudo: run it as $SUDO_USER, the user that runs your harness. If your harness runs as root, run the line from a root login, or with env -u SUDO_USER" 2
+  fi
 
   # ── What was asked ──────────────────────────────────────────────────────
   # A pairing code from the portal asks nothing — the administrator who issued
@@ -268,7 +275,7 @@ fetch() {
     if [ -n "$version" ]; then dl_path="releases/download/v$version/$1"; else dl_path="releases/latest/download/$1"; fi
     curl -fsSL -o "$2" "$base/$repo/$dl_path" || {
       [ -n "$version" ] && no_assets_yet "$1"
-      die "downloading $1 from $repo failed (is there a release, and is the repository public? set UFFICI_GITHUB_TOKEN for a private one)"
+      die "downloading $1 from $repo failed (is there such a release? see $base/$repo/releases)"
     }
   fi
 }

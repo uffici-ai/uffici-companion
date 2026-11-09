@@ -156,10 +156,10 @@ func TestLoadConfigRefusesABrokenGatewayConfiguration(t *testing.T) {
 		"an unknown agents host":  {environment: map[string]string{"UFFICI_AGENTS_HOST": "other"}},
 		"no gateway URL":          {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway"}},
 		"plain http":              {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "http://agents.localhost"}},
-		"a host with no scheme":   {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "agents.uffici.dev"}},
-		"a path":                  {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://agents.uffici.dev/v1"}},
-		"credentials in the URL":  {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://u:hunter2@agents.uffici.dev"}},
-		"--once against the host": {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://agents.uffici.dev"}, flags: Config{Once: true}},
+		"a host with no scheme":   {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "agents.example.com"}},
+		"a path":                  {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://agents.example.com/v1"}},
+		"credentials in the URL":  {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://u:hunter2@agents.example.com"}},
+		"--once against the host": {environment: map[string]string{"UFFICI_AGENTS_HOST": "gateway", "UFFICI_GATEWAY_URL": "https://agents.example.com"}, flags: Config{Once: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			testCase.environment["UFFICI_HOME"] = home
@@ -510,7 +510,7 @@ func TestTheFixtureRunCanBeSelectedFromTheEnvironment(t *testing.T) {
 func TestARefusedGatewayURLNeverEchoesItsCredentials(t *testing.T) {
 	_, err := LoadConfig(env(map[string]string{
 		"UFFICI_HOME": shortHome(t), "UFFICI_AGENTS_HOST": "gateway",
-		"UFFICI_GATEWAY_URL": "https://u:hunter2@agents.uffici.dev",
+		"UFFICI_GATEWAY_URL": "https://u:hunter2@agents.example.com",
 	}), Config{})
 	if err == nil || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("got %v", err)
