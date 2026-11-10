@@ -69,6 +69,12 @@ runs the harness, never with `sudo`**: the companion is installed for that user 
 that user's harness.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
+```
+
+The code can ride in the environment instead, which keeps it out of the process list:
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
   | UFFICI_PAIRING_CODE=XXXX-XXXX sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
 ```
@@ -115,19 +121,19 @@ script then installs no binary either. The script is [install.sh](install.sh) in
 repository — POSIX shell, needing `curl`, `tar` and a SHA-256 tool besides the usual base
 utilities — so you can read it before you run it, and everything past the download is `uffici setup`, a command of the binary itself, so
 it is the same on every machine. The script never prints the pairing code; it shows
-`****-****` where it would be. The code rides in the environment (`UFFICI_PAIRING_CODE`),
-not on the command line, so other users of the machine cannot read it from the process list;
-your own user (and root) can still read a process's environment, and your shell keeps the line
-in its history. It works once and for ten minutes, and whoever runs it first gets the agent's
-key — run the line on a machine you trust, and get a new one if you pasted it somewhere
-shared. `--pairing-code XXXX-XXXX` still works, with the code in the process list.
+`****-****` where it would be. Passed as `--pairing-code`, the code is in the process list
+while the line runs, readable by other users of the machine; passed in the environment
+(`UFFICI_PAIRING_CODE`), it is not — your own user (and root) can still read a process's
+environment, and your shell keeps the line in its history either way. It works once and for
+ten minutes, and whoever runs it first gets the agent's key — run the line on a machine you
+trust, and get a new one if you pasted it somewhere shared.
 
 **Rather read the script first?** Download it, read it, then run it with the same flags:
 
 ```sh
 curl -fsSLo install.sh https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh
 less install.sh
-UFFICI_PAIRING_CODE=XXXX-XXXX sh install.sh --harness hermes --gateway-url https://agents.uffici.ai
+sh install.sh --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
 ```
 
 The script checks every archive against its release's checksum list, which proves the
@@ -186,7 +192,8 @@ the companion and the plugin alike: when your environment moves forward your mac
 and when it is rolled back your machine is rolled back with it. The order is:
 
 1. A version you pin: `--version` and `--plugin-version` (or `UFFICI_VERSION` for the
-   install line).
+   install line, which puts the binary in `$UFFICI_INSTALL_PREFIX/bin`, `~/.local/bin` by
+   default).
 2. The version your agents gateway names.
 3. The latest release, when the gateway cannot be reached or names no version. On this path
    an upgrade never downgrades.
@@ -211,8 +218,8 @@ Each run prints the gateway it uses and where it came from before it pairs or do
 anything. Whichever answered is written into the service and into `setup.json`, so a machine
 that took the default says so afterwards.
 
-`uffici run` — what the service runs — is written with the gateway on its command line, so it
-needs nothing from you. Run by hand, it reaches Uffici only with `--gateway-url` (or
+`uffici run` — what the service runs — is written with the gateway in its environment
+(`UFFICI_GATEWAY_URL`), so it needs nothing from you. Run by hand, it reaches Uffici only with `--gateway-url` (or
 `UFFICI_AGENTS_HOST=gateway`): with neither, it starts a built-in test fixture for plugin
 authors and never connects (see [The plugin for your harness](#the-plugin-for-your-harness)).
 
@@ -250,6 +257,8 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `--plugin-version <x.y.z>` | Pin the plugin release. Default: `--version`, else the version your gateway names, else the latest. |
 | `--dry-run` | Print every action and perform none. Without `--pairing-code`, a key already in place is kept. |
 | `--home <dir>` | The companion's own directory, `~/.uffici` by default. |
+| `--log-shipping on\|off` | Whether this machine's log lines are sent to Uffici (see [What leaves your machine](#what-leaves-your-machine)). Default: as the last setup left it, else `on`. |
+| `--harness-log-level <level>` | The lowest level of the harness's own lines that may leave this machine: `debug`, `info`, `warn` or `error`. Default: as the last setup left it, else `warn`. |
 | `--harness-version <v>` | The harness's version, shown to the administrator who approves the pairing. |
 
 ## Pair it with your agent
@@ -319,6 +328,8 @@ After=network-online.target
 Environment=UFFICI_AGENTS_HOST=gateway
 Environment=UFFICI_GATEWAY_URL=https://agents.uffici.ai
 Environment=UFFICI_HOME=/home/you/.uffici
+Environment=UFFICI_LOG_SHIPPING=on
+Environment=UFFICI_LOG_LEVEL_HARNESS=warn
 ExecStart=/home/you/.local/bin/uffici run
 Restart=always
 RestartSec=2
@@ -378,9 +389,7 @@ spec:
       image: your-hermes-image                      # with the Uffici plugin installed
       env:
         - name: UFFICI_COMPANION_URL
-          value: http://127.0.0.1:7411
-        - name: UFFICI_COMPANION_ALLOW_REMOTE
-          value: "1"
+          value: http://127.0.0.1:7411                # loopback: the pod shares one network namespace
         - name: UFFICI_WIRE_TOKEN
           valueFrom: { secretKeyRef: { name: agent-smith, key: wire-token } }
 ```
@@ -555,7 +564,8 @@ does nothing and the agent shows offline.
 
 `uffici setup --harness <kind>` fetches the plugin release your agents gateway names (else
 `uffici-for-<kind>`'s latest — see [Which version you get](#which-version-you-get)), verifies
-it against that release's checksum list, and follows the install manifest the
+its signature (held to that plugin repository's own release workflow at the release's tag)
+and its checksum, and follows the install manifest the
 release carries (`uffici-plugin.json`: where the harness keeps plugins, how to enable one,
 which configuration keys to set, which environment the plugin reads, and where its workspace
 is). The companion holds no per-harness code of its own, and refuses a manifest with a field

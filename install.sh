@@ -2,8 +2,13 @@
 # Uffici companion installer.
 #
 # One line on the machine that runs your harness — the portal gives it to you,
-# with a pairing code in it, passed in the environment rather than as an
-# argument (an argument is in the process list for every user on the machine):
+# with a pairing code in it:
+#
+#   curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
+#     | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
+#
+# The code can ride in the environment instead, out of the process list (an
+# argument is readable there by every user on the machine):
 #
 #   curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
 #     | UFFICI_PAIRING_CODE=XXXX-XXXX sh -s -- --harness hermes --gateway-url https://agents.uffici.ai

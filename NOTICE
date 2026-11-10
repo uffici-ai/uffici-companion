@@ -13,8 +13,8 @@ NOTICE file.
 Third-party notices
 
 The release binary links software whose NOTICE files Apache License 2.0,
-section 4(d), asks to be carried with it (the release signature check, #3118,
-brings in Sigstore's Go verifier and its dependencies):
+section 4(d), asks to be carried with it (the release signature check brings
+in Sigstore's Go verifier and its dependencies):
 
 github.com/theupdateframework/go-tuf/v2
   Copyright 2024 The Update Framework Authors. Licensed under the Apache

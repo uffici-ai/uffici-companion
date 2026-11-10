@@ -36,7 +36,7 @@ in the job, so the check above stays Go only.
 
 - `install.sh` — the one-line installer: fetches a release archive, verifies it (the checksum list's Sigstore signature with `cosign` when it is on the PATH, then the checksum), installs the binary and hands over to `uffici setup`, the pairing code in its environment (`UFFICI_PAIRING_CODE`). Run by the tests against a loopback release, with a stand-in `cosign`.
 - `.goreleaser.yaml` — the release: three targets, version-less archive names, checksums, keyless signatures, SBOMs. `.github/workflows/release.yml` runs it on a tag and publishes the image.
-- `cmd/uffici/` — the command: the daemon (`run`), `pair`, `doctor` and `setup`.
+- `cmd/uffici/` — the command: the daemon (`run`), `pair`, `doctor`, `setup` and `upgrade` (alias `update`).
 - `wire/v1/` — **the local wire's contract**: JSON Schemas, golden examples and the manifest that counts them. Embedded into the binary, so validation never depends on files beside it. Specified in `docs/local-wire.md`; where the two disagree, the schemas win.
 - `fixture/` — **the scripted stand-in for Uffici**: its schema and an acceptance script, embedded for the same reason. Specified in `docs/fixture-script.md`.
 - `protocol/v1/` — **the Uffici-to-companion contract**, a byte-identical copy of what Uffici's agents gateway publishes; never edited here. `internal/protocol/` holds its Go structs, pinned to it both ways.
