@@ -22,11 +22,12 @@ type releases struct {
 	token  string
 	latest map[string]string            // repo → version
 	assets map[string]map[string][]byte // repo → asset → body
+	t      *testing.T
 }
 
 func newReleases(t *testing.T, token string) *releases {
 	t.Helper()
-	rs := &releases{token: token, latest: map[string]string{}, assets: map[string]map[string][]byte{}}
+	rs := &releases{t: t, token: token, latest: map[string]string{}, assets: map[string]map[string][]byte{}}
 	rs.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer "+token && token != "" {
 			http.Error(w, "auth", http.StatusNotFound)
@@ -75,6 +76,8 @@ func (rs *releases) publish(repo, version string, assets map[string][]byte) {
 		sums.WriteString(sha(body) + "  " + name + "\n")
 	}
 	all[ChecksumsFile] = []byte(sums.String())
+	// Signed as the repository's release workflow signs it, at this tag (#3118).
+	all[ChecksumsFile+BundleSuffix] = signBundle(rs.t, ReleaseIdentity(repo, version), all[ChecksumsFile])
 	rs.latest[repo], rs.assets[repo] = version, all
 }
 
@@ -82,7 +85,7 @@ func (rs *releases) release(repo, version string) Release {
 	// The API path serves both with and without a token here; a public
 	// repository's assets would come from the web origin, which Fetch picks
 	// only without a token — so the rig always carries one.
-	return Release{Owner: "uffici-ai", Repo: repo, Version: version, Token: rs.token, BaseURL: rs.URL, APIURL: rs.URL, Client: rs.Client()}
+	return Release{Owner: "uffici-ai", Repo: repo, Version: version, Token: rs.token, BaseURL: rs.URL, APIURL: rs.URL, Client: rs.Client(), Verifier: testVerifier(rs.t)}
 }
 
 // companionArchive is a release archive with `uffici` at its top level.

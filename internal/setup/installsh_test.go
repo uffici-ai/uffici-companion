@@ -9,6 +9,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -59,9 +61,10 @@ func fakeBinaryArchiveWith(t *testing.T, knowsVersion bool) []byte {
 	t.Helper()
 	script := "#!/bin/sh\n"
 	if knowsVersion {
-		script += "if [ \"$2\" = -h ]; then printf '  -version string\\n' >&2; exit 2; fi\n"
+		script += "if [ \"$2\" = -h ]; then printf '  -version string\\n    (default $UFFICI_PAIRING_CODE)\\n' >&2; exit 2; fi\n"
 	}
 	script += "printf 'fake-uffici %s\\n' \"$*\"\n"
+	script += "if [ -n \"$UFFICI_PAIRING_CODE\" ]; then echo 'fake-uffici: a pairing code in the environment'; fi\n"
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
@@ -80,6 +83,53 @@ func fakeBinaryArchiveWith(t *testing.T, knowsVersion bool) []byte {
 	_ = tw.Close()
 	_ = gz.Close()
 	return buf.Bytes()
+}
+
+// fakeCosign is a directory holding a `cosign` that logs its arguments to
+// $FAKE_COSIGN_LOG and exits $FAKE_COSIGN_EXIT (0 by default), put first on
+// every run's PATH: the script's signature step is exercised the same way on
+// every machine, whether or not a real cosign is installed there (the release
+// workflow installs one before it runs these tests). The real verification is
+// the Go side's, against a virtual Sigstore (signature_test.go).
+func fakeCosign(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := "#!/bin/sh\n[ -n \"$FAKE_COSIGN_LOG\" ] && printf '%s\\n' \"$*\" >>\"$FAKE_COSIGN_LOG\"\n" +
+		"[ \"${FAKE_COSIGN_EXIT:-0}\" = 0 ] || { echo 'Error: none of the expected identities matched' >&2; exit \"$FAKE_COSIGN_EXIT\"; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "cosign"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// releaseAssets is one release of the companion: the archive, its checksum
+// line, and the checksum list's signature bundle.
+func releaseAssets(archive []byte, sums string) map[string][]byte {
+	return map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sums), ChecksumsFile + BundleSuffix: []byte("a bundle")}
+}
+
+// installLatest is the tag a loopback release's latest stands for: the version
+// the API's listing names, which the script resolves before it verifies (#3118
+// review), and whose download path it then fetches from.
+const installLatest = "0.9.0"
+
+// withLatest answers the web's `releases/latest` the way GitHub does — a
+// redirect to installLatest's tag page — and the anonymous API the way GitHub
+// does past its hourly budget, 403 (#3118 review): every run here resolves the
+// latest without the API. Every other request goes to next.
+func withLatest(next http.HandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/uffici-ai/uffici-companion/releases/latest":
+			w.Header().Set("Location", "https://github.com/uffici-ai/uffici-companion/releases/tag/v"+installLatest)
+			w.WriteHeader(http.StatusFound)
+			return
+		case "/repos/uffici-ai/uffici-companion/releases/latest":
+			http.Error(w, `{"message":"API rate limit exceeded"}`, http.StatusForbidden)
+			return
+		}
+		next(w, r)
+	})
 }
 
 func thisAsset() string {
@@ -101,9 +151,20 @@ func runInstallerWithoutATerminal(t *testing.T, server *httptest.Server, prefix 
 
 func runInstallerWith(t *testing.T, attrs *syscall.SysProcAttr, server *httptest.Server, prefix string, args ...string) (string, error) {
 	t.Helper()
+	return runInstallerEnv(t, attrs, server, prefix, nil, args...)
+}
+
+// runInstallerEnv runs the script with extra environment, which wins over the
+// defaults (a later entry of the same name is the one a process sees).
+func runInstallerEnv(t *testing.T, attrs *syscall.SysProcAttr, server *httptest.Server, prefix string, extra []string, args ...string) (string, error) {
+	t.Helper()
 	cmd := exec.Command("sh", append([]string{filepath.Join(moduleRoot(t), "install.sh")}, args...)...)
 	cmd.SysProcAttr = attrs
 	cmd.Env = append(os.Environ(),
+		"PATH="+fakeCosign(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"UFFICI_PAIRING_CODE=",
+		"UFFICI_DEV_RELEASE_IDENTITY=",
+		"UFFICI_COMPANION_REPO=",
 		"UFFICI_RELEASES_BASE_URL="+server.URL,
 		"UFFICI_RELEASES_API_URL="+server.URL,
 		"UFFICI_INSTALL_PREFIX="+prefix,
@@ -117,6 +178,7 @@ func runInstallerWith(t *testing.T, attrs *syscall.SysProcAttr, server *httptest
 		"UFFICI_GATEWAY_URL="+server.URL,
 		"HOME="+t.TempDir(),
 	)
+	cmd.Env = append(cmd.Env, extra...)
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -139,10 +201,10 @@ func TestInstallScriptFetchesVerifiesInstallsAndHandsOver(t *testing.T) {
 		t.Fatalf("the installer supports linux and darwin; this test runs on %s", runtime.GOOS)
 	}
 	archive := fakeBinaryArchive(t)
-	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  " + thisAsset() + "\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		if !strings.HasPrefix(r.URL.Path, "/uffici-ai/uffici-companion/releases/latest/download/") {
+		if !strings.HasPrefix(r.URL.Path, "/uffici-ai/uffici-companion/releases/download/v"+installLatest+"/") {
 			http.NotFound(w, r)
 			return
 		}
@@ -195,8 +257,8 @@ func TestInstallScriptFetchesVerifiesInstallsAndHandsOver(t *testing.T) {
 // untouched, and never print it itself.
 func TestInstallScriptWithAPairingCodeNeedsNoTerminalAndNeverPrintsTheCode(t *testing.T) {
 	archive := fakeBinaryArchive(t)
-	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  " + thisAsset() + "\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
 		if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok {
 			_, _ = w.Write(body)
 			return
@@ -255,14 +317,16 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 		}
 		bearerHits.Add(1)
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"), strings.HasSuffix(r.URL.Path, "/releases/tags/v"+installLatest):
 			// GitHub's real shape: pretty-printed, `url` before `name`, an
 			// uploader object in between, and sibling assets with longer names.
-			_, _ = w.Write([]byte("{\n  \"assets\": [\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/1\",\n      \"id\": 1,\n      \"uploader\": {\"login\": \"x\", \"id\": 2},\n      \"name\": \"" + thisAsset() + ".sig\"\n    },\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/2\",\n      \"id\": 2,\n      \"uploader\": {\"login\": \"x\", \"id\": 2},\n      \"name\": \"" + thisAsset() + "\"\n    },\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/3\",\n      \"id\": 3,\n      \"name\": \"checksums.txt\"\n    }\n  ]\n}\n"))
+			_, _ = w.Write([]byte("{\n  \"tag_name\": \"v" + installLatest + "\",\n  \"assets\": [\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/1\",\n      \"id\": 1,\n      \"uploader\": {\"login\": \"x\", \"id\": 2},\n      \"name\": \"" + thisAsset() + ".sig\"\n    },\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/2\",\n      \"id\": 2,\n      \"uploader\": {\"login\": \"x\", \"id\": 2},\n      \"name\": \"" + thisAsset() + "\"\n    },\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/3\",\n      \"id\": 3,\n      \"name\": \"checksums.txt\"\n    },\n    {\n      \"url\": \"" + server.URL + "/repos/uffici-ai/uffici-companion/releases/assets/4\",\n      \"id\": 4,\n      \"name\": \"checksums.txt.sigstore.json\"\n    }\n  ]\n}\n"))
 		case strings.HasSuffix(r.URL.Path, "/assets/2"):
 			_, _ = w.Write(archive)
 		case strings.HasSuffix(r.URL.Path, "/assets/3"):
 			_, _ = w.Write(sums)
+		case strings.HasSuffix(r.URL.Path, "/assets/4"):
+			_, _ = w.Write([]byte("a bundle"))
 		default:
 			http.NotFound(w, r)
 		}
@@ -271,6 +335,9 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 	t.Cleanup(server.Close)
 	cmd := exec.Command("sh", filepath.Join(moduleRoot(t), "install.sh"), "--dry-run", "--harness", "hermes")
 	cmd.Env = append(os.Environ(),
+		"PATH="+fakeCosign(t)+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"UFFICI_DEV_RELEASE_IDENTITY=",
+		"UFFICI_COMPANION_REPO=",
 		"UFFICI_RELEASES_BASE_URL="+server.URL,
 		"UFFICI_RELEASES_API_URL="+server.URL,
 		"UFFICI_INSTALL_PREFIX="+t.TempDir(),
@@ -296,8 +363,8 @@ func TestInstallScriptFetchesThroughTheAPIWithAToken(t *testing.T) {
 
 func TestInstallScriptRefusesACorruptedArchive(t *testing.T) {
 	archive := fakeBinaryArchive(t)
-	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(strings.Repeat("00", 32) + "  " + thisAsset() + "\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assets := releaseAssets(archive, strings.Repeat("00", 32)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		if body, ok := assets[name]; ok {
 			_, _ = w.Write(body)
@@ -318,8 +385,8 @@ func TestInstallScriptRefusesACorruptedArchive(t *testing.T) {
 
 func TestInstallScriptRefusesAnUnlistedAsset(t *testing.T) {
 	archive := fakeBinaryArchive(t)
-	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  other.tar.gz\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assets := releaseAssets(archive, sha(archive)+"  other.tar.gz\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		if body, ok := assets[name]; ok {
 			_, _ = w.Write(body)
@@ -340,8 +407,8 @@ func TestInstallScriptRefusesAnUnlistedAsset(t *testing.T) {
 // latest is set) and the gateway's `/v1/release` answer, from one origin.
 func trainServer(t *testing.T, tag string, archive []byte, release string, latest bool, sawAuth *bool) *httptest.Server {
 	t.Helper()
-	assets := map[string][]byte{thisAsset(): archive, ChecksumsFile: []byte(sha(archive) + "  " + thisAsset() + "\n")}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/release" {
 			if r.Header.Get("Authorization") != "" {
 				*sawAuth = true
@@ -352,7 +419,7 @@ func trainServer(t *testing.T, tag string, archive []byte, release string, lates
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		prefix := "/uffici-ai/uffici-companion/releases/download/v" + tag + "/"
 		if latest {
-			prefix = "/uffici-ai/uffici-companion/releases/latest/download/"
+			prefix = "/uffici-ai/uffici-companion/releases/download/v" + installLatest + "/"
 		}
 		if body, ok := assets[name]; ok && tag != "" && strings.HasPrefix(r.URL.Path, prefix) {
 			_, _ = w.Write(body)
@@ -481,7 +548,9 @@ func TestInstallScriptResolvesTheGatewayInFourSteps(t *testing.T) {
 			}
 			cmd := exec.Command("sh", args...)
 			cmd.Env = append(os.Environ(),
-				"PATH="+shims+":"+os.Getenv("PATH"),
+				"PATH="+shims+":"+fakeCosign(t)+":"+os.Getenv("PATH"),
+				"UFFICI_DEV_RELEASE_IDENTITY=",
+				"UFFICI_COMPANION_REPO=",
 				"GATEWAY_LOG="+log,
 				"UFFICI_RELEASES_BASE_URL="+server.URL,
 				"UFFICI_RELEASES_API_URL="+server.URL,
@@ -541,5 +610,339 @@ func TestInstallScriptRefusesRootThroughSudo(t *testing.T) {
 		if sudoUser == "" && (refused || !strings.Contains(string(out), "uffici-install: agents gateway:")) {
 			t.Fatalf("root without sudo did not get past the check:\n%s", out)
 		}
+	}
+}
+
+// ── The release's signature (#3118) ─────────────────────────────────────────
+
+// pathWithout is a PATH holding every program the current one does except
+// name: the machine without cosign, whatever this one has installed.
+func pathWithout(t *testing.T, name string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, entry := range filepath.SplitList(os.Getenv("PATH")) {
+		files, err := os.ReadDir(entry)
+		if err != nil {
+			continue
+		}
+		for _, f := range files {
+			link := filepath.Join(dir, f.Name())
+			if f.Name() == name || f.IsDir() {
+				continue
+			}
+			if _, err := os.Lstat(link); err == nil {
+				continue // the first on the PATH wins, as it would
+			}
+			_ = os.Symlink(filepath.Join(entry, f.Name()), link)
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "curl")); err != nil {
+		t.Fatal("the stand-in PATH lost curl")
+	}
+	return dir
+}
+
+func TestInstallScriptVerifiesTheChecksumListsSignatureFirst(t *testing.T) {
+	var sawAuth bool
+	for _, tc := range []struct {
+		name, release, tag string
+		latest             bool
+		extra              []string
+		want               string
+	}{
+		// A version named: the workflow at exactly that tag.
+		{name: "pinned", tag: "0.10.0-dev.4", release: `{"channel":"develop","version":"0.10.0-dev.4"}`,
+			want: "verify-blob --bundle {work}/checksums.txt.sigstore.json --certificate-identity " + ReleaseIdentity(CompanionRepo, "0.10.0-dev.4") + " --certificate-oidc-issuer https://token.actions.githubusercontent.com {work}/checksums.txt"},
+		// 🔴 The latest path: the tag the listing names, resolved FIRST, and the
+		// workflow at exactly that tag — the identity Go builds (ReleaseIdentity),
+		// so the two sides cannot drift.
+		{name: "latest", tag: "latest", latest: true, release: `{"channel":"develop","version":null}`,
+			want: "--certificate-identity " + ReleaseIdentity(CompanionRepo, installLatest) + " --certificate-oidc-issuer https://token.actions.githubusercontent.com"},
+		// 🔴 A redirected repository moves the download, never the signer.
+		{name: "redirected", tag: "0.10.0", release: `{"channel":"main","version":"0.10.0"}`, extra: []string{"UFFICI_COMPANION_REPO=someone/fork"},
+			want: "--certificate-identity " + ReleaseIdentity(CompanionRepo, "0.10.0") + " --certificate-oidc-issuer"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			archive := fakeBinaryArchive(t)
+			server := trainServer(t, tc.tag, archive, tc.release, tc.latest, &sawAuth)
+			if len(tc.extra) > 0 {
+				server = forkServer(t, server)
+			}
+			log := filepath.Join(t.TempDir(), "cosign")
+			out, err := runInstallerEnv(t, nil, server, t.TempDir(), append([]string{"FAKE_COSIGN_LOG=" + log}, tc.extra...), "--yes", "--no-pair", "--gateway-url", server.URL)
+			if err != nil {
+				t.Fatalf("installer failed: %v\n%s", err, out)
+			}
+			raw, _ := os.ReadFile(log)
+			got := strings.TrimSpace(string(raw))
+			if work := strings.TrimSuffix(strings.Fields(got + " x x x")[2], "/checksums.txt.sigstore.json"); work != "" {
+				got = strings.ReplaceAll(got, work, "{work}")
+			}
+			if strings.Count(got, "verify-blob") != 1 || !strings.Contains(got, tc.want) {
+				t.Fatalf("cosign was asked %q, want %q", got, tc.want)
+			}
+			signed, checked := strings.Index(out, "signature verified: checksums.txt was signed by"), strings.Index(out, "checksum verified")
+			if signed < 0 || checked < 0 || signed > checked {
+				t.Fatalf("the signature was not verified before the checksum:\n%s", out)
+			}
+		})
+	}
+}
+
+// forkServer serves the companion's release under someone/fork as well, the
+// shape of a redirected repository.
+func forkServer(t *testing.T, upstream *httptest.Server) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := strings.Replace(r.URL.Path, "/someone/fork/", "/uffici-ai/uffici-companion/", 1)
+		resp, err := upstream.Client().Get(upstream.URL + path)
+		if err != nil {
+			http.Error(w, "upstream", http.StatusBadGateway)
+			return
+		}
+		defer func() { _ = resp.Body.Close() }()
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// 🔴 The guard on the script's side: cosign refusing the bundle (another
+// identity signed it) stops the run before the archive is even downloaded.
+func TestInstallScriptRefusesAReleaseCosignRefuses(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	var archiveFetched atomic.Bool
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if name == thisAsset() {
+			archiveFetched.Store(true)
+		}
+		if body, ok := assets[name]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	prefix := t.TempDir()
+	out, err := runInstallerEnv(t, nil, server, prefix, []string{"FAKE_COSIGN_EXIT=1"}, "--yes", "--no-pair")
+	if err == nil || !strings.Contains(out, "the signature on checksums.txt was not made by") || !strings.Contains(out, "none of the expected identities matched") {
+		t.Fatalf("a release cosign refused was installed: %v\n%s", err, out)
+	}
+	if archiveFetched.Load() {
+		t.Fatal("the archive was downloaded before the signature was checked")
+	}
+	if _, err := os.Stat(filepath.Join(prefix, "bin", "uffici")); err == nil {
+		t.Fatal("the binary was written despite the refused signature")
+	}
+	// A release with no bundle at all is refused too.
+	delete(assets, ChecksumsFile+BundleSuffix)
+	if out, err := runInstaller(t, server, prefix, "--yes", "--no-pair"); err == nil || !strings.Contains(out, "checksums.txt.sigstore.json") {
+		t.Fatalf("a release without a signature was installed: %v\n%s", err, out)
+	}
+}
+
+// Without cosign the script says, in so many words, that it did not verify the
+// signature — and still installs, because the binary verifies what it fetches.
+func TestInstallScriptSaysWhenItCouldNotVerifyTheSignature(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	var bundleFetched atomic.Bool
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
+		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+		if name == ChecksumsFile+BundleSuffix {
+			bundleFetched.Store(true)
+		}
+		if body, ok := assets[name]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	cmd := exec.Command("sh", filepath.Join(moduleRoot(t), "install.sh"), "--dry-run")
+	cmd.Env = append(os.Environ(),
+		"PATH="+pathWithout(t, "cosign"), "UFFICI_PAIRING_CODE=", "UFFICI_DEV_RELEASE_IDENTITY=", "UFFICI_COMPANION_REPO=",
+		"UFFICI_RELEASES_BASE_URL="+server.URL, "UFFICI_RELEASES_API_URL="+server.URL, "UFFICI_INSTALL_PREFIX="+t.TempDir(),
+		"UFFICI_GITHUB_TOKEN=", "UFFICI_VERSION=", "SUDO_USER=", "UFFICI_HOME=", "UFFICI_GATEWAY_URL="+server.URL, "HOME="+t.TempDir(),
+	)
+	var stdout, stderr strings.Builder
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("installer failed: %v\n%s%s", err, stdout.String(), stderr.String())
+	}
+	// 🔴 On STDERR, and naming the residual risk: the binary itself is unverified.
+	warning := "WARNING: signature NOT verified — cosign is not on the PATH, so the uffici binary about to be installed is checked only against a checksum list from the same release"
+	if !strings.Contains(stderr.String(), warning) || !strings.Contains(stderr.String(), "verify the archive's .sigstore.json bundle yourself") {
+		t.Fatalf("no warning on stderr naming the risk:\nstderr: %s", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "NOT verified") || strings.Contains(stdout.String()+stderr.String(), "signature verified:") {
+		t.Fatalf("the warning is on stdout, or a verification was claimed:\nstdout: %s", stdout.String())
+	}
+	if bundleFetched.Load() {
+		t.Fatal("the bundle was fetched with nothing to check it")
+	}
+}
+
+// The redirects take https only (plain http on loopback, for these tests), and
+// the repository is owner/name.
+func TestInstallScriptRefusesAnInsecureRedirect(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	for _, extra := range [][]string{
+		{"UFFICI_RELEASES_BASE_URL=http://releases.example"},
+		{"UFFICI_RELEASES_API_URL=http://api.example"},
+		{"UFFICI_RELEASES_BASE_URL=ftp://releases.example"},
+		{"UFFICI_COMPANION_REPO=just-a-name"},
+		{"UFFICI_COMPANION_REPO=a/b/c"},
+		// 🔴 A user name turns a loopback-looking origin into another host, in the
+		// clear (#3118 review): `localhost:1@evil.example` is evil.example.
+		{"UFFICI_RELEASES_API_URL=http://localhost:1@evil.example"},
+		{"UFFICI_RELEASES_BASE_URL=http://127.0.0.1:1@evil.example"},
+		{"UFFICI_RELEASES_API_URL=https://api.github.com@evil.example"},
+		{"UFFICI_RELEASES_API_URL=http://localhost:1.evil.example"},
+		{"UFFICI_RELEASES_API_URL=http://localhost:"},
+		{"UFFICI_RELEASES_BASE_URL=http://[::1]:8x"},
+	} {
+		out, err := runInstallerEnv(t, nil, server, t.TempDir(), extra, "--dry-run")
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 || (!strings.Contains(out, "https only") && !strings.Contains(out, "owner/name")) {
+			t.Fatalf("%v was not refused: %v\n%s", extra, err, out)
+		}
+	}
+}
+
+// 🔴 The development switch replaces the identity cosign is given, and says so
+// out loud.
+func TestInstallScriptAnnouncesTheDevelopmentIdentitySwitch(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	log := filepath.Join(t.TempDir(), "cosign")
+	out, err := runInstallerEnv(t, nil, server, t.TempDir(), []string{"FAKE_COSIGN_LOG=" + log, "UFFICI_DEV_RELEASE_IDENTITY=^https://github\\.com/me/"}, "--dry-run")
+	if err != nil {
+		t.Fatalf("installer failed: %v\n%s", err, out)
+	}
+	asked, _ := os.ReadFile(log)
+	// 🔴 Anchored as Go anchors it (anchored, signature.go): a whole identity, never a substring.
+	if !strings.Contains(out, "WARNING: UFFICI_DEV_RELEASE_IDENTITY is set") || !strings.Contains(string(asked), "--certificate-identity-regexp "+anchored("^https://github\\.com/me/")+" --certificate-oidc-issuer https://token.actions.githubusercontent.com") {
+		t.Fatalf("the switch was not announced or not used:\n%s\ncosign: %s", out, asked)
+	}
+}
+
+// ── The pairing code out of argv (#3119) ────────────────────────────────────
+
+func TestInstallScriptTakesThePairingCodeFromTheEnvironment(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
+		if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	// No terminal, no flag: the code in the environment is what lets it run.
+	out, err := runInstallerEnv(t, &syscall.SysProcAttr{Setsid: true}, server, t.TempDir(), []string{"UFFICI_PAIRING_CODE=K7QP-2XMD"}, "--harness", "hermes", "--gateway-url", "https://agents.example")
+	if err != nil {
+		t.Fatalf("the installer failed without a terminal: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "fake-uffici setup --harness hermes --gateway-url https://agents.example\n") || !strings.Contains(out, "fake-uffici: a pairing code in the environment") {
+		t.Fatalf("the code did not travel in the environment, out of argv:\n%s", out)
+	}
+	if strings.Contains(out, "K7QP") {
+		t.Fatalf("the code was printed:\n%s", out)
+	}
+	if !strings.Contains(out, "pairing code: ****-**** (from UFFICI_PAIRING_CODE)") {
+		t.Fatalf("the script did not say where the code came from:\n%s", out)
+	}
+
+	// A release from before the variable: its setup is handed the flag it knows,
+	// and the script still prints only the masked code.
+	old := fakeBinaryArchiveWith(t, false)
+	for name, body := range releaseAssets(old, sha(old)+"  "+thisAsset()+"\n") {
+		assets[name] = body
+	}
+	out, err = runInstallerEnv(t, &syscall.SysProcAttr{Setsid: true}, server, t.TempDir(), []string{"UFFICI_PAIRING_CODE=K7QP-2XMD"}, "--harness", "hermes", "--gateway-url", "https://agents.example")
+	if err != nil || !strings.Contains(out, "fake-uffici setup --harness hermes --gateway-url https://agents.example --pairing-code K7QP-2XMD") {
+		t.Fatalf("an older setup was not handed the code as its flag: %v\n%s", err, out)
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "uffici-install:") && strings.Contains(line, "K7QP") {
+			t.Fatalf("the script printed the code: %q", line)
+		}
+	}
+}
+
+// 🔴 #3118 review — the latest path with cosign names its tag from the listing
+// before anything is fetched, and a listing that names no final release tag is
+// a refusal, never a pattern that any older signed release would satisfy.
+func TestInstallScriptRefusesALatestWithoutAReleaseTag(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	for _, listing := range []string{"/releases/tag/v1.0.0-rc.1", "/releases/tag/main", "/releases/tag/v1.0.0/x", ""} {
+		var fetched atomic.Bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/uffici-ai/uffici-companion/releases/latest" {
+				if listing != "" {
+					w.Header().Set("Location", "https://github.com/uffici-ai/uffici-companion"+listing)
+					w.WriteHeader(http.StatusFound)
+				}
+				return
+			}
+			if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok {
+				fetched.Store(true)
+				_, _ = w.Write(body)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+		t.Cleanup(server.Close)
+		out, err := runInstaller(t, server, t.TempDir(), "--dry-run")
+		if err == nil || !strings.Contains(out, "names no release tag") || fetched.Load() {
+			t.Fatalf("%s: the latest was fetched without a release tag to verify against: %v\n%s", listing, err, out)
+		}
+	}
+}
+
+// 🔴 #3118 review: with cosign, the latest is resolved from the web's redirect —
+// the anonymous API's hourly budget (60 per address) is not on the path, so a
+// machine behind a shared address installs with cosign exactly as without it.
+func TestInstallScriptResolvesTheLatestWithoutTheAPI(t *testing.T) {
+	archive := fakeBinaryArchive(t)
+	assets := releaseAssets(archive, sha(archive)+"  "+thisAsset()+"\n")
+	var apiHits atomic.Int32
+	server := httptest.NewServer(withLatest(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			apiHits.Add(1)
+		}
+		if body, ok := assets[r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]]; ok && strings.Contains(r.URL.Path, "/releases/download/v"+installLatest+"/") {
+			_, _ = w.Write(body)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+	log := filepath.Join(t.TempDir(), "cosign")
+	out, err := runInstallerEnv(t, nil, server, t.TempDir(), []string{"FAKE_COSIGN_LOG=" + log}, "--dry-run")
+	if err != nil {
+		t.Fatalf("the latest could not be resolved with the API refusing: %v\n%s", err, out)
+	}
+	asked, _ := os.ReadFile(log)
+	if !strings.Contains(out, "the latest release is v"+installLatest) || !strings.Contains(string(asked), "--certificate-identity "+ReleaseIdentity(CompanionRepo, installLatest)+" ") {
+		t.Fatalf("the redirect's tag was not the one verified:\n%s\ncosign: %s", out, asked)
+	}
+	if apiHits.Load() != 0 {
+		t.Fatalf("the anonymous API was asked %d times", apiHits.Load())
 	}
 }

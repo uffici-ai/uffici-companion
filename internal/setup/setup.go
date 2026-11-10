@@ -272,7 +272,7 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 	}
 	asset := repo + ".tar.gz"
 	_, _ = fmt.Fprintf(out, "fetching %s from %s\n", asset, release.Describe())
-	data, err := release.FetchVerified(ctx, asset)
+	data, signedVersion, err := release.FetchSigned(ctx, asset)
 	if err != nil {
 		return installedPlugin{}, err
 	}
@@ -295,6 +295,12 @@ func installPlugin(ctx context.Context, opts Options, out io.Writer, do func(str
 	}
 	if manifest.Harness != opts.Harness {
 		return installedPlugin{}, fmt.Errorf("%s is for the harness %q, not %q", asset, manifest.Harness, opts.Harness)
+	}
+	// 🔴 The plugin is the version its release was SIGNED at (#3118): a release
+	// carrying another tag's signature, or a latest that is an older release
+	// than it says, is refused here.
+	if manifest.Version != signedVersion {
+		return installedPlugin{}, fmt.Errorf("%s says it is version %q, but its release was signed at v%s — refusing it", asset, manifest.Version, signedVersion)
 	}
 	_, _ = fmt.Fprintf(out, "plugin %s %s, for %s\n", manifest.Name, NonEmpty(manifest.Version, "(unversioned)"), manifest.Harness)
 

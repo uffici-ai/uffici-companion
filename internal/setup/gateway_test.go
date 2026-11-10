@@ -317,7 +317,11 @@ func TestRunPicksThePluginVersion(t *testing.T) {
 		{name: "no version named is the latest", wantPath: "/releases/latest/download/", wantAsked: 1, wantLine: "version: the latest release"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t, goodManifest(), false)
+			// The release at each tag carries that tag in its manifest, as the
+			// plugin's release workflow stamps it — and setup holds it to that (#3118).
+			manifest := goodManifest()
+			manifest["version"] = NonEmpty(tc.pluginVersion, NonEmpty(tc.version, NonEmpty(tc.gateway, latestTag)))
+			r := newRig(t, manifest, false)
 			r.opts.NoService, r.opts.NoPair = true, true
 			r.opts.PluginVersion, r.opts.Version = tc.pluginVersion, tc.version
 			asked := 0
