@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -148,6 +150,7 @@ func TestSecureOrigin(t *testing.T) {
 	for origin, ok := range map[string]bool{
 		"https://github.com": true, "http://127.0.0.1:1234": true, "http://localhost:9": true, "http://[::1]:8": true,
 		"http://github.com": false, "ftp://x": false, "http://localhost.example": false, "http://127.0.0.1.nip.io": false, "ftp://localhost": false,
+		"http://localhost:1@evil.example": false, "https://api.github.com@evil.example": false, "https://user:pw@github.com": false,
 	} {
 		if got := secureOrigin(origin); got != ok {
 			t.Fatalf("secureOrigin(%q) = %v", origin, got)
@@ -218,17 +221,36 @@ func sha(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
-// releaseServer serves one release both the public way and the API way.
+// releaseServer serves one release both the public way and the API way, and
+// signs its checksum list as the release workflow would, at the tag asked for
+// (#3118): `checksums.txt.sigstore.json` is made on request, by identity (the
+// release workflow at that tag unless a test says otherwise), unless the test
+// published one itself or turned signing off.
 type releaseServer struct {
 	*httptest.Server
-	assets map[string][]byte
-	token  string
-	hits   []string
+	assets   map[string][]byte
+	token    string
+	hits     []string
+	unsigned bool
+	identity func(version string) string
+	t        *testing.T
 }
+
+// latestTag is the tag the loopback release's `latest` stands for.
+const latestTag = "0.1.2"
 
 func newReleaseServer(t *testing.T, repo, token string, assets map[string][]byte) *releaseServer {
 	t.Helper()
-	rs := &releaseServer{assets: assets, token: token}
+	rs := &releaseServer{t: t, assets: assets, token: token, identity: func(version string) string { return ReleaseIdentity(repo, version) }}
+	body := func(name, version string) ([]byte, bool) {
+		if b, ok := rs.assets[name]; ok {
+			return b, true
+		}
+		if sums, ok := rs.assets[ChecksumsFile]; ok && name == ChecksumsFile+BundleSuffix && !rs.unsigned {
+			return signBundle(t, rs.identity(version), sums), true
+		}
+		return nil, false
+	}
 	mux := http.NewServeMux()
 	// Public: /uffici-ai/<repo>/releases/latest/download/<asset> and /releases/download/v<ver>/<asset>
 	mux.HandleFunc("/uffici-ai/"+repo+"/releases/", func(w http.ResponseWriter, r *http.Request) {
@@ -237,14 +259,18 @@ func newReleaseServer(t *testing.T, repo, token string, assets map[string][]byte
 			http.Error(w, "private", http.StatusNotFound)
 			return
 		}
+		version := latestTag
+		if _, rest, ok := strings.Cut(r.URL.Path, "/releases/download/v"); ok {
+			version, _, _ = strings.Cut(rest, "/")
+		}
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-		if body, ok := assets[name]; ok {
-			_, _ = w.Write(body)
+		if b, ok := body(name, version); ok {
+			_, _ = w.Write(b)
 			return
 		}
 		http.NotFound(w, r)
 	})
-	// API: /repos/uffici-ai/<repo>/releases/latest|tags/vX and /assets/<name>
+	// API: /repos/uffici-ai/<repo>/releases/latest|tags/vX and /assets/<name>?v=<version>
 	mux.HandleFunc("/repos/uffici-ai/"+repo+"/releases/", func(w http.ResponseWriter, r *http.Request) {
 		rs.hits = append(rs.hits, r.URL.Path)
 		if r.Header.Get("Authorization") != "Bearer "+token {
@@ -257,21 +283,29 @@ func newReleaseServer(t *testing.T, repo, token string, assets map[string][]byte
 				return
 			}
 			name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
-			if body, ok := assets[name]; ok {
-				_, _ = w.Write(body)
+			if b, ok := body(name, r.URL.Query().Get("v")); ok {
+				_, _ = w.Write(b)
 				return
 			}
 			http.NotFound(w, r)
 			return
 		}
+		version := latestTag
+		if _, tag, ok := strings.Cut(r.URL.Path, "/releases/tags/v"); ok {
+			version = tag
+		}
 		type asset struct {
 			Name, URL string
 		}
 		var list []asset
-		for name := range assets {
-			list = append(list, asset{Name: name, URL: rs.URL + "/repos/uffici-ai/" + repo + "/releases/assets/" + name})
+		names := slices.Collect(maps.Keys(assets))
+		if _, ok := assets[ChecksumsFile]; ok && !rs.unsigned {
+			names = append(names, ChecksumsFile+BundleSuffix)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"assets": list})
+		for _, name := range names {
+			list = append(list, asset{Name: name, URL: rs.URL + "/repos/uffici-ai/" + repo + "/releases/assets/" + name + "?v=" + version})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v" + version, "assets": list})
 	})
 	rs.Server = httptest.NewServer(mux)
 	t.Cleanup(rs.Close)
@@ -279,7 +313,7 @@ func newReleaseServer(t *testing.T, repo, token string, assets map[string][]byte
 }
 
 func (rs *releaseServer) release(repo, version string) Release {
-	return Release{Owner: "uffici-ai", Repo: repo, Version: version, Token: rs.token, BaseURL: rs.URL, APIURL: rs.URL, Client: rs.Client()}
+	return Release{Owner: "uffici-ai", Repo: repo, Version: version, Token: rs.token, BaseURL: rs.URL, APIURL: rs.URL, Client: rs.Client(), Verifier: testVerifier(rs.t)}
 }
 
 func TestReleaseFetchVerifiedPublicAndPrivate(t *testing.T) {

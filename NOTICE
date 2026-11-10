@@ -8,3 +8,30 @@ in LICENSE does not grant permission to use this trade name, trademark, or
 product name, except as required for reasonable and customary
 use in describing the origin of this work and reproducing the content of the
 NOTICE file.
+
+-------------------------------------------------------------------------------
+Third-party notices
+
+The release binary links software whose NOTICE files Apache License 2.0,
+section 4(d), asks to be carried with it (the release signature check, #3118,
+brings in Sigstore's Go verifier and its dependencies):
+
+github.com/theupdateframework/go-tuf/v2
+  Copyright 2024 The Update Framework Authors. Licensed under the Apache
+  License, Version 2.0. This product includes software developed at The Apache
+  Software Foundation.
+
+github.com/go-openapi/jsonpointer, github.com/go-openapi/jsonreference,
+github.com/go-openapi/runtime
+  Copyright 2015-2025 go-swagger maintainers. Licensed under the Apache
+  License, Version 2.0. Includes software derived from
+  github.com/sigu-399/jsonpointer and github.com/sigu-399/jsonreference
+  (Copyright 2013 sigu-399, Apache License 2.0) and github.com/naoina/denco
+  (Copyright (c) 2014 Naoya Inada, MIT License).
+
+go.yaml.in/yaml/v3
+  Copyright 2011-2016 Canonical Ltd. Licensed under the Apache License,
+  Version 2.0.
+
+google.golang.org/grpc
+  Copyright 2014 gRPC authors. Licensed under the Apache License, Version 2.0.

@@ -52,8 +52,11 @@ can diagnose a machine without asking you for them — see
 - Outbound HTTPS to your Uffici agents host — the address your organization was given, for
   example `https://agents.uffici.ai` — and to GitHub (`github.com`, `api.github.com`,
   `raw.githubusercontent.com` and GitHub's release-download hosts), where the releases are
-  downloaded from. No inbound port.
-- `curl`, `tar`, and `sha256sum` (or `shasum` on macOS) for the install line.
+  downloaded from — and to Sigstore's trust root (`tuf-repo-cdn.sigstore.dev`), which
+  `uffici setup` and `uffici upgrade` read to check a release's signature. No inbound port.
+- `curl`, `tar`, and `sha256sum` (or `shasum` on macOS) for the install line;
+  [cosign](https://docs.sigstore.dev/cosign/system_config/installation/), if it is on the
+  `PATH`, to have the line check the companion's signature before it installs it.
 - On Linux, a systemd user session; on a server, `loginctl enable-linger "$USER"` once, or the
   companion stops when you log out.
 
@@ -67,22 +70,24 @@ that user's harness.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh \
-  | sh -s -- --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
+  | UFFICI_PAIRING_CODE=XXXX-XXXX sh -s -- --harness hermes --gateway-url https://agents.uffici.ai
 ```
 
 It does, in order:
 
 1. Asks your agents gateway which release its machines run (see
    [Which version you get](#which-version-you-get)), downloads the companion for your
-   platform from that release, checks it against the release's checksum list, and installs
-   it as `~/.local/bin/uffici`.
+   platform from that release, checks the release's signature (with cosign, when it is on
+   your `PATH` — see [Security posture](#security-posture)) and the archive against the
+   release's checksum list, and installs it as `~/.local/bin/uffici`.
 2. Pairs it with your agent, using the code in the line: the key arrives sealed to this
    machine, and nobody has to approve anything — the administrator who asked for the line
    chose the agent. The code works once and for ten minutes; after that, get a new line from
    the agent's **Advanced** tab, under **Connection** (**Get the command**).
 3. Installs the companion as a service under your user (systemd on Linux, launchd on macOS)
    and starts it — or restarts it, if it was already running.
-4. Downloads the plugin for your harness from the same release of that plugin, checks it, installs
+4. Downloads the plugin for your harness from the same release of that plugin, checks its
+   signature and its checksum, installs
    it into the harness, switches the Uffici platform on in the harness's configuration, and
    points the plugin at the companion.
 5. Asks whether to restart the harness so it loads the plugin — *Restart hermes now to load
@@ -110,22 +115,27 @@ script then installs no binary either. The script is [install.sh](install.sh) in
 repository — POSIX shell, needing `curl`, `tar` and a SHA-256 tool besides the usual base
 utilities — so you can read it before you run it, and everything past the download is `uffici setup`, a command of the binary itself, so
 it is the same on every machine. The script never prints the pairing code; it shows
-`****-****` where it would be. The code does sit on the command line while the line runs,
-where other users of the machine can see it in the process list: it works once and for ten
-minutes, and whoever runs it first gets the agent's key — run the line on a machine you
-trust, and get a new one if you pasted it somewhere shared.
+`****-****` where it would be. The code rides in the environment (`UFFICI_PAIRING_CODE`),
+not on the command line, so other users of the machine cannot read it from the process list;
+your own user (and root) can still read a process's environment, and your shell keeps the line
+in its history. It works once and for ten minutes, and whoever runs it first gets the agent's
+key — run the line on a machine you trust, and get a new one if you pasted it somewhere
+shared. `--pairing-code XXXX-XXXX` still works, with the code in the process list.
 
 **Rather read the script first?** Download it, read it, then run it with the same flags:
 
 ```sh
 curl -fsSLo install.sh https://raw.githubusercontent.com/uffici-ai/uffici-companion/main/install.sh
 less install.sh
-sh install.sh --harness hermes --gateway-url https://agents.uffici.ai --pairing-code XXXX-XXXX
+UFFICI_PAIRING_CODE=XXXX-XXXX sh install.sh --harness hermes --gateway-url https://agents.uffici.ai
 ```
 
 The script checks every archive against its release's checksum list, which proves the
-download is intact. That the release was built from this repository is what the signature and
-the build attestation prove — see [Security posture](#security-posture).
+download is intact, and — with cosign on the `PATH` — the checksum list's signature first,
+which proves Uffici's release workflow published it. Without cosign it says so, in one line,
+and installs on the checksum alone; from then on `uffici setup` and `uffici upgrade` check
+the signature of every release they download themselves. See
+[Security posture](#security-posture).
 
 **Something wrong, or moving the agent to this machine?** Get a new line from the
 agent's **Advanced** tab, under **Connection** (**Get the command**) and run it again on the same machine: it pairs again and replaces the key, and the old key
@@ -143,7 +153,7 @@ uffici upgrade --check   # only say what is installed and what is released
 
 `uffici upgrade` needs no flags: `uffici setup` remembers the harness, its home and your agents
 host in `$UFFICI_HOME/setup.json` (no key, code or token). It downloads the companion release
-your agents gateway names (see [Which version you get](#which-version-you-get)) for this machine, verifies it against the release's checksum list and swaps it in beside the
+your agents gateway names (see [Which version you get](#which-version-you-get)) for this machine, verifies the release's signature and the archive against its checksum list, and swaps it in beside the
 old one, so a failed download or check leaves the installed binary untouched. The new binary
 then installs the plugin from the same release, sets the harness's configuration again,
 restarts the companion's service, asks whether to restart the harness (as setup does: it
@@ -231,7 +241,7 @@ uffici setup --harness hermes --gateway-url https://agents.uffici.ai
 | `--gateway-url <url>` | Your agents gateway. Default: `UFFICI_GATEWAY_URL`, then the one recorded here, then `https://agents.uffici.ai` (see [Which gateway](#which-gateway)). |
 | `--version <x.y.z>` | The release this machine runs; the plugin follows it. The install line passes the version it downloaded. Default: the version your gateway names, else the latest. |
 | `--harness-home <dir>` | Where the harness keeps its files, if not where its own variable or default says. |
-| `--pairing-code <XXXX-XXXX>` | The pairing code from the portal's line. Pairs with no approval and no question, and pairs again over a key already in place (a re-pair). |
+| `--pairing-code <XXXX-XXXX>` | The pairing code from the portal's line. Pairs with no approval and no question, and pairs again over a key already in place (a re-pair). Default: `UFFICI_PAIRING_CODE`, which keeps the code out of the process list. |
 | `--no-pair` | Skip pairing: the key is already in place, or mounted from a Secret. |
 | `--no-service` | Skip installing the service. |
 | `--yes` | Pair without asking which agent and organization the key is for, and restart the harness without asking. |
@@ -261,7 +271,7 @@ line from the agent's **Advanced** tab, under **Connection** (**Get the command*
 while the code could still be valid.
 
 **Without a code** — the administrator approves the code this machine shows. The install line
-without `--pairing-code` does the same: it asks you to confirm which agent the key is for,
+without a pairing code does the same: it asks you to confirm which agent the key is for,
 reading the answer from your terminal under a pipe, and with no terminal at all it stops
 before anything is downloaded (`--yes` answers for you).
 
@@ -602,9 +612,46 @@ gh attestation verify uffici_linux_amd64.tar.gz --repo uffici-ai/uffici-companio
 
 Without cosign, the checksum list alone proves an archive is intact (not where it came from):
 `sha256sum -c checksums.txt --ignore-missing` (`shasum -a 256 -c checksums.txt
---ignore-missing` on macOS). The installer verifies the checksum on every download; the
-signature and the attestation are yours to check with the commands above. Build attestations
-exist for the releases cut since this repository became public.
+--ignore-missing` on macOS). Build attestations exist for the releases cut since this
+repository became public.
+
+- **Every download is held to the release workflow's signature.** The checksum list is
+  trusted only after its Sigstore bundle (`checksums.txt.sigstore.json`) proves it was signed
+  by `https://github.com/uffici-ai/uffici-companion/.github/workflows/release.yml` at the
+  release's own tag (`@refs/tags/v<version>`), with GitHub Actions (`https://token.actions.githubusercontent.com`) as the issuer — so a
+  token that can write a release cannot ship a binary that passes. When no version was named
+  (the latest release), the install line first reads the latest release's tag (from the `releases/latest` redirect,
+  so no API budget is spent; through the API only with `UFFICI_GITHUB_TOKEN`) and checks the
+  signature against exactly that tag; `uffici setup` and `uffici upgrade` take the version
+  from the signature itself, so a plugin whose manifest names another version is refused and
+  an older release marked latest is never an upgrade (`uffici upgrade` never moves down
+  unless you pin a version). `uffici setup` and
+  `uffici upgrade` check it in Go with [sigstore-go](https://github.com/sigstore/sigstore-go)
+  for the companion and for the plugin (whose release signs its archive, held to its own
+  release workflow the same way), and refuse — never warn and install — when it does not
+  hold. The install line checks it with `cosign verify-blob` when cosign is on the `PATH`,
+  and when it is not, warns on standard error that the binary it installs is checked against
+  the release's checksum list only. Sigstore's trusted root (its certificate authority's,
+  transparency log's and timestamp authority's keys) is fetched through
+  [TUF](https://theupdateframework.io) from `tuf-repo-cdn.sigstore.dev`, starting from the root
+  built into the binary, and cached in `$UFFICI_HOME/sigstore`; a root that cannot be read is
+  a refusal too.
+- **Where releases come from can be moved; who signed them cannot.** These environment
+  values, read by the install line, `uffici setup` and `uffici upgrade`, exist for testing and
+  mirrors:
+
+| Setting | Meaning |
+| --- | --- |
+| `UFFICI_COMPANION_REPO` | The repository the install line fetches the companion from, as `owner/name`. Default `uffici-ai/uffici-companion`. Install line only. |
+| `UFFICI_RELEASES_BASE_URL` | The web origin releases are downloaded from. Default `https://github.com`. https only. |
+| `UFFICI_RELEASES_API_URL` | The API origin release listings are read from. Default `https://api.github.com`. https only. |
+| `UFFICI_GITHUB_TOKEN` | A GitHub token, only for a release in a private repository. Sent to the API origin alone, never printed. |
+| `UFFICI_DEV_RELEASE_IDENTITY` | **Development only.** A regular expression, matched against the WHOLE certificate identity, that replaces the signer a release must carry — a fork's release workflow, say. The issuer stays GitHub Actions and the signature is still checked; every run that reads it prints a warning first. Never set it on a real machine. |
+
+Plain `http` is refused for both origins, except on the machine's own loopback address with a
+numeric port, where the companion's tests serve a release; an origin carrying a user name
+(`…@host`) is refused outright. None of the first three moves the signer: a release
+fetched from anywhere must still be signed by Uffici's release workflow.
 
 ## Uninstall
 

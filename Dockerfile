@@ -10,7 +10,11 @@
 # is one where "what else is in here" has a short answer.
 
 # ── Build ───────────────────────────────────────────────────────────────────
-FROM golang:1.27.1-alpine AS build
+# 🔴 Pinned by DIGEST (#3118), the tag kept beside it for the reader: a tag can be
+# moved to other bytes, a digest cannot. golang:1.27.1-alpine, the multi-platform
+# index as resolved on 2026-11-10. Moving the toolchain moves both, together with
+# go.mod's `toolchain` line.
+FROM golang:1.27.1-alpine@sha256:8a5910f31396cd4d89662f56c68b3ae31d374308270a1c3bd96672ee5ed43414 AS build
 
 WORKDIR /src
 

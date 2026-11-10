@@ -326,7 +326,7 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	noService := flags.Bool("no-service", false, "skip installing the companion as a service")
 	yes := flags.Bool("yes", false, "install the key without asking which agent and org it is for")
 	dryRun := flags.Bool("dry-run", false, "print every action and perform none")
-	codeFlag := flags.String("pairing-code", "", "the pairing code in the command the portal gave (XXXX-XXXX); pairs with no question, and again over a key already in place")
+	codeFlag := flags.String("pairing-code", "", "the pairing code in the command the portal gave (XXXX-XXXX); pairs with no question, and again over a key already in place (default $"+PairingCodeEnv+", which keeps it out of the process list)")
 	logShipping := flags.String("log-shipping", "", "send this machine's companion, plugin and harness log lines to Uffici: on or off (default: as the last setup left it, else on)")
 	harnessLogLevel := flags.String("harness-log-level", "", "the lowest level of the harness's own lines that may leave this machine: debug, info, warn or error (default: as the last setup left it, else warn)")
 	restart := flags.Bool("restart-harness", false, "restart the harness once its plugin is installed, without asking (only where it runs as its own service)")
@@ -347,14 +347,10 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "uffici setup: %v\n", err)
 		return setup.ExitConfig
 	}
-	pairingCode := ""
-	if *codeFlag != "" {
-		parsed, err := app.ParsePairingCode(*codeFlag)
-		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "uffici setup: --pairing-code %v\n", err)
-			return setup.ExitConfig
-		}
-		pairingCode = parsed
+	pairingCode, err := setupPairingCode(*codeFlag, os.Getenv, os.Unsetenv)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "uffici setup: %v\n", err)
+		return setup.ExitConfig
 	}
 	if flags.NArg() > 0 {
 		_, _ = fmt.Fprintf(stderr, "uffici setup: unexpected argument %q — the harness is a flag: --harness %s\n", flags.Arg(0), flags.Arg(0))
@@ -426,6 +422,7 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	verifier, devIdentity := releaseSignatures(resolved.Home, os.Getenv, stdout)
 	// A re-run without the flags keeps what the last setup wrote into the service.
 	logs := setup.LogSettings{Shipping: *logShipping, HarnessLevel: *harnessLogLevel}
 	if previous, err := setup.ReadRecord(resolved.Home); err == nil {
@@ -468,6 +465,9 @@ func setupCommand(args []string, stdout, stderr io.Writer) int {
 				BaseURL: os.Getenv("UFFICI_RELEASES_BASE_URL"),
 				APIURL:  os.Getenv("UFFICI_RELEASES_API_URL"),
 				Client:  client,
+				// 🔴 Every download is held to Uffici's release workflow's
+				// signature (#3118), wherever the redirects above point.
+				Verifier: verifier, DevIdentity: devIdentity,
 			}
 		},
 		Pair: func(ctx context.Context) int {
@@ -556,6 +556,7 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	verifier, devIdentity := releaseSignatures(resolved.Home, os.Getenv, stdout)
 	return setup.Upgrade(ctx, setup.UpgradeOptions{
 		Check: *check, DryRun: *dryRun, Version: *version, PluginVersion: *pluginVersion, GatewayURL: *gatewayURL,
 		Current: build.Version(), FromVersion: *fromVersion,
@@ -572,6 +573,9 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 				BaseURL: os.Getenv("UFFICI_RELEASES_BASE_URL"),
 				APIURL:  os.Getenv("UFFICI_RELEASES_API_URL"),
 				Client:  client,
+				// 🔴 Every download is held to Uffici's release workflow's
+				// signature (#3118), wherever the redirects above point.
+				Verifier: verifier, DevIdentity: devIdentity,
 			}
 		},
 		// The environment travels as it is (the token with it, never in argv).
@@ -608,6 +612,57 @@ func upgradeCommand(args []string, stdout, stderr io.Writer) int {
 			return app.DoctorWith(ctx, doctorConfig, stdout, options)
 		},
 	}, stdout)
+}
+
+// PairingCodeEnv carries the portal's pairing code into `uffici setup` without
+// putting it in argv (#3119): an argument is in the process list for every
+// local user and in the shell's history; the environment of a process is
+// readable only by its own user (and root).
+const PairingCodeEnv = "UFFICI_PAIRING_CODE"
+
+// setupPairingCode is the code setup pairs with: --pairing-code, else
+// $UFFICI_PAIRING_CODE. The variable is removed from this process's
+// environment once read, so no command setup runs — the harness's own CLI
+// among them — inherits it. 🔴 Neither value is ever printed.
+func setupPairingCode(flagValue string, getenv func(string) string, unsetenv func(string) error) (string, error) {
+	fromEnv := getenv(PairingCodeEnv)
+	if fromEnv != "" {
+		_ = unsetenv(PairingCodeEnv)
+	}
+	source, value := "--pairing-code", flagValue
+	if value == "" {
+		source, value = PairingCodeEnv, fromEnv
+	}
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := app.ParsePairingCode(value)
+	if err != nil {
+		return "", fmt.Errorf("%s %v", source, err)
+	}
+	return parsed, nil
+}
+
+// releaseVerifier builds the signature check every release download goes
+// through (#3118): Sigstore's public-good instance, its trusted root fetched
+// through TUF and cached under the companion's home. A variable so the
+// command's tests can stand a virtual Sigstore in its place.
+var releaseVerifier = func(home string) setup.SignatureVerifier {
+	cache := ""
+	if home != "" {
+		cache = filepath.Join(home, "sigstore")
+	}
+	return setup.PublicGoodVerifier(cache)
+}
+
+// releaseSignatures is the verifier and the development switch for one run,
+// with the switch's warning printed the moment it is read.
+func releaseSignatures(home string, getenv func(string) string, out io.Writer) (setup.SignatureVerifier, string) {
+	devIdentity := strings.TrimSpace(getenv(setup.DevReleaseIdentityEnv))
+	if devIdentity != "" {
+		_, _ = fmt.Fprintln(out, setup.DevIdentityWarning(devIdentity))
+	}
+	return releaseVerifier(home), devIdentity
 }
 
 // setupAwaitCompanion is how long setup's doctor waits for the service it just

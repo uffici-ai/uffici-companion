@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/pem"
@@ -238,13 +239,17 @@ func TestSetupDryRunReachesThePluginReleaseAndNamesTheMissingHarnessTool(t *test
 	// A loopback "release" of the plugin, so the wiring from the command down to
 	// the fetch and the manifest is exercised without GitHub. The harness's own
 	// tool is not on this machine's PATH, which is the refusal the run ends on.
-	manifest := `{"manifestVersion":1,"harness":"hermes","name":"uffici-for-hermes","pluginDir":"plugins/uffici-for-hermes","homeEnv":"HERMES_HOME","defaultHome":"~/.hermes","enable":["definitely-not-a-real-tool-on-this-machine","plugins","enable","uffici-for-hermes"],"env":{},"restart":"restart"}`
+	manifest := `{"manifestVersion":1,"harness":"hermes","name":"uffici-for-hermes","version":"0.4.0","pluginDir":"plugins/uffici-for-hermes","homeEnv":"HERMES_HOME","defaultHome":"~/.hermes","enable":["definitely-not-a-real-tool-on-this-machine","plugins","enable","uffici-for-hermes"],"env":{},"restart":"restart"}`
 	archive := gzippedTar(t, "uffici-for-hermes", map[string]string{"uffici-plugin.json": manifest, "plugin.yaml": "name: x\n"})
 	sum := sha256.Sum256(archive)
 	assets := map[string][]byte{
-		"uffici-for-hermes.tar.gz": archive,
-		"checksums.txt":            []byte(hex.EncodeToString(sum[:]) + "  uffici-for-hermes.tar.gz\n"),
+		"uffici-for-hermes.tar.gz":    archive,
+		"checksums.txt":               []byte(hex.EncodeToString(sum[:]) + "  uffici-for-hermes.tar.gz\n"),
+		"checksums.txt.sigstore.json": []byte("a bundle"),
 	}
+	// The command's own verifier, wired to every download (#3118): a stand-in
+	// that records whom it was asked to hold the release to.
+	signers := standInVerifier(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
 		if body, ok := assets[name]; ok {
@@ -266,6 +271,46 @@ func TestSetupDryRunReachesThePluginReleaseAndNamesTheMissingHarnessTool(t *test
 	}
 	if !strings.Contains(out.String(), "plugin uffici-for-hermes") || !strings.Contains(out.String(), "is not on the PATH") {
 		t.Fatalf("the run did not reach the manifest and name the missing tool:\n%s", out.String())
+	}
+	if len(*signers) != 1 || (*signers)[0].Issuer != setup.ReleaseIssuer || !strings.Contains((*signers)[0].IdentityPattern, "uffici-for-hermes") {
+		t.Fatalf("the plugin's release was not held to its workflow's signature: %+v", *signers)
+	}
+}
+
+// standInVerifier replaces the public-good verifier for one test, accepting
+// every bundle and recording the signer each was held to.
+func standInVerifier(t *testing.T) *[]setup.Signer {
+	t.Helper()
+	var asked []setup.Signer
+	previous := releaseVerifier
+	releaseVerifier = func(string) setup.SignatureVerifier { return recordingVerifier{&asked} }
+	t.Cleanup(func() { releaseVerifier = previous })
+	return &asked
+}
+
+type recordingVerifier struct{ asked *[]setup.Signer }
+
+func (v recordingVerifier) Verify(_ context.Context, _, _ []byte, want setup.Signer) (string, error) {
+	*v.asked = append(*v.asked, want)
+	// The identity a real release at v0.4.0 carries: the version setup then
+	// holds the plugin's manifest to.
+	return setup.ReleaseIdentity("uffici-for-hermes", "0.4.0"), nil
+}
+
+// 🔴 The development switch is loud: every run that reads it says so first.
+func TestTheDevelopmentIdentitySwitchIsAnnounced(t *testing.T) {
+	var out bytes.Buffer
+	if _, dev := releaseSignatures("", func(string) string { return "" }, &out); dev != "" || out.Len() != 0 {
+		t.Fatalf("no switch, yet %q / %q", dev, out.String())
+	}
+	_, dev := releaseSignatures(t.TempDir(), func(key string) string {
+		if key == setup.DevReleaseIdentityEnv {
+			return " ^https://github\\.com/me/ "
+		}
+		return ""
+	}, &out)
+	if dev != "^https://github\\.com/me/" || !strings.Contains(out.String(), "WARNING: "+setup.DevReleaseIdentityEnv) {
+		t.Fatalf("the switch was not announced: %q / %q", dev, out.String())
 	}
 }
 
@@ -301,6 +346,74 @@ func TestSetupTakesAPortalCodeIntoThePairingStep(t *testing.T) {
 	}
 	if strings.Contains(strings.ToUpper(out.String()+errOut.String()), "K7QP-2XMD") {
 		t.Fatalf("the code was printed:\n%s%s", out.String(), errOut.String())
+	}
+}
+
+// 🔴 The code can arrive in the environment (#3119), out of argv: setup pairs
+// with it, never prints it, and removes it before running anything else.
+func TestSetupTakesThePairingCodeFromTheEnvironment(t *testing.T) {
+	t.Setenv(PairingCodeEnv, "k7qp-2xmd")
+	var out, errOut bytes.Buffer
+	code := run([]string{"setup", "--home", t.TempDir(), "--no-service", "--dry-run", "--gateway-url", "https://agents.example"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit %d:\n%s%s", code, out.String(), errOut.String())
+	}
+	if !strings.Contains(out.String(), "would pair with the code from the portal") {
+		t.Fatalf("the code in the environment did not reach the pairing step:\n%s", out.String())
+	}
+	if strings.Contains(strings.ToUpper(out.String()+errOut.String()), "K7QP-2XMD") {
+		t.Fatalf("the code was printed:\n%s%s", out.String(), errOut.String())
+	}
+	if _, set := os.LookupEnv(PairingCodeEnv); set {
+		t.Fatal("the code stayed in the environment every later command inherits")
+	}
+}
+
+// 🔴 install.sh decides from `uffici setup -h` whether this setup reads the
+// code from the environment (else it hands an older one the flag): the help
+// must name the variable.
+func TestSetupHelpNamesThePairingCodeVariable(t *testing.T) {
+	var out, errOut bytes.Buffer
+	_ = run([]string{"setup", "-h"}, &out, &errOut)
+	if !strings.Contains(errOut.String(), "$"+PairingCodeEnv) {
+		t.Fatalf("setup -h does not name %s:\n%s", PairingCodeEnv, errOut.String())
+	}
+}
+
+func TestSetupPairingCodeSources(t *testing.T) {
+	env := func(value string) func(string) string {
+		return func(key string) string {
+			if key == PairingCodeEnv {
+				return value
+			}
+			return ""
+		}
+	}
+	var unset []string
+	record := func(key string) error { unset = append(unset, key); return nil }
+	for _, tc := range []struct{ flag, env, want, refusal string }{
+		{want: ""},
+		{flag: "k7qp-2xmd", want: "K7QP-2XMD"},
+		{env: "k7qp-2xmd", want: "K7QP-2XMD"},
+		// The flag wins over the variable.
+		{flag: "AAAA-BBBB", env: "k7qp-2xmd", want: "AAAA-BBBB"},
+		{env: "ABCD-0O1I", refusal: PairingCodeEnv},
+		{flag: "ABCD-0O1I", refusal: "--pairing-code"},
+	} {
+		unset = nil
+		got, err := setupPairingCode(tc.flag, env(tc.env), record)
+		if tc.refusal != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.refusal) || strings.Contains(err.Error(), "ABCD") {
+				t.Fatalf("%+v: the refusal must name %s and not the value: %v", tc, tc.refusal, err)
+			}
+			continue
+		}
+		if err != nil || got != tc.want {
+			t.Fatalf("%+v: got %q, %v", tc, got, err)
+		}
+		if (tc.env != "") != (len(unset) == 1) {
+			t.Fatalf("%+v: the variable was not removed once read (%v)", tc, unset)
+		}
 	}
 }
 
