@@ -714,6 +714,21 @@ func (f *frameSink) SendBrief(ctx context.Context, brief requests.Brief) error {
 		}
 		frame["contextChanged"] = changed
 	}
+	// Absent, never empty, when the channel sends (#3179): an older plugin ignores
+	// the key, and a newer one places the instruction where the context goes.
+	if c := brief.ChannelSend; c != nil {
+		frame["channelSend"] = wire.ChannelSend{
+			Channel: c.Channel, Verdict: c.Verdict, ClosesAt: c.ClosesAt,
+			Class: c.Class, Instruction: c.Instruction,
+		}
+	}
+	// Absent, never empty, when nobody asked for a person (#3190): an older
+	// plugin ignores the key, a newer one places the instruction with the context.
+	if p := brief.PersonRequested; p != nil {
+		frame["personRequested"] = wire.PersonRequested{
+			Channel: p.Channel, RequestedAt: p.RequestedAt, Class: p.Class, Instruction: p.Instruction,
+		}
+	}
 	return f.send(ctx, frame)
 }
 

@@ -254,7 +254,9 @@
 									"destination_refused",
 									"grant_refused",
 									"file_changed",
-									"checksum_mismatch"
+									"checksum_mismatch",
+									"window_closed",
+									"person_requested"
 								]
 							},
 							"instruction": {
@@ -528,6 +530,69 @@
 						"state"
 					]
 				}
+			]
+		},
+		"channelSend": {
+			"type": "object",
+			"properties": {
+				"channel": {
+					"type": "string",
+					"pattern": "^[a-z][a-z0-9_-]{0,63}$"
+				},
+				"verdict": {
+					"type": "string",
+					"enum": [
+						"template-only",
+						"block"
+					]
+				},
+				"closesAt": {
+					"type": "string",
+					"format": "date-time",
+					"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+				},
+				"class": {
+					"type": "string",
+					"const": "window_closed"
+				},
+				"instruction": {
+					"type": "string",
+					"minLength": 1
+				}
+			},
+			"required": [
+				"channel",
+				"verdict",
+				"class",
+				"instruction"
+			]
+		},
+		"personRequested": {
+			"type": "object",
+			"properties": {
+				"channel": {
+					"type": "string",
+					"pattern": "^[a-z][a-z0-9_-]{0,63}$"
+				},
+				"requestedAt": {
+					"type": "string",
+					"format": "date-time",
+					"pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+				},
+				"class": {
+					"type": "string",
+					"const": "person_requested"
+				},
+				"instruction": {
+					"type": "string",
+					"minLength": 1
+				}
+			},
+			"required": [
+				"channel",
+				"requestedAt",
+				"class",
+				"instruction"
 			]
 		}
 	},

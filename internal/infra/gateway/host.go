@@ -417,10 +417,12 @@ func (h *Host) ReadSince(ctx context.Context, conversationID, since, through str
 		return contracts.Read{}, localError(ClassPlatformError, http.StatusOK)
 	}
 	return contracts.Read{
-		Entries:        toEntries(answer.Entries),
-		Bounded:        answer.Bounded,
-		Context:        h.decodeContext(answer.Context),
-		ContextChanged: toContextChanged(answer.ContextChanged),
+		Entries:         toEntries(answer.Entries),
+		Bounded:         answer.Bounded,
+		Context:         h.decodeContext(answer.Context),
+		ContextChanged:  toContextChanged(answer.ContextChanged),
+		ChannelSend:     h.toChannelSend(answer.ChannelSend),
+		PersonRequested: h.toPersonRequested(answer.PersonRequested),
 	}, nil
 }
 
@@ -488,6 +490,51 @@ func toContextChanged(in []protocol.ContextChange) []contracts.ContextChange {
 		}
 	}
 	return out
+}
+
+// channelToken is the protocol's transport grammar, and the local wire's for a
+// verdict; wireClass is the local wire's open class grammar.
+var (
+	channelToken = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	wireClass    = regexp.MustCompile(`^[a-z][a-z_]{0,63}$`)
+)
+
+// toChannelSend maps a closed send window (#3179) one to one — the platform
+// wrote the sentence; the companion composes nothing. Nil stays nil (the channel
+// sends, or an older gateway). One the wire could not carry is dropped and
+// logged by class, never by text — the read itself never fails for it.
+func (h *Host) toChannelSend(in *protocol.ChannelSend) *contracts.ChannelSend {
+	if in == nil {
+		return nil
+	}
+	if !channelToken.MatchString(in.Channel) || !channelToken.MatchString(in.Verdict) || !wireClass.MatchString(in.Class) ||
+		strings.TrimSpace(in.Instruction) == "" {
+		h.log.Warn("the read's channel send window is not the protocol's shape; the brief carries none",
+			slog.String("class", "window_closed"))
+		return nil
+	}
+	return &contracts.ChannelSend{
+		Channel: in.Channel, Verdict: in.Verdict, ClosesAt: in.ClosesAt,
+		Class: in.Class, Instruction: in.Instruction,
+	}
+}
+
+// toPersonRequested maps a request for a person (#3190) one to one — the
+// platform wrote the sentence; the companion composes nothing. Nil stays nil.
+// One the wire could not carry is dropped and logged by class, never by text.
+func (h *Host) toPersonRequested(in *protocol.PersonRequested) *contracts.PersonRequested {
+	if in == nil {
+		return nil
+	}
+	if !channelToken.MatchString(in.Channel) || strings.TrimSpace(in.RequestedAt) == "" ||
+		!wireClass.MatchString(in.Class) || strings.TrimSpace(in.Instruction) == "" {
+		h.log.Warn("the read's person request is not the protocol's shape; the brief carries none",
+			slog.String("class", "person_requested"))
+		return nil
+	}
+	return &contracts.PersonRequested{
+		Channel: in.Channel, RequestedAt: in.RequestedAt, Class: in.Class, Instruction: in.Instruction,
+	}
 }
 
 // toContext maps the platform's context one to one — the companion composes

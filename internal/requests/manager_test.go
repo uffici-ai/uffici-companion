@@ -1472,3 +1472,38 @@ func TestTheBriefCarriesTheReadsChangedLevels(t *testing.T) {
 		t.Fatalf("the brief carried %+v, want %+v", r.sink.briefs, changed)
 	}
 }
+
+// A request for a person (#3190) rides the read into the brief one to one.
+func TestTheBriefCarriesTheReadsPersonRequest(t *testing.T) {
+	r := newRig(t, Options{})
+	r.manager.Attach("conn-1", r.sink, 4000)
+	person := &contracts.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "2026-11-24T09:00:00Z", Class: "person_requested", Instruction: "A member will take over.",
+	}
+	r.host.SetPersonRequested("conv_1", person)
+	r.ring(t, "req_1", "c0001", "c0003")
+	if err := r.manager.OnAck(context.Background(), "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	if len(r.sink.briefs) != 1 || !reflect.DeepEqual(r.sink.briefs[0].PersonRequested, person) {
+		t.Fatalf("the brief carried %+v, want %+v", r.sink.briefs, person)
+	}
+}
+
+// A closed send window (#3179) rides the read into the brief one to one — the
+// companion decides nothing about it.
+func TestTheBriefCarriesTheReadsClosedSendWindow(t *testing.T) {
+	r := newRig(t, Options{})
+	r.manager.Attach("conn-1", r.sink, 4000)
+	send := &contracts.ChannelSend{
+		Channel: "whatsapp", Verdict: "template-only", Class: "window_closed", Instruction: "Your reply will be held.",
+	}
+	r.host.SetChannelSend("conv_1", send)
+	r.ring(t, "req_1", "c0001", "c0003")
+	if err := r.manager.OnAck(context.Background(), "conn-1", "req_1", AckAccepted, SessionResumed); err != nil {
+		t.Fatalf("OnAck: %v", err)
+	}
+	if len(r.sink.briefs) != 1 || !reflect.DeepEqual(r.sink.briefs[0].ChannelSend, send) {
+		t.Fatalf("the brief carried %+v, want %+v", r.sink.briefs, send)
+	}
+}

@@ -279,6 +279,37 @@ type ReadResponse struct {
 	// forwards the context's Card block — the platform composed it — and never
 	// reads this; it is decoded so the struct matches the contract.
 	Card *CardRead `json:"card,omitempty"`
+	// ChannelSend names a conversation whose channel will not send a free-form
+	// reply right now (#3179) — its send window closed, or the channel refuses —
+	// with the class and the sentence the agent relays. On the entries read only,
+	// absent whenever the channel sends.
+	ChannelSend *ChannelSend `json:"channelSend,omitempty"`
+	// PersonRequested names a conversation whose correspondent sent the
+	// binding's handoff phrase (#3190) — they asked for a person and members were
+	// alerted — with the class and the sentence the agent relays. On the entries
+	// read only, until a member takes the conversation over.
+	PersonRequested *PersonRequested `json:"personRequested,omitempty"`
+}
+
+// PersonRequested is a correspondent's request for a person: the transport,
+// when the phrase landed, the class (always "person_requested") and the
+// instruction.
+type PersonRequested struct {
+	Channel     string `json:"channel"`
+	RequestedAt string `json:"requestedAt"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
+}
+
+// ChannelSend is a closed send window: the transport, the verdict
+// ("template-only" or "block"), when the window closed (absent for a channel
+// with none), the class (always "window_closed") and the instruction.
+type ChannelSend struct {
+	Channel     string `json:"channel"`
+	Verdict     string `json:"verdict"`
+	ClosesAt    string `json:"closesAt,omitempty"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
 }
 
 // CardRead is a read's card: `state` is "ok" with every other field, or

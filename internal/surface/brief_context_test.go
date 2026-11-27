@@ -136,3 +136,86 @@ func TestABriefNamesTheChangedLevelsOnlyWhenThereAreAny(t *testing.T) {
 		t.Fatal("a brief with nothing changed carried the key")
 	}
 }
+
+// A request for a person (#3190): beside the context on a VALID frame, carried
+// one to one, and the key absent — never empty — when nobody asked.
+func TestABriefNamesAPersonRequestOnlyWhenThereIsOne(t *testing.T) {
+	conn := &bytesConn{}
+	sink := &frameSink{conn: conn}
+	asked := briefWith(nil)
+	asked.PersonRequested = &contracts.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "2026-11-24T09:00:00Z",
+		Class: "person_requested", Instruction: "Tell them a member will take over.",
+	}
+	if err := sink.SendBrief(context.Background(), asked); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.SendBrief(context.Background(), briefWith(nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i, raw := range conn.frames {
+		if err := wire.Validate(raw); err != nil {
+			t.Fatalf("brief %d is not a valid frame: %v", i, err)
+		}
+	}
+	var first wire.Brief
+	if err := json.Unmarshal(conn.frames[0], &first); err != nil {
+		t.Fatal(err)
+	}
+	want := wire.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "2026-11-24T09:00:00Z",
+		Class: "person_requested", Instruction: "Tell them a member will take over.",
+	}
+	if first.PersonRequested == nil || *first.PersonRequested != want {
+		t.Fatalf("the person request reached the wire as %+v", first.PersonRequested)
+	}
+	var second map[string]any
+	if err := json.Unmarshal(conn.frames[1], &second); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := second["personRequested"]; present {
+		t.Fatal("a brief nobody asked about carried the key")
+	}
+}
+
+// A closed send window (#3179): beside the context on a VALID frame, carried one
+// to one, and the key absent — never empty — when the channel sends, so an older
+// plugin never sees it.
+func TestABriefNamesAClosedSendWindowOnlyWhenThereIsOne(t *testing.T) {
+	conn := &bytesConn{}
+	sink := &frameSink{conn: conn}
+	closed := briefWith(nil)
+	closed.ChannelSend = &contracts.ChannelSend{
+		Channel: "whatsapp", Verdict: "template-only", ClosesAt: "2026-11-24T09:00:00Z",
+		Class: "window_closed", Instruction: "Your reply will be held.",
+	}
+	if err := sink.SendBrief(context.Background(), closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.SendBrief(context.Background(), briefWith(nil)); err != nil {
+		t.Fatal(err)
+	}
+	for i, raw := range conn.frames {
+		if err := wire.Validate(raw); err != nil {
+			t.Fatalf("brief %d is not a valid frame: %v", i, err)
+		}
+	}
+	var first wire.Brief
+	if err := json.Unmarshal(conn.frames[0], &first); err != nil {
+		t.Fatal(err)
+	}
+	want := wire.ChannelSend{
+		Channel: "whatsapp", Verdict: "template-only", ClosesAt: "2026-11-24T09:00:00Z",
+		Class: "window_closed", Instruction: "Your reply will be held.",
+	}
+	if first.ChannelSend == nil || *first.ChannelSend != want {
+		t.Fatalf("the send window reached the wire as %+v", first.ChannelSend)
+	}
+	var second map[string]any
+	if err := json.Unmarshal(conn.frames[1], &second); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := second["channelSend"]; present {
+		t.Fatal("a brief whose channel sends carried the key")
+	}
+}

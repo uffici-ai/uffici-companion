@@ -336,6 +336,34 @@ type Brief struct {
 	// last answered here (2026-10-12). Optional: absent when nothing changed and
 	// from an older companion; the plugin then says nothing.
 	ContextChanged []ContextChange `json:"contextChanged,omitempty"`
+	// ChannelSend names a closed send window (#3179) with the class and the
+	// sentence the agent relays. Optional: absent whenever the channel sends and
+	// from an older companion.
+	ChannelSend *ChannelSend `json:"channelSend,omitempty"`
+	// PersonRequested names a correspondent's request for a person (#3190) with
+	// the class and the sentence the agent relays. Optional: absent when nobody
+	// asked and from an older companion.
+	PersonRequested *PersonRequested `json:"personRequested,omitempty"`
+}
+
+// PersonRequested is a correspondent's request for a person: the transport,
+// when, the class and the instruction — the platform's, forwarded one to one.
+type PersonRequested struct {
+	Channel     string `json:"channel"`
+	RequestedAt string `json:"requestedAt"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
+}
+
+// ChannelSend is a conversation whose channel will not send a free-form reply
+// now: the transport, the verdict, when the window closed, the class and the
+// instruction — the platform's, forwarded one to one.
+type ChannelSend struct {
+	Channel     string `json:"channel"`
+	Verdict     string `json:"verdict"`
+	ClosesAt    string `json:"closesAt,omitempty"`
+	Class       string `json:"class"`
+	Instruction string `json:"instruction"`
 }
 
 // ContextChange is one context level that changed since the agent's last answer.

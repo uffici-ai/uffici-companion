@@ -65,6 +65,12 @@ type Conversation struct {
 	// ContextChanged is the levels the read names as changed since the agent's
 	// last answer (2026-10-12); nil sends none.
 	ContextChanged []protocol.ContextChange
+	// ChannelSend is the closed send window the entries read names (#3179);
+	// nil sends none, as a channel that sends does.
+	ChannelSend *protocol.ChannelSend
+	// PersonRequested is the request for a person the entries read names
+	// (#3190); nil sends none.
+	PersonRequested *protocol.PersonRequested
 	// Tools is the conversation's tool catalog (#2349); nil lists none.
 	Tools []protocol.ToolDescriptor
 	// ToolResults is each tool's scripted answer, by name; a listed tool with
@@ -666,6 +672,8 @@ func (d *Double) read(w http.ResponseWriter, r *http.Request, conversationID, ro
 	if route == "entries" {
 		answer.Context = conversation.Context
 		answer.ContextChanged = conversation.ContextChanged
+		answer.ChannelSend = conversation.ChannelSend
+		answer.PersonRequested = conversation.PersonRequested
 	}
 	_ = json.NewEncoder(w).Encode(answer)
 }

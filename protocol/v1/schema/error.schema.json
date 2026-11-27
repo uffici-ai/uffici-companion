@@ -48,7 +48,9 @@
 						"destination_refused",
 						"grant_refused",
 						"file_changed",
-						"checksum_mismatch"
+						"checksum_mismatch",
+						"window_closed",
+						"person_requested"
 					]
 				},
 				"instruction": {

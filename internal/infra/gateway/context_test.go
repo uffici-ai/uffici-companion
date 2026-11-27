@@ -190,3 +190,106 @@ func TestTheDeltaReadCarriesTheChangedLevels(t *testing.T) {
 		t.Fatalf("a read naming no change arrived with %+v", read.ContextChanged)
 	}
 }
+
+// A request for a person (#3190): the read carries it one to one — the
+// platform's sentence verbatim — and drops one the wire could not carry, logged
+// by class, never by its text, and never the reason the read fails.
+func TestTheDeltaReadCarriesAPersonRequest(t *testing.T) {
+	const sentence = "The person asked to talk to a person."
+	r := newRig(t)
+	r.double.Seed(conversationID, gatewaytest.Conversation{Offset: "1040", Entries: []protocol.Entry{
+		entry("1042", "external", "c-1", false, "PERSON"),
+	}, PersonRequested: &protocol.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "2026-11-24T09:00:00.000Z",
+		Class: "person_requested", Instruction: sentence,
+	}})
+	read, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	want := &contracts.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "2026-11-24T09:00:00.000Z",
+		Class: "person_requested", Instruction: sentence,
+	}
+	if !reflect.DeepEqual(read.PersonRequested, want) {
+		t.Fatalf("the person request arrived as %+v, want %+v", read.PersonRequested, want)
+	}
+
+	none := seedWithContext(t, contextFixture())
+	read, err = none.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if read.PersonRequested != nil {
+		t.Fatalf("a read naming nobody arrived with %+v", read.PersonRequested)
+	}
+
+	bad := newRig(t)
+	bad.double.Seed(conversationID, gatewaytest.Conversation{Offset: "1040", Entries: []protocol.Entry{
+		entry("1042", "external", "c-1", false, "PERSON"),
+	}, PersonRequested: &protocol.PersonRequested{
+		Channel: "whatsapp", RequestedAt: "", Class: "person_requested", Instruction: "secret-sentence",
+	}})
+	read, err = bad.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("an unreadable person request failed the read: %v", err)
+	}
+	if read.PersonRequested != nil || len(read.Entries) != 1 {
+		t.Fatalf("an unreadable person request reached the brief: %+v", read)
+	}
+	if logs := bad.logs.String(); !strings.Contains(logs, "person_requested") || strings.Contains(logs, "secret-sentence") {
+		t.Fatalf("the drop was not logged by class alone:\n%s", logs)
+	}
+}
+
+// A closed send window (#3179): the read carries it one to one — the platform's
+// sentence verbatim, the companion composing nothing — and nothing when the
+// channel sends. One the wire could not carry is dropped and logged by class,
+// never by its text, and never the reason the read fails.
+func TestTheDeltaReadCarriesAClosedSendWindow(t *testing.T) {
+	const sentence = "This conversation's WhatsApp window is closed. Your reply will be held until the person writes again."
+	r := newRig(t)
+	r.double.Seed(conversationID, gatewaytest.Conversation{Offset: "1040", Entries: []protocol.Entry{
+		entry("1042", "external", "c-1", false, "@smith hello"),
+	}, ChannelSend: &protocol.ChannelSend{
+		Channel: "whatsapp", Verdict: "template-only", ClosesAt: "2026-11-24T09:00:00.000Z",
+		Class: "window_closed", Instruction: sentence,
+	}})
+	read, err := r.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	want := &contracts.ChannelSend{
+		Channel: "whatsapp", Verdict: "template-only", ClosesAt: "2026-11-24T09:00:00.000Z",
+		Class: "window_closed", Instruction: sentence,
+	}
+	if !reflect.DeepEqual(read.ChannelSend, want) {
+		t.Fatalf("the send window arrived as %+v, want %+v", read.ChannelSend, want)
+	}
+
+	sends := seedWithContext(t, contextFixture())
+	read, err = sends.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("ReadSince: %v", err)
+	}
+	if read.ChannelSend != nil {
+		t.Fatalf("a channel that sends arrived with %+v", read.ChannelSend)
+	}
+
+	bad := newRig(t)
+	bad.double.Seed(conversationID, gatewaytest.Conversation{Offset: "1040", Entries: []protocol.Entry{
+		entry("1042", "external", "c-1", false, "@smith hello"),
+	}, ChannelSend: &protocol.ChannelSend{
+		Channel: "Not A Channel", Verdict: "template-only", Class: "window_closed", Instruction: "secret-sentence",
+	}})
+	read, err = bad.host.ReadSince(context.Background(), conversationID, "1040", "1042", 48000)
+	if err != nil {
+		t.Fatalf("an unreadable send window failed the read: %v", err)
+	}
+	if read.ChannelSend != nil || len(read.Entries) != 1 {
+		t.Fatalf("an unreadable send window reached the brief: %+v", read)
+	}
+	if logs := bad.logs.String(); !strings.Contains(logs, "window_closed") || strings.Contains(logs, "secret-sentence") {
+		t.Fatalf("the drop was not logged by class alone:\n%s", logs)
+	}
+}

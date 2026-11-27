@@ -4,6 +4,7 @@
 	"useGitignore": true,
 	"dictionaries": ["typescript", "node", "go", "softwareTerms", "companies", "misc", "filetypes"],
 	"words": [
+		"PESSOA",
 		"acked",
 		"acks",
 		"bootout",

@@ -27,6 +27,12 @@ type Brief struct {
 	// ContextChanged names the levels a person changed since the agent last
 	// answered here (2026-10-12); empty when nothing changed.
 	ContextChanged []contracts.ContextChange
+	// ChannelSend is the read's closed send window (#3179); nil when the
+	// channel sends.
+	ChannelSend *contracts.ChannelSend
+	// PersonRequested is the read's request for a person (#3190); nil when
+	// nobody asked.
+	PersonRequested *contracts.PersonRequested
 }
 
 // PluginSink is the attached plugin, as the manager sees it.
@@ -472,17 +478,19 @@ func hasAttachments(entries []contracts.Entry) bool {
 // brief sends a brief over the sink chosen at delivery.
 func (m *Manager) brief(ctx context.Context, request *Request, read contracts.Read, sink PluginSink, connID string, entries []contracts.Entry) error {
 	brief := Brief{
-		RequestID:      request.RequestID,
-		ConversationID: request.ConversationID,
-		Reason:         request.Reason,
-		Cause:          request.Cause,
-		Deadline:       request.Deadline,
-		SinceCursor:    request.SinceCursor,
-		ThroughCursor:  request.ThroughCursor,
-		ResetSession:   request.ResetSession,
-		Delta:          entries,
-		Context:        read.Context,
-		ContextChanged: read.ContextChanged,
+		RequestID:       request.RequestID,
+		ConversationID:  request.ConversationID,
+		Reason:          request.Reason,
+		Cause:           request.Cause,
+		Deadline:        request.Deadline,
+		SinceCursor:     request.SinceCursor,
+		ThroughCursor:   request.ThroughCursor,
+		ResetSession:    request.ResetSession,
+		Delta:           entries,
+		Context:         read.Context,
+		ContextChanged:  read.ContextChanged,
+		ChannelSend:     read.ChannelSend,
+		PersonRequested: read.PersonRequested,
 	}
 	if err := sink.SendBrief(ctx, brief); err != nil {
 		// 🔴 A send that failed because ANOTHER connection replaced this one keeps

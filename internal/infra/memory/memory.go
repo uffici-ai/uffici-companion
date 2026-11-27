@@ -72,6 +72,8 @@ type conversation struct {
 	entries []contracts.Entry
 	context *contracts.Context
 	changed []contracts.ContextChange
+	send    *contracts.ChannelSend
+	person  *contracts.PersonRequested
 }
 
 type openRequest struct {
@@ -116,6 +118,26 @@ func (h *Host) SetContextChanged(conversationID string, changed []contracts.Cont
 	defer h.mu.Unlock()
 	if state, ok := h.conversations[conversationID]; ok {
 		state.changed = changed
+	}
+}
+
+// SetPersonRequested gives a seeded conversation the request for a person its
+// delta read names (#3190); nil reads as nobody asked.
+func (h *Host) SetPersonRequested(conversationID string, person *contracts.PersonRequested) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if state, ok := h.conversations[conversationID]; ok {
+		state.person = person
+	}
+}
+
+// SetChannelSend gives a seeded conversation the closed send window its delta
+// read names (#3179); nil reads as a channel that sends.
+func (h *Host) SetChannelSend(conversationID string, send *contracts.ChannelSend) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if state, ok := h.conversations[conversationID]; ok {
+		state.send = send
 	}
 }
 
@@ -178,7 +200,7 @@ func (h *Host) ReadSince(_ context.Context, conversationID, since, through strin
 		}
 		out = append(out, entry)
 	}
-	return contracts.Read{Entries: out, Context: state.context, ContextChanged: state.changed}, nil
+	return contracts.Read{Entries: out, Context: state.context, ContextChanged: state.changed, ChannelSend: state.send, PersonRequested: state.person}, nil
 }
 
 // ReadOpener returns the tail through `through`, including the agent's own.

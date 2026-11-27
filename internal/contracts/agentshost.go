@@ -127,6 +127,35 @@ type Read struct {
 	// ContextChanged names the levels a person changed since the agent last
 	// answered here (2026-10-12); empty when nothing changed or none was sent.
 	ContextChanged []ContextChange
+	// ChannelSend names a conversation whose channel will not send a free-form
+	// reply now (#3179), with the class and the sentence the agent relays; nil
+	// whenever the channel sends, and from an older gateway.
+	ChannelSend *ChannelSend
+	// PersonRequested names a conversation whose correspondent asked for a
+	// person (#3190), with the class and the sentence the agent relays; nil when
+	// nobody asked, and from an older gateway.
+	PersonRequested *PersonRequested
+}
+
+// PersonRequested is a correspondent's request for a person as the platform
+// named it: the transport, when, the class and the instruction. The companion
+// forwards it one to one and reads none of it.
+type PersonRequested struct {
+	Channel     string
+	RequestedAt string
+	Class       string
+	Instruction string
+}
+
+// ChannelSend is a closed send window as the platform named it: the transport,
+// its verdict, when the window closed (empty for a channel with none), the class
+// and the instruction. The companion forwards it one to one and reads none of it.
+type ChannelSend struct {
+	Channel     string
+	Verdict     string
+	ClosesAt    string
+	Class       string
+	Instruction string
 }
 
 // ContextChange is one context level that changed since the agent's last answer.
